@@ -1,0 +1,63 @@
+test_bad_schema_rejected (test_data.DatasetTests.test_bad_schema_rejected) ... ok
+test_duplicate_ids_rejected (test_data.DatasetTests.test_duplicate_ids_rejected) ... ok
+test_duplicate_json_keys_rejected (test_data.DatasetTests.test_duplicate_json_keys_rejected) ... ok
+test_feature_order_and_names_must_be_valid (test_data.DatasetTests.test_feature_order_and_names_must_be_valid) ... ok
+test_load_round_trip_preserves_metadata (test_data.DatasetTests.test_load_round_trip_preserves_metadata) ... ok
+test_missing_observations_can_be_null_or_omitted (test_data.DatasetTests.test_missing_observations_can_be_null_or_omitted) ... ok
+test_nonfinite_and_boolean_measurements_rejected (test_data.DatasetTests.test_nonfinite_and_boolean_measurements_rejected) ... ok
+test_nonfinite_context_rejected (test_data.DatasetTests.test_nonfinite_context_rejected) ... ok
+test_synthetic_minimum_and_seed_validation (test_data.DatasetTests.test_synthetic_minimum_and_seed_validation) ... ok
+test_synthetic_schema_and_repeatability (test_data.DatasetTests.test_synthetic_schema_and_repeatability) ... ok
+test_terminals_ports_and_status_validation (test_data.DatasetTests.test_terminals_ports_and_status_validation) ... ok
+test_unknown_features_rejected (test_data.DatasetTests.test_unknown_features_rejected) ... ok
+test_varying_context_is_rejected_without_context_model_features (test_data.DatasetTests.test_varying_context_is_rejected_without_context_model_features) ... ok
+test_absent_and_constant_features (test_data.PreprocessorTests.test_absent_and_constant_features) ... ok
+test_exact_population_statistics_and_missing_values (test_data.PreprocessorTests.test_exact_population_statistics_and_missing_values) ... ok
+test_preprocessor_serializes_without_nan_and_does_not_alias_spec (test_data.PreprocessorTests.test_preprocessor_serializes_without_nan_and_does_not_alias_spec) ... ok
+test_stage_one_has_no_performance_statistics_or_label_dependence (test_data.PreprocessorTests.test_stage_one_has_no_performance_statistics_or_label_dependence) ... ok
+test_tiny_units_do_not_underflow_variance (test_data.PreprocessorTests.test_tiny_units_do_not_underflow_variance) ... ok
+test_train_only_vocabulary_and_statistics (test_data.PreprocessorTests.test_train_only_vocabulary_and_statistics) ... ok
+test_bad_fractions_seed_and_circuit (test_data.SplitTests.test_bad_fractions_seed_and_circuit) ... ok
+test_cross_circuit_duplicates_rejected_even_if_both_id (test_data.SplitTests.test_cross_circuit_duplicates_rejected_even_if_both_id) ... ok
+test_duplicate_fingerprint_ignores_labels_and_identifiers (test_data.SplitTests.test_duplicate_fingerprint_ignores_labels_and_identifiers) ... ok
+test_exact_four_id_one_ood_and_full_partition (test_data.SplitTests.test_exact_four_id_one_ood_and_full_partition) ... ok
+test_exactly_five_circuits_required (test_data.SplitTests.test_exactly_five_circuits_required) ... ok
+test_group_split_tampering_rejected (test_data.SplitTests.test_group_split_tampering_rejected) ... ok
+test_minimum_independent_groups_and_fraction_edges (test_data.SplitTests.test_minimum_independent_groups_and_fraction_edges) ... ok
+test_ports_and_context_are_part_of_fingerprint (test_data.SplitTests.test_ports_and_context_are_part_of_fingerprint) ... ok
+test_reordering_is_deterministic (test_data.SplitTests.test_reordering_is_deterministic) ... ok
+test_same_design_conditions_and_transitive_groups_stay_together (test_data.SplitTests.test_same_design_conditions_and_transitive_groups_stay_together) ... ok
+test_seed_changes_assignments (test_data.SplitTests.test_seed_changes_assignments) ... ok
+test_split_accessor_uses_manifest_order (test_data.SplitTests.test_split_accessor_uses_manifest_order) ... ok
+test_stale_fingerprint_rejected (test_data.SplitTests.test_stale_fingerprint_rejected) ... ok
+test_unknown_duplicate_omitted_and_wrong_circuit_rejected (test_data.SplitTests.test_unknown_duplicate_omitted_and_wrong_circuit_rejected) ... ok
+test_all_missing_parameters_finite (test_model.ModelTests.test_all_missing_parameters_finite) ... ok
+test_collapse_is_penalized (test_model.ModelTests.test_collapse_is_penalized) ... ok
+test_decoder_consumes_device_memory (test_model.ModelTests.test_decoder_consumes_device_memory) ... ok
+test_frozen_encoder_stays_eval_and_bit_identical (test_model.ModelTests.test_frozen_encoder_stays_eval_and_bit_identical) ... ok
+test_full_memory_not_pooled (test_model.ModelTests.test_full_memory_not_pooled) ... ok
+test_input_order_is_canonicalized (test_model.ModelTests.test_input_order_is_canonicalized) ... ok
+test_masked_metric_loss_ignores_missing (test_model.ModelTests.test_masked_metric_loss_ignores_missing) ... ok
+test_missing_values_cannot_poison_outputs (test_model.ModelTests.test_missing_values_cannot_poison_outputs) ... ok
+test_overflow_device_count_raises_not_truncates (test_model.ModelTests.test_overflow_device_count_raises_not_truncates) ... ok
+test_padding_invariance (test_model.ModelTests.test_padding_invariance) ... ok
+test_stage1_trains_both_encoders_without_performance (test_model.ModelTests.test_stage1_trains_both_encoders_without_performance) ... ok
+test_terminal_roles_are_not_collapsed_to_adjacency_only (test_model.ModelTests.test_terminal_roles_are_not_collapsed_to_adjacency_only) ... ok
+test_unknown_device_is_not_padding (test_model.ModelTests.test_unknown_device_is_not_padding) ... ok
+test_variable_feature_and_metric_dimensions (test_model.ModelTests.test_variable_feature_and_metric_dimensions) ... ok
+pretrain 1/1 train=24.100952 val=23.902264
+decoder 1/1 train=1.091659 val=1.047881
+test_checkpoint_phase_boundaries_and_frozen_digest (test_pipeline.PipelineTests.test_checkpoint_phase_boundaries_and_frozen_digest) ... ok
+test_eval_separates_id_and_ood (test_pipeline.PipelineTests.test_eval_separates_id_and_ood) ... ok
+test_labels_can_be_attached_after_unlabeled_pretraining (test_pipeline.PipelineTests.test_labels_can_be_attached_after_unlabeled_pretraining) ... pretrain 1/1 train=24.100952 val=23.902264
+decoder 1/1 train=1.091659 val=1.047881
+ok
+test_performance_values_do_not_change_stage1_preprocessing (test_pipeline.PipelineTests.test_performance_values_do_not_change_stage1_preprocessing) ... ok
+test_stage2_rejects_architecture_mismatch (test_pipeline.PipelineTests.test_stage2_rejects_architecture_mismatch) ... ok
+test_stage2_rejects_design_op_and_record_changes (test_pipeline.PipelineTests.test_stage2_rejects_design_op_and_record_changes) ... ok
+test_stage2_rejects_partition_and_scaler_identity_changes (test_pipeline.PipelineTests.test_stage2_rejects_partition_and_scaler_identity_changes) ... ok
+
+----------------------------------------------------------------------
+Ran 54 tests in 25.902s
+
+OK

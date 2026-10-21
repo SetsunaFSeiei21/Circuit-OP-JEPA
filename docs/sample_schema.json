@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "feature_spec": {
+    "parameter_names": [
+      "W",
+      "L",
+      "R"
+    ],
+    "op_names": [
+      "id",
+      "gm",
+      "vds"
+    ],
+    "metric_names": [
+      "gain",
+      "power"
+    ],
+    "terminal_names": [
+      "d",
+      "g",
+      "s",
+      "b",
+      "p",
+      "n"
+    ]
+  },
+  "metadata": {
+    "synthetic": true,
+    "label_source": "analytic toy formulas; NOT circuit simulation",
+    "intended_ood_circuit": "synthetic_4",
+    "seed": 17,
+    "purpose": "One synthetic schema example only; not a complete training dataset"
+  },
+  "samples": [
+    {
+      "sample_id": "synthetic_0_0000",
+      "design_id": "design_0000",
+      "circuit_id": "synthetic_0",
+      "context": {
+        "supply_v": 1.2,
+        "temperature_c": 27.0
+      },
+      "ports": {
+        "output": "n0",
+        "ground": "0"
+      },
+      "op_status": "partial",
+      "devices": [
+        {
+          "device_id": "D0",
+          "device_type": "nmos",
+          "parameters": {
+            "W": 2.2659517291374795e-06,
+            "L": 2.8133815542373584e-07,
+            "R": null
+          },
+          "op": {
+            "id": 4.349264080058035e-06,
+            "gm": 4.3492640800580346e-05,
+            "vds": null
+          },
+          "terminals": {
+            "d": "n0",
+            "g": "n1",
+            "s": "0",
+            "b": "0"
+          }
+        },
+        {
+          "device_id": "D1",
+          "device_type": "pmos",
+          "parameters": {
+            "W": 2.998322313393858e-06,
+            "L": 2.6084397336868254e-07,
+            "R": null
+          },
+          "op": {
+            "id": 6.207136121731364e-06,
+            "gm": 6.207136121731364e-05,
+            "vds": 0.36609722935032707
+          },
+          "terminals": {
+            "d": "n1",
+            "g": "n2",
+            "s": "n0",
+            "b": "0"
+          }
+        },
+        {
+          "device_id": "D2",
+          "device_type": "nmos",
+          "parameters": {
+            "W": 7.808103363715803e-07,
+            "L": 1.9683422090885948e-07,
+            "R": null
+          },
+          "op": {
+            "id": 2.142094904502836e-06,
+            "gm": 2.1420949045028357e-05,
+            "vds": 0.45143026050793317
+          },
+          "terminals": {
+            "d": "n2",
+            "g": "n0",
+            "s": "0",
+            "b": "0"
+          }
+        },
+        {
+          "device_id": "D3",
+          "device_type": "resistor",
+          "parameters": {
+            "W": null,
+            "L": null,
+            "R": 4308.475141077908
+          },
+          "op": {
+            "id": 0.0002785208132127647,
+            "gm": null,
+            "vds": 0.6
+          },
+          "terminals": {
+            "p": "n3",
+            "n": "n2"
+          }
+        }
+      ],
+      "performance": {
+        "gain": null,
+        "power": 0.0003494631699828683
+      }
+    }
+  ]
+}

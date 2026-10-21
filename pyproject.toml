@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "device-jepa-demo"
+version = "0.1.0"
+description = "Device-token circuit/OP alignment and strictly frozen-encoder performance prediction"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2", "numpy>=1.24"]
+
+[project.scripts]
+device-jepa = "device_jepa.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["device_jepa*"]
+
+[tool.setuptools.package-data]
+device_jepa = ["defaults/*.json"]

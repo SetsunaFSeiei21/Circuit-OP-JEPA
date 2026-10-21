@@ -1,0 +1,36 @@
+[
+  {
+    "epoch": 1,
+    "train": {
+      "loss": 23.430640479265634,
+      "alignment_mse": 0.050407109276975615,
+      "variance": 0.886712160487633,
+      "covariance": 0.0026585944529654362,
+      "observed_device_tokens": 354
+    },
+    "val": {
+      "loss": 22.638694763183594,
+      "alignment_mse": 0.05985544994473457,
+      "variance": 0.8453400135040283,
+      "covariance": 0.008808279410004616,
+      "observed_device_tokens": 62
+    }
+  },
+  {
+    "epoch": 2,
+    "train": {
+      "loss": 22.41570181765799,
+      "alignment_mse": 0.054918847662412514,
+      "variance": 0.8412859522353457,
+      "covariance": 0.010582068511469048,
+      "observed_device_tokens": 354
+    },
+    "val": {
+      "loss": 21.883258819580078,
+      "alignment_mse": 0.08614084869623184,
+      "variance": 0.7877857089042664,
+      "covariance": 0.0350954532623291,
+      "observed_device_tokens": 62
+    }
+  }
+]

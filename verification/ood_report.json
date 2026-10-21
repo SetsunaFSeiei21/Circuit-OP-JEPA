@@ -1,0 +1,236 @@
+{
+  "split": "ood",
+  "synthetic": true,
+  "num_samples": 24,
+  "selection_used_ood": false,
+  "encoder_frozen_verified": true,
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 21,
+      "mae": 0.5156510387148175,
+      "rmse": 0.5938786987612814,
+      "r2": -2.533635058394791,
+      "normalized_rmse": 1.674914935244113
+    },
+    "power": {
+      "count": 24,
+      "mae": 0.0002541261904601318,
+      "rmse": 0.00028011323006195676,
+      "r2": -0.28468409668465067,
+      "normalized_rmse": 0.6261009711013188
+    }
+  },
+  "by_circuit": {
+    "synthetic_4": {
+      "gain": {
+        "count": 21,
+        "mae": 0.5156510387148175,
+        "rmse": 0.5938786987612814,
+        "r2": -2.533635058394791,
+        "normalized_rmse": 1.674914935244113
+      },
+      "power": {
+        "count": 24,
+        "mae": 0.0002541261904601318,
+        "rmse": 0.00028011323006195676,
+        "r2": -0.28468409668465067,
+        "normalized_rmse": 0.6261009711013188
+      }
+    }
+  },
+  "predictions": [
+    {
+      "sample_id": "synthetic_4_0000",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.436130404472351,
+        "power": 0.0007181449909694493
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0001",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4378618001937866,
+        "power": 0.0007180778193287551
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0002",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4339734315872192,
+        "power": 0.0007154322229325771
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0003",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.43654203414917,
+        "power": 0.0007170212338678539
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0004",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4382033348083496,
+        "power": 0.0007175460923463106
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0005",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.434251070022583,
+        "power": 0.0007144175469875336
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0006",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4361159801483154,
+        "power": 0.0007180426036939025
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0007",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4381687641143799,
+        "power": 0.0007190414471551776
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0008",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4341840744018555,
+        "power": 0.0007146651623770595
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0009",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4364084005355835,
+        "power": 0.0007187202572822571
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0010",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4382258653640747,
+        "power": 0.0007186300936155021
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0011",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4347381591796875,
+        "power": 0.0007154651684686542
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0012",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4365864992141724,
+        "power": 0.0007178845116868615
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0013",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4390782117843628,
+        "power": 0.0007187699666246772
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0014",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4340766668319702,
+        "power": 0.0007148832664825022
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0015",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.436486005783081,
+        "power": 0.0007176455110311508
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0016",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4385162591934204,
+        "power": 0.0007188470335677266
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0017",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.433990240097046,
+        "power": 0.0007135752239264548
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0018",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4366225004196167,
+        "power": 0.0007182655390352011
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0019",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.438873052597046,
+        "power": 0.0007200496620498598
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0020",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4339677095413208,
+        "power": 0.0007146442076191306
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0021",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4367046356201172,
+        "power": 0.0007172804907895625
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0022",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4379007816314697,
+        "power": 0.0007189296302385628
+      }
+    },
+    {
+      "sample_id": "synthetic_4_0023",
+      "circuit_id": "synthetic_4",
+      "prediction": {
+        "gain": 1.4347660541534424,
+        "power": 0.0007140617817640305
+      }
+    }
+  ]
+}

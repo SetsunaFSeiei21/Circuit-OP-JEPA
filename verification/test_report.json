@@ -1,0 +1,188 @@
+{
+  "split": "test",
+  "synthetic": true,
+  "num_samples": 12,
+  "selection_used_ood": false,
+  "encoder_frozen_verified": true,
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 8,
+      "mae": 0.37408390641212463,
+      "rmse": 0.45262229281693356,
+      "r2": -0.4945573837306392,
+      "normalized_rmse": 1.2765297692016524
+    },
+    "power": {
+      "count": 12,
+      "mae": 0.0002954123168213603,
+      "rmse": 0.0003679254970194805,
+      "r2": -0.17776912863410055,
+      "normalized_rmse": 0.822376404448588
+    }
+  },
+  "by_circuit": {
+    "synthetic_0": {
+      "gain": {
+        "count": 1,
+        "mae": 0.235693097114563,
+        "rmse": 0.235693097114563,
+        "r2": null,
+        "normalized_rmse": 0.6647247818696472
+      },
+      "power": {
+        "count": 3,
+        "mae": 0.000221450871322304,
+        "rmse": 0.00022927722751309455,
+        "r2": -0.17838347420881284,
+        "normalized_rmse": 0.5124738119853007
+      }
+    },
+    "synthetic_1": {
+      "gain": {
+        "count": 1,
+        "mae": 0.22314453125,
+        "rmse": 0.22314453125,
+        "r2": null,
+        "normalized_rmse": 0.6293340860486148
+      },
+      "power": {
+        "count": 3,
+        "mae": 0.000265895815876623,
+        "rmse": 0.0003150063910879303,
+        "r2": -2.392232376020496,
+        "normalized_rmse": 0.7040931530426167
+      }
+    },
+    "synthetic_2": {
+      "gain": {
+        "count": 3,
+        "mae": 0.19797901312510172,
+        "rmse": 0.23559152409581274,
+        "r2": -2.460001954255146,
+        "normalized_rmse": 0.6644383156830717
+      },
+      "power": {
+        "count": 3,
+        "mae": 0.0003002559145291646,
+        "rmse": 0.0003587625707848662,
+        "r2": -0.051884106017988874,
+        "normalized_rmse": 0.8018956973704081
+      }
+    },
+    "synthetic_3": {
+      "gain": {
+        "count": 3,
+        "mae": 0.646632194519043,
+        "rmse": 0.6750507889799262,
+        "r2": -11.057218050581085,
+        "normalized_rmse": 1.903844422891624
+      },
+      "power": {
+        "count": 3,
+        "mae": 0.00039404666555734974,
+        "rmse": 0.0005108512794832048,
+        "r2": -0.07717325619100013,
+        "normalized_rmse": 1.1418399698651902
+      }
+    }
+  },
+  "predictions": [
+    {
+      "sample_id": "synthetic_0_0011",
+      "circuit_id": "synthetic_0",
+      "prediction": {
+        "gain": 1.4384775161743164,
+        "power": 0.0007199899409897625
+      }
+    },
+    {
+      "sample_id": "synthetic_0_0017",
+      "circuit_id": "synthetic_0",
+      "prediction": {
+        "gain": 1.4382580518722534,
+        "power": 0.000720021955203265
+      }
+    },
+    {
+      "sample_id": "synthetic_0_0022",
+      "circuit_id": "synthetic_0",
+      "prediction": {
+        "gain": 1.4379770755767822,
+        "power": 0.000719528179615736
+      }
+    },
+    {
+      "sample_id": "synthetic_1_0000",
+      "circuit_id": "synthetic_1",
+      "prediction": {
+        "gain": 1.436715841293335,
+        "power": 0.0007191559998318553
+      }
+    },
+    {
+      "sample_id": "synthetic_1_0011",
+      "circuit_id": "synthetic_1",
+      "prediction": {
+        "gain": 1.434265375137329,
+        "power": 0.000714887457434088
+      }
+    },
+    {
+      "sample_id": "synthetic_1_0019",
+      "circuit_id": "synthetic_1",
+      "prediction": {
+        "gain": 1.439465045928955,
+        "power": 0.0007197280647233129
+      }
+    },
+    {
+      "sample_id": "synthetic_2_0014",
+      "circuit_id": "synthetic_2",
+      "prediction": {
+        "gain": 1.4365936517715454,
+        "power": 0.000717745628207922
+      }
+    },
+    {
+      "sample_id": "synthetic_2_0018",
+      "circuit_id": "synthetic_2",
+      "prediction": {
+        "gain": 1.4386780261993408,
+        "power": 0.0007198246894404292
+      }
+    },
+    {
+      "sample_id": "synthetic_2_0023",
+      "circuit_id": "synthetic_2",
+      "prediction": {
+        "gain": 1.436004877090454,
+        "power": 0.0007174208876676857
+      }
+    },
+    {
+      "sample_id": "synthetic_3_0001",
+      "circuit_id": "synthetic_3",
+      "prediction": {
+        "gain": 1.4361858367919922,
+        "power": 0.0007180144311860204
+      }
+    },
+    {
+      "sample_id": "synthetic_3_0013",
+      "circuit_id": "synthetic_3",
+      "prediction": {
+        "gain": 1.43660306930542,
+        "power": 0.0007189385360106826
+      }
+    },
+    {
+      "sample_id": "synthetic_3_0014",
+      "circuit_id": "synthetic_3",
+      "prediction": {
+        "gain": 1.4377171993255615,
+        "power": 0.0007190693286247551
+      }
+    }
+  ]
+}

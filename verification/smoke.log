@@ -1,0 +1,8 @@
+pretrain 1/2 train=23.430640 val=22.638695
+pretrain 2/2 train=22.415702 val=21.883259
+decoder 1/3 train=1.040441 val=1.942823
+decoder 2/3 train=1.037029 val=2.105888
+decoder 3/3 train=0.984406 val=1.983512
+SYNTHETIC test: {"gain": {"count": 8, "mae": 0.37408390641212463, "rmse": 0.45262229281693356, "r2": -0.4945573837306392, "normalized_rmse": 1.2765297692016524}, "power": {"count": 12, "mae": 0.0002954123168213603, "rmse": 0.0003679254970194805, "r2": -0.17776912863410055, "normalized_rmse": 0.822376404448588}}
+SYNTHETIC ood: {"gain": {"count": 21, "mae": 0.5156510387148175, "rmse": 0.5938786987612814, "r2": -2.533635058394791, "normalized_rmse": 1.674914935244113}, "power": {"count": 24, "mae": 0.0002541261904601318, "rmse": 0.00028011323006195676, "r2": -0.28468409668465067, "normalized_rmse": 0.6261009711013188}}
+Smoke complete: mechanics only; synthetic metrics are NOT evidence of analog-circuit generalization.

@@ -1,0 +1,26 @@
+{
+  "model": {
+    "dim": 32,
+    "heads": 4,
+    "encoder_layers": 2,
+    "cross_layers": 1,
+    "ffn_dim": 64,
+    "decoder_layers": 1,
+    "decoder_ffn_dim": 64,
+    "dropout": 0.1,
+    "max_devices": 32,
+    "terminal_bias": true
+  },
+  "loss": {"invariance": 25.0, "variance": 25.0, "covariance": 1.0, "variance_floor": 1.0},
+  "training": {
+    "seed": 17,
+    "batch_size": 16,
+    "pretrain_epochs": 2,
+    "decoder_epochs": 3,
+    "pretrain_lr": 0.001,
+    "decoder_lr": 0.001,
+    "weight_decay": 0.0001,
+    "grad_clip": 1.0,
+    "torch_threads": 1
+  }
+}
