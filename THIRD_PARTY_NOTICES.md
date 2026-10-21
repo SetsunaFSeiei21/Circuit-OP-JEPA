@@ -15,4 +15,4 @@ The inspected ZeroSim repository root did not show a license file, and its main-
 
 ZeroSim citation: Xiaomeng Yang, Jian Gao, Yanzhi Wang and Xuan Zhang, “ZeroSim: Zero-Shot Analog Circuit Evaluation with Unified Transformer Embeddings,” ICCAD 2025, DOI [10.1109/ICCAD66269.2025.11240890](https://doi.org/10.1109/ICCAD66269.2025.11240890).
 
-PyTorch and NumPy are installed dependencies and retain their own licenses. No dependency binaries are bundled in the source archive. This local demo has not been remotely published. Choose an appropriate project license before public distribution.
+PyTorch and NumPy are installed dependencies and retain their own licenses. No dependency binaries are bundled in the source archive. This demo is hosted in the private Circuit-OP-JEPA repository. Choose an appropriate project license before public distribution.

@@ -1,6 +1,8 @@
-# Device-JEPA Demo
+# Circuit-OP-JEPA
 
 器件级电路表示预训练 → 冻结输入编码器 → 性能预测。独立新项目，不改 ZeroSim 或 Analog Agent 仓库。
+
+仓库：https://github.com/SetsunaFSeiei21/Circuit-OP-JEPA （私有）。
 
 ## 已实现的约定
 
@@ -19,6 +21,8 @@
 Python 3.10+。CPU 环境示例，先安装官方 CPU PyTorch，避免意外安装大型 CUDA 依赖：
 
 ```bash
+git clone https://github.com/SetsunaFSeiei21/Circuit-OP-JEPA.git
+cd Circuit-OP-JEPA
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -110,7 +114,7 @@ python -m device_jepa evaluate \
 - 精确重复检测保留 net 名，不能自动发现 net 重命名后的同构重复；跨来源样本应提供稳定 group_id。
 - scaler 只做按具名字段的 z-score；未自动猜测 OP 符号、对数变换或单位。训练集未观测的设备类型映射到 UNK，不是 padding。
 - checkpoint 支持两个阶段衔接及评估，不含训练中断恢复功能。阶段一到阶段二允许只补充/更改性能标签，评估要求同一阶段二数据 manifest；另一个任意新数据集的 predict 入口可在真实数据接入时添加。
-- 本 demo 不包含 SPICE/PDK、Analog Agent 数据转换、ACCFormer 独立变体、集群脚本或远程发布。
+- 本 demo 不包含 SPICE/PDK、Analog Agent 数据转换、ACCFormer 独立变体或集群脚本。
 
 ## English summary
 
