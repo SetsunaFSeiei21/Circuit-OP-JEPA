@@ -27,5 +27,44 @@
     "weight_decay": 0.0001,
     "grad_clip": 1.0,
     "torch_threads": 1
+  },
+  "dataset": {
+    "train_circuits": [
+      "synthetic_0",
+      "synthetic_1",
+      "synthetic_2",
+      "synthetic_3"
+    ],
+    "ood_circuits": [
+      "synthetic_4"
+    ],
+    "split_ratios": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "split_seed": 17,
+    "finetune_label_fraction": 1.0
+  },
+  "normalization": {
+    "weighting": "equal_circuit",
+    "op_fields": null,
+    "parameters": {},
+    "op": {},
+    "performance": {}
+  },
+  "op_state": {
+    "mode": "collector_checked",
+    "features": [
+      "current_missing",
+      "current_below",
+      "current_pass",
+      "saturation_missing",
+      "saturation_below",
+      "saturation_pass"
+    ]
+  },
+  "baseline": {
+    "pin_terminal_bias": false
   }
 }

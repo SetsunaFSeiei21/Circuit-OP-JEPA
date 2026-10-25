@@ -1,0 +1,4 @@
+mode,seed,split,timing,parameter_count
+zerosim_pin,17,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.7455424429999766}","{""decoder"": 14209, ""encoder"": 27552, ""total"": 41761, ""trainable"": 41761}"
+zerosim_device,17,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.3222937620002995}","{""decoder"": 14209, ""encoder"": 27312, ""total"": 41521, ""trainable"": 41521}"
+jepa_zerosim,17,test,"{""pretrain_seconds"": 1.6757764009998937, ""supervised_seconds"": 1.291187529999661}","{""encoder"": 27312, ""total"": 41521, ""trainable"": 14209}"

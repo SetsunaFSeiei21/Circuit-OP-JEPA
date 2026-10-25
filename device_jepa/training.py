@@ -3,19 +3,28 @@ import copy
 import hashlib
 import json
 import math
+import os
 import platform
 import random
+import re
+import time
 from pathlib import Path
 
 import torch
 
 from .data import (dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
-                   partition_fingerprint, samples_for_split, verify_manifest)
+                   partition_fingerprint, samples_for_split, verify_manifest, is_op_target)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
-from .tensors import collate_samples, denormalize, to_device
+from .tensors import collate_samples, denormalize, to_device, evaluation_targets
 
 
 def seed_everything(seed, threads=1):
+    # Must precede CUDA initialization; never weaken deterministic algorithms.
+    # CPU runs are unaffected. An explicit incompatible setting is not silently
+    # overwritten, because that would misrepresent the caller's execution setup.
+    workspace = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if workspace not in {":4096:8", ":16:8"}:
+        raise ValueError("Deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG=:4096:8 or :16:8 before CUDA initialization")
     random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
@@ -63,34 +72,61 @@ def _check_options(options):
         raise ValueError("Keep positive variance regularization to avoid collapse")
 
 
+def _check_dataset_options(options, manifest):
+    config = options.get("dataset")
+    if config is None:
+        return
+    for key in ("train_circuits", "ood_circuits"):
+        if sorted(config.get(key, [])) != manifest[key]:
+            raise ValueError(f"Config {key} differs from persisted manifest; create an explicit new experiment")
+    for key, default in (("split_ratios", [.8, .1, .1]), ("split_seed", 17), ("finetune_label_fraction", 1.)):
+        if config.get(key, default) != manifest[key]:
+            raise ValueError(f"Config {key} differs from persisted manifest")
+
+
 def _provenance(dataset, manifest, options):
-    return {"checkpoint_version": 1, "model_config": options["model"],
+    return {"checkpoint_version": 2, "model_config": options["model"],
             "options": copy.deepcopy(options), "manifest": copy.deepcopy(manifest),
             "input_op_fingerprint": input_op_fingerprint(dataset),
             "partition_fingerprint": partition_fingerprint(manifest),
             "synthetic": bool(dataset.get("metadata", {}).get("synthetic", dataset.get("synthetic", False))),
             "environment": {"python": platform.python_version(), "torch": str(torch.__version__)},
-            "architecture": "device-token_zero-sim-inspired_shared-op-mlp_metric-query-transformer"}
+            "architecture": "shared-structure-prefix_direct-device-op-alignment_v2",
+            "shared_structure_layers": options["model"]["encoder_layers"] - options["model"]["cross_layers"]}
 
 
 def pretrain(dataset, manifest, options, output, device="cpu"):
     """Only ID train design inputs/OP are used; validation sees OP, never labels."""
+    started = time.perf_counter()
+    optimizer_steps = 0
     verify_manifest(dataset, manifest)
     _check_options(options)
+    _check_dataset_options(options, manifest)
+    from .states import STATE_FEATURES, validate_op_states
+    state_config = options.get("op_state", {"features": []})
+    validate_op_states(dataset, state_config)
+    state_features = state_config.get("features", [] if state_config.get("mode") == "preserve_only" else STATE_FEATURES)
     tr = options["training"]
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    preprocessing = fit_preprocessor(dataset, manifest, include_performance=False)
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
+        raise ValueError("Refusing to overwrite a different experiment manifest")
+    preprocessing = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
     if "performance" in preprocessing:
         raise AssertionError("Stage 1 must not fit performance normalization")
     encoder = encoder_from_metadata(options["model"], preprocessing)
-    model = JEPAModel(encoder, len(preprocessing["feature_spec"]["op_names"])).to(device)
+    preprocessing["op_state_features"] = list(state_features)
+    model = JEPAModel(encoder, len(preprocessing["feature_spec"]["op_names"]),
+                      len(preprocessing["op_state_features"])).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["pretrain_lr"], weight_decay=tr["weight_decay"])
     train = samples_for_split(dataset, manifest, "train")
     val = samples_for_split(dataset, manifest, "val")
     # An all-OP-missing record is valid raw data but supplies no stage-1 target.
-    observed = lambda s: any(v is not None for d in s["devices"] for v in d.get("op", {}).values())
+    selected_op = preprocessing["feature_spec"]["op_names"]
+    observed = lambda s: any(d.get("op", {}).get(name) is not None for d in s["devices"]
+                             if is_op_target(d) for name in selected_op)
     train_usable, val_usable = [s for s in train if observed(s)], [s for s in val if observed(s)]
     if not train_usable or not val_usable:
         raise ValueError("Both ID train and validation require some observed OP")
@@ -114,6 +150,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.parameters(), tr["grad_clip"], error_if_nonfinite=True)
                         optimizer.step()
+                        optimizer_steps += 1
                 weight = int(valid.sum())
                 count += weight
                 for key, value in {"loss": loss.detach(), **detail}.items():
@@ -134,21 +171,41 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                           "encoder_digest": state_digest(model.encoder),
                           "skipped_all_op_missing": {"train": len(train)-len(train_usable), "val": len(val)-len(val_usable)}}
             torch.save(checkpoint, output / "pretrain_best.pt")
+    selected = load_checkpoint(output / "pretrain_best.pt")
+    selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+                    timings={"pretrain_seconds": time.perf_counter()-started, "supervised_seconds": 0.},
+                    training_cost={"pretrain_optimizer_steps": optimizer_steps, "pretrain_examples": len(train_usable)},
+                    parameter_count={"pretrain_total": sum(p.numel() for p in model.parameters()),
+                                     "encoder": sum(p.numel() for p in model.encoder.parameters())})
+    torch.save(selected, output / "pretrain_best.pt")
     _save_json(output / "pretrain_history.json", history)
-    _save_json(output / "manifest.json", manifest)
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
+        raise ValueError("Refusing to overwrite a different experiment manifest")
+    _save_json(manifest_path, manifest)
     _save_json(output / "preprocessing_stage1.json", preprocessing)
     return str(output / "pretrain_best.pt")
 
 
 def load_checkpoint(path):
-    # Only tensors and basic Python containers. Never unpickle arbitrary objects.
+    # PyTorch <=2.5.1 has CVE-2025-32434 even under weights_only=True.
+    # Guard source-tree runs as well as the declared package dependency.
+    version = str(torch.__version__).partition("+")[0]
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if match is None or tuple(map(int, match.groups())) < (2, 6, 0):
+        raise RuntimeError("Checkpoint loading requires stable PyTorch >=2.6.0 because older weights_only loaders are unsafe")
+    # Only tensors and basic containers; do not load arbitrary pickled objects.
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    if checkpoint.get("checkpoint_version") != 1:
-        raise ValueError("Unsupported checkpoint version")
+    if checkpoint.get("checkpoint_version") != 2:
+        raise ValueError("Incompatible old checkpoint: shared-structure architecture and signed preprocessing require version 2; re-run pretraining")
+    if checkpoint.get("preprocessing", {}).get("preprocessing_version") != 2:
+        raise ValueError("Incompatible preprocessing version; do not reuse old scalers")
     return checkpoint
 
 
 def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
+    started = time.perf_counter()
+    optimizer_steps = 0
     source = load_checkpoint(pretrain_checkpoint)
     if source["stage"] != "pretrain":
         raise ValueError("train_decoder requires a stage-1 checkpoint")
@@ -164,6 +221,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     manifest["dataset_fingerprint"] = dataset_fingerprint(dataset)
     verify_manifest(dataset, manifest)
     _check_options(options)
+    _check_dataset_options(options, manifest)
     if options["model"] != source["model_config"]:
         raise ValueError("Architecture differs from pretraining checkpoint; use the same config")
     tr = options["training"]
@@ -171,10 +229,18 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     prep = copy.deepcopy(source["preprocessing"])
-    supervised_stats = fit_preprocessor(dataset, manifest, include_performance=True)
+    proposed = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
+    if proposed["transform_config"] != prep["transform_config"]:
+        raise ValueError("Normalization config differs from pretraining checkpoint; frozen input/OP transforms cannot change")
+    if options.get("op_state", {}) != source["options"].get("op_state", {}):
+        raise ValueError("OP-state config differs from pretraining checkpoint")
+    supervised_stats = fit_preprocessor(dataset, manifest, include_performance=True, config=source["preprocessing"]["transform_config"])
     prep["performance"] = supervised_stats["performance"]
-    if not all(c > 0 for c in prep["performance"]["count"]):
-        raise ValueError("Every requested metric needs at least one ID-train observation")
+    prep["performance_fitted_sample_ids"] = supervised_stats["performance_fitted_sample_ids"]
+    prep["fit_ids"]["performance"] = supervised_stats["fit_ids"]["performance"]
+    if not any(c > 0 for c in prep["performance"]["count"]):
+        raise ValueError("No requested metric has an observed labeled-train target")
+    unobserved_metrics = [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count]
     encoder = encoder_from_metadata(source["model_config"], prep)
     encoder.load_state_dict(source["encoder_state"], strict=True)
     decoder = make_decoder(encoder.cfg, len(prep["feature_spec"]["metric_names"]))
@@ -186,7 +252,8 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     encoder_parameters = {id(p) for p in model.encoder.parameters()}
     if any(id(p) in encoder_parameters for g in optimizer.param_groups for p in g["params"]):
         raise AssertionError("Encoder parameters entered the stage-2 optimizer")
-    split_rows = {split: samples_for_split(dataset, manifest, split) for split in ("train", "val")}
+    split_rows = {"train": samples_for_split(dataset, manifest, "labeled_train"),
+                  "val": samples_for_split(dataset, manifest, "val")}
     history, best = [], math.inf
     for epoch in range(tr["decoder_epochs"]):
         record = {"epoch": epoch + 1}
@@ -209,6 +276,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.decoder.parameters(), tr["grad_clip"], error_if_nonfinite=True)
                         optimizer.step()
+                        optimizer_steps += 1
                 k = int(mask.sum())
                 total += float(loss.detach()) * k
                 count += k
@@ -230,8 +298,19 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                           "decoder_state": model.decoder.state_dict(), "encoder_digest": frozen_digest,
                           "source_pretrain_digest": source["encoder_digest"],
                           "source_pretrain_dataset_fingerprint": source["manifest"]["dataset_fingerprint"],
+                          "unobserved_training_metrics": unobserved_metrics,
                           "freeze_verified": True}
             torch.save(checkpoint, output / "decoder_best.pt")
+    selected = load_checkpoint(output / "decoder_best.pt")
+    selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+                    timings={"pretrain_seconds": source["timings"]["pretrain_seconds"],
+                             "supervised_seconds": time.perf_counter()-started},
+                    training_cost={**source["training_cost"], "supervised_optimizer_steps": optimizer_steps,
+                                   "labeled_train_examples": len(split_rows["train"])},
+                    parameter_count={"total": sum(p.numel() for p in model.parameters()),
+                                     "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
+                                     "encoder": sum(p.numel() for p in model.encoder.parameters())})
+    torch.save(selected, output / "decoder_best.pt")
     _save_json(output / "decoder_history.json", history)
     _save_json(output / "preprocessing_stage2.json", prep)
     return str(output / "decoder_best.pt")
@@ -254,11 +333,15 @@ def evaluate(dataset, checkpoint_path, split="test", batch_size=32, device="cpu"
         raise AssertionError("Encoder integrity mismatch")
     rows = samples_for_split(dataset, source["manifest"], split)
     predictions, truths, masks, circuits = [], [], [], []
+    normalized_predictions, normalized_targets = [], []
     with torch.no_grad():
         for samples in _batches(rows, batch_size):
             batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True), device)
-            raw = denormalize(model(batch), prep["performance"]).cpu()
-            truth = denormalize(batch["performance"], prep["performance"]).cpu()
+            normalized = model(batch)
+            normalized_predictions.append(normalized.cpu())
+            truth, normalized_truth = evaluation_targets(samples, prep)
+            normalized_targets.append(normalized_truth)
+            raw = denormalize(normalized, prep["performance"]).cpu()
             predictions.append(raw)
             truths.append(truth)
             masks.append(batch["performance_mask"].cpu())
@@ -267,33 +350,86 @@ def evaluate(dataset, checkpoint_path, split="test", batch_size=32, device="cpu"
         raise ValueError(f"No examples in {split}")
     pred, target, mask = map(torch.cat, (predictions, truths, masks))
     report = {"split": split, "synthetic": source["synthetic"], "num_samples": len(rows),
-              "selection_used_ood": False, "encoder_frozen_verified": source["freeze_verified"],
-              "metric_units": "original dataset units; see feature_spec and data provider", "metrics": _metrics(pred, target, mask, prep),
+              "selection_used_ood": False, "has_ood_holdout": bool(source["manifest"].get("ood", [])), "encoder_frozen_verified": source["freeze_verified"],
+              "unobserved_training_metrics": source.get("unobserved_training_metrics", []),
+              "metric_units": "original dataset units; see feature_spec and data provider", "metrics": _metrics(pred, target, mask, prep, torch.cat(normalized_predictions), torch.cat(normalized_targets)),
               "by_circuit": {}}
     for circuit in sorted(set(circuits)):
         selected = torch.tensor([c == circuit for c in circuits])
-        report["by_circuit"][circuit] = _metrics(pred[selected], target[selected], mask[selected], prep)
-    report["predictions"] = [{"sample_id": s["sample_id"], "circuit_id": s["circuit_id"],
-                               "prediction": {name: float(pred[i, j]) for j, name in enumerate(prep["feature_spec"]["metric_names"])}}
-                              for i, s in enumerate(rows)]
+        report["by_circuit"][circuit] = _metrics(pred[selected], target[selected], mask[selected], prep, torch.cat(normalized_predictions)[selected], torch.cat(normalized_targets)[selected])
+    report.update(report_provenance(source, dataset, rows))
+    report["predictions"] = prediction_records(pred, target, mask, torch.cat(normalized_predictions),
+                                               torch.cat(normalized_targets), rows, prep)
     if output:
         _save_json(output, report)
     return report
 
 
-def _metrics(pred, target, mask, prep):
+def _json_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def report_provenance(source, dataset, rows):
+    """Shared report contract for all three modes, including comparison guards."""
+    prep, manifest = source["preprocessing"], source["manifest"]
+    target_digest = _json_digest({"metric_names": prep["feature_spec"]["metric_names"],
+                                  "statistics": prep["performance"]})
+    performance_digest = _json_digest([{ "sample_id": row["sample_id"], "performance": row["performance"]}
+                                       for row in sorted(dataset["samples"], key=lambda r: r["sample_id"])])
+    mode = source.get("mode", "jepa_zerosim")
+    backend = source.get("backend", "shared_structure_jepa_v2")
+    timings = source.get("timings", {"pretrain_seconds": 0., "supervised_seconds": 0.})
+    provenance = {
+        "mode": mode, "backend": backend, "seed": source["options"]["training"]["seed"],
+        "partition_fingerprint": source["partition_fingerprint"],
+        "input_op_fingerprint": source["input_op_fingerprint"],
+        "performance_fingerprint": performance_digest, "target_scaler_digest": target_digest,
+        "preprocessing_digest": _json_digest(prep),
+        "input_transform_digest": _json_digest({"parameters": prep["parameters"],
+            "device_vocab": prep["device_vocab"],
+            "parameter_names": prep["feature_spec"]["parameter_names"],
+            "terminal_names": prep["feature_spec"]["terminal_names"]}),
+        "labeled_train_ids": manifest["labeled_train"],
+        "train_ids": manifest["train"], "training_config": source["options"]["training"],
+        "model_config": source["model_config"],
+        "parameter_count": source.get("parameter_count", {}), "timing": timings,
+        "training_cost": source.get("training_cost", {}),
+    }
+    return {"mode": mode, "backend": backend, "seed": provenance["seed"],
+            "data_fingerprint": manifest["dataset_fingerprint"],
+            "partition_fingerprint": source["partition_fingerprint"],
+            "metric_preprocessing_fingerprint": target_digest,
+            "labeled_train_ids": manifest["labeled_train"], "evaluation_ids": [r["sample_id"] for r in rows],
+            "metric_names": prep["feature_spec"]["metric_names"], "timings": timings,
+            "provenance": provenance}
+
+
+def prediction_records(pred, target, mask, normalized_pred, normalized_target, rows, prep):
+    names = prep["feature_spec"]["metric_names"]
+    return [{"sample_id": row["sample_id"], "circuit_id": row["circuit_id"],
+             "prediction": {name: float(pred[i, j]) for j, name in enumerate(names)},
+             "target": {name: row["performance"].get(name) if bool(mask[i, j]) else None for j, name in enumerate(names)},
+             "normalized_prediction": {name: float(normalized_pred[i, j]) for j, name in enumerate(names)},
+             "normalized_target": {name: float(normalized_target[i, j]) if bool(mask[i, j]) else None for j, name in enumerate(names)}}
+            for i, row in enumerate(rows)]
+
+
+def _metrics(pred, target, mask, prep, normalized_pred=None, normalized_target=None):
+    # Use the same numerical metric implementation as standalone comparison.
+    from .comparison import regression_metrics
+    from .data import transform_value
     result = {}
     for j, name in enumerate(prep["feature_spec"]["metric_names"]):
         selected = mask[:, j]
-        count = int(selected.sum())
-        if not count:
-            result[name] = {"count": 0, "mae": None, "rmse": None, "r2": None}
-            continue
-        y, p = target[selected, j].double(), pred[selected, j].double()
-        errors = p - y
-        denominator = ((y - y.mean()) ** 2).sum()
-        result[name] = {"count": count, "mae": float(errors.abs().mean()),
-                        "rmse": float(errors.square().mean().sqrt()),
-                        "r2": float(1 - errors.square().sum() / denominator) if count > 1 and denominator > 0 else None,
-                        "normalized_rmse": float(errors.square().mean().sqrt()) / prep["performance"]["std"][j]}
+        ys = target[selected, j].double().tolist()
+        ps = pred[selected, j].double().tolist()
+        metric = regression_metrics(ys, ps)
+        if normalized_pred is not None and normalized_target is not None:
+            normalized_ys = normalized_target[selected, j].double().tolist()
+            normalized_ps = normalized_pred[selected, j].double().tolist()
+        else:
+            normalized_ys = [transform_value(y, prep["performance"], j) for y in ys]
+            normalized_ps = [transform_value(p, prep["performance"], j) for p in ps]
+        metric["normalized_rmse"] = regression_metrics(normalized_ys, normalized_ps)["rmse"]
+        result[name] = metric
     return result

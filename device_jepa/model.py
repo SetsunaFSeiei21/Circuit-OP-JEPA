@@ -25,8 +25,8 @@ class ModelConfig:
     def __post_init__(self):
         if self.dim < 2 or self.heads < 1 or self.dim % self.heads:
             raise ValueError("dim must be >=2 and divisible by heads")
-        if not 1 <= self.cross_layers <= self.encoder_layers:
-            raise ValueError("At least one parameter cross-attention layer is required")
+        if not 1 <= self.cross_layers < self.encoder_layers:
+            raise ValueError("Require >=1 shared structure layer followed by >=1 parameter-fusion layer")
         if self.decoder_layers < 1 or self.max_devices < 1:
             raise ValueError("decoder_layers and max_devices must be positive")
         if not 0 <= self.dropout < 1:
@@ -60,75 +60,47 @@ class EncoderBlock(nn.Module):
         return x * valid.unsqueeze(-1)
 
 
-class DeviceEncoder(nn.Module):
-    """Return [graph token, every device token], never a pooled-only memory."""
-    def __init__(self, cfg, num_types, num_parameters, num_terminals):
+class StructureEncoder(nn.Module):
+    """Entire pure-structure prefix before the first parameter-fusion layer.
+
+    Consumes only type, position, connectivity/terminal and port metadata.
+    Design parameters, OP values, states and labels are deliberately inaccessible.
+    """
+    def __init__(self, cfg, num_types, num_terminals):
         super().__init__()
         self.cfg = cfg
-        self.num_parameters = num_parameters
         self.type_embedding = nn.Embedding(num_types, cfg.dim, padding_idx=0)
         self.position_embedding = nn.Embedding(cfg.max_devices, cfg.dim)
         self.graph_token = nn.Parameter(torch.randn(1, 1, cfg.dim) * 0.02)
-        # Named feature embeddings disambiguate a zero W from a zero L.
-        self.parameter_names = nn.Embedding(num_parameters, cfg.dim)
-        self.parameter_value = nn.Linear(1, cfg.dim)
-        self.null_parameter = nn.Parameter(torch.zeros(1, 1, cfg.dim))
         self.port_projection = nn.Linear(num_terminals, cfg.dim, bias=False)
         self.role_bias = nn.Linear(num_terminals ** 2, cfg.heads, bias=False) if cfg.terminal_bias else None
-        self.blocks = nn.ModuleList([
-            EncoderBlock(cfg, cross=(i >= cfg.encoder_layers - cfg.cross_layers))
-            for i in range(cfg.encoder_layers)
-        ])
-        self.output_norm = nn.LayerNorm(cfg.dim)
-        self.output_projection = nn.Linear(cfg.dim, cfg.dim, bias=False)
+        self.blocks = nn.ModuleList([EncoderBlock(cfg, cross=False)
+                                     for _ in range(cfg.encoder_layers - cfg.cross_layers)])
 
     def forward(self, batch):
-        types, params, observed = batch["device_types"], batch["parameters"], batch["parameter_mask"]
-        valid_devices = batch["device_mask"]
+        types, devices = batch["device_types"], batch["device_mask"]
         b, n = types.shape
         if n > self.cfg.max_devices:
             raise ValueError(f"{n} devices exceed max_devices={self.cfg.max_devices}; no truncation is allowed")
-        if params.shape != (b, n, self.num_parameters):
-            raise ValueError("Parameter schema does not match encoder")
         pos = self.position_embedding(torch.arange(n, device=types.device))[None]
         nodes = self.type_embedding(types) * self.cfg.dim ** 0.5 + pos
-        nodes = nodes + self.port_projection(batch["port_roles"])
-        nodes = nodes * valid_devices.unsqueeze(-1)
+        nodes = (nodes + self.port_projection(batch["port_roles"])) * devices.unsqueeze(-1)
         x = torch.cat([self.graph_token.expand(b, -1, -1), nodes], dim=1)
-        valid = torch.cat([torch.ones(b, 1, dtype=torch.bool, device=types.device), valid_devices], 1)
-        # Invalid numerical entries are already zeroed by the collator; mask again
-        # here so a caller cannot accidentally feed missing-value garbage.
-        safe_params = torch.where(observed, params, torch.zeros_like(params))
-        p = self.parameter_value(safe_params.unsqueeze(-1))
-        p = p + self.parameter_names.weight[None, None]
-        p = p.reshape(b, n * self.num_parameters, self.cfg.dim)
-        p = torch.cat([p, self.null_parameter.expand(b, -1, -1)], dim=1)
-        cross_allowed = torch.zeros(b, n + 1, n * self.num_parameters + 1,
-                                    dtype=torch.bool, device=types.device)
-        live_params = observed & valid_devices.unsqueeze(-1)
-        cross_allowed[:, 0, :-1] = live_params.flatten(1)
-        for i in range(n):
-            cross_allowed[:, i + 1, i * self.num_parameters:(i + 1) * self.num_parameters] = live_params[:, i]
-        # A null token is visible only for rows without a real parameter. This
-        # prevents all-masked attention NaNs for passive/missing/padded devices.
-        cross_allowed[:, :, -1] = ~cross_allowed[:, :, :-1].any(-1)
-        cross_mask = self._mask(cross_allowed)
+        valid = torch.cat([torch.ones(b, 1, dtype=torch.bool, device=types.device), devices], 1)
         local = torch.ones(b, n + 1, n + 1, dtype=torch.bool, device=types.device)
         local[:, 1:, 1:] = batch["adjacency"] | torch.eye(n, dtype=torch.bool, device=types.device)[None]
         local &= valid[:, None, :]
         global_allowed = valid[:, None, :].expand(-1, n + 1, -1)
         bias = None
         if self.role_bias is not None:
-            role = self.role_bias(batch["edge_roles"]).permute(0, 3, 1, 2)
             bias = x.new_zeros(b, self.cfg.heads, n + 1, n + 1)
-            bias[:, :, 1:, 1:] = role
+            bias[:, :, 1:, 1:] = self.role_bias(batch["edge_roles"]).permute(0, 3, 1, 2)
+        masks = (self.attention_mask(local, bias), self.attention_mask(global_allowed, bias))
         for i, block in enumerate(self.blocks):
-            mask = self._mask(local if i % 2 == 0 else global_allowed, bias)
-            x = block(x, mask, p, cross_mask, valid)
-        x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
-        return x, ~valid
+            x = block(x, masks[i % 2], None, None, valid)
+        return {"tokens": x, "valid": valid, "self_masks": masks}
 
-    def _mask(self, allowed, bias=None):
+    def attention_mask(self, allowed, bias=None):
         b, q, k = allowed.shape
         out = self.graph_token.new_zeros(b, self.cfg.heads, q, k)
         if bias is not None:
@@ -136,37 +108,110 @@ class DeviceEncoder(nn.Module):
         return out.masked_fill(~allowed[:, None], float("-inf")).reshape(b * self.cfg.heads, q, k)
 
 
-class SharedOPEncoder(nn.Module):
-    """One trainable MLP reused for every device and every circuit.
+class DeviceEncoder(nn.Module):
+    """Input branch: registered shared structure followed by design-only fusion.
 
-    Missing OP values are represented by explicit observed-mask inputs. Entirely
-    unobserved devices are excluded from alignment and all regularizers.
+    Default 6/4 means two shared structure blocks and four design-fusion blocks,
+    preserving the original first-cross-attention boundary rather than adding
+    six new layers. The later parameter-conditioned self-attention is not shared.
     """
-    def __init__(self, num_op_features, dim):
+    def __init__(self, cfg, num_types, num_parameters, num_terminals):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(2 * num_op_features, 2 * dim), nn.GELU(),
-                                 nn.Linear(2 * dim, dim))
+        self.cfg, self.num_parameters = cfg, num_parameters
+        self.structure_encoder = StructureEncoder(cfg, num_types, num_terminals)
+        self.parameter_names = nn.Embedding(num_parameters, cfg.dim)
+        self.parameter_value = nn.Linear(1, cfg.dim)
+        self.null_parameter = nn.Parameter(torch.zeros(1, 1, cfg.dim))
+        self.fusion_blocks = nn.ModuleList([EncoderBlock(cfg, cross=True) for _ in range(cfg.cross_layers)])
+        self.output_norm = nn.LayerNorm(cfg.dim)
+        self.output_projection = nn.Linear(cfg.dim, cfg.dim, bias=False)
 
-    def forward(self, op, mask):
+    @property
+    def graph_token(self):
+        return self.structure_encoder.graph_token
+
+    def forward(self, batch):
+        return self.forward_from_structure(self.structure_encoder(batch), batch)
+
+    def forward_from_structure(self, structure, batch):
+        params, observed = batch["parameters"], batch["parameter_mask"]
+        b, n = batch["device_types"].shape
+        if params.shape != (b, n, self.num_parameters):
+            raise ValueError("Parameter schema does not match encoder")
+        safe_params = torch.where(observed, params, torch.zeros_like(params))
+        p = self.parameter_value(safe_params.unsqueeze(-1)) + self.parameter_names.weight[None, None]
+        p = torch.cat([p.reshape(b, n * self.num_parameters, self.cfg.dim),
+                       self.null_parameter.expand(b, -1, -1)], 1)
+        allowed = torch.zeros(b, n + 1, n * self.num_parameters + 1,
+                              dtype=torch.bool, device=params.device)
+        live = observed & batch["device_mask"].unsqueeze(-1)
+        allowed[:, 0, :-1] = live.flatten(1)
+        for i in range(n):
+            allowed[:, i + 1, i * self.num_parameters:(i + 1) * self.num_parameters] = live[:, i]
+        allowed[:, :, -1] = ~allowed[:, :, :-1].any(-1)
+        cross_mask = self.structure_encoder.attention_mask(allowed)
+        # Do not mutate or detach structure tokens: the other branch consumes
+        # precisely this same dropout realization with its own gradient path.
+        x, valid = structure["tokens"], structure["valid"]
+        offset = len(self.structure_encoder.blocks)
+        for i, block in enumerate(self.fusion_blocks):
+            x = block(x, structure["self_masks"][(offset + i) % 2], p, cross_mask, valid)
+        x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
+        return x, ~valid
+
+
+class SharedOPEncoder(nn.Module):
+    """One device-shared MLP combining shared structure and OP observations.
+
+    Its structure_encoder property is the SAME module object as the input side.
+    The input encoder alone owns registration, avoiding duplicate state entries.
+    Optional categorical state values/masks bypass numeric normalization entirely.
+    """
+    def __init__(self, structure_encoder, num_op_features, num_state_features=0):
+        super().__init__()
+        # Deliberate non-registering reference. The module is registered exactly
+        # once under DeviceEncoder; no copy, EMA, detach or state synchronization.
+        object.__setattr__(self, "_shared_structure", structure_encoder)
+        dim = structure_encoder.cfg.dim
+        self.num_state_features = num_state_features
+        self.net = nn.Sequential(nn.Linear(dim + 2 * num_op_features + 2 * num_state_features, 2 * dim),
+                                 nn.GELU(), nn.Linear(2 * dim, dim))
+
+    @property
+    def structure_encoder(self):
+        return self._shared_structure
+
+    def forward(self, structure_tokens, op, mask, state=None, state_mask=None):
         values = torch.where(mask, op, torch.zeros_like(op))
-        return self.net(torch.cat([values, mask.to(op.dtype)], -1))
+        inputs = [structure_tokens, values, mask.to(op.dtype)]
+        if self.num_state_features:
+            if state is None or state_mask is None or state.shape[-1] != self.num_state_features:
+                raise ValueError("Checkpoint requires explicitly encoded OP state features and masks")
+            inputs.extend([torch.where(state_mask, state, torch.zeros_like(state)), state_mask.to(op.dtype)])
+        return self.net(torch.cat(inputs, -1))
 
 
 class JEPAModel(nn.Module):
-    def __init__(self, encoder, num_op_features):
+    def __init__(self, encoder, num_op_features, num_state_features=0):
         super().__init__()
         self.encoder = encoder
-        d = encoder.cfg.dim
-        self.predictor = nn.Sequential(nn.Linear(d, 2 * d), nn.GELU(), nn.Linear(2 * d, d))
-        self.op_encoder = SharedOPEncoder(num_op_features, d)
+        self.op_encoder = SharedOPEncoder(encoder.structure_encoder, num_op_features, num_state_features)
+
+    @property
+    def structure_encoder(self):
+        return self.encoder.structure_encoder
 
     def forward(self, batch):
-        memory, _ = self.encoder(batch)
-        predicted = self.predictor(memory[:, 1:])
-        target = self.op_encoder(batch["op"], batch["op_mask"])
-        valid = batch["device_mask"] & batch["op_mask"].any(-1)
-        # Both branches are trainable by design. Not an EMA/frozen teacher.
-        return predicted, target, valid
+        # Exactly one shared forward, including one shared dropout realization.
+        structure = self.structure_encoder(batch)
+        memory, _ = self.encoder.forward_from_structure(structure, batch)
+        target = self.op_encoder(structure["tokens"][:, 1:], batch["op"], batch["op_mask"],
+                                 batch.get("op_state"), batch.get("op_state_mask"))
+        eligible = batch.get("op_target_mask", batch["device_mask"])
+        valid = batch["device_mask"] & eligible & batch["op_mask"].any(-1)
+        # Direct hidden alignment. Both paths backpropagate into the same Sθ.
+        # No predictor, EMA, teacher copy or stop-gradient exists.
+        return memory[:, 1:], target, valid
 
 
 class MetricQueryDecoder(nn.Module):

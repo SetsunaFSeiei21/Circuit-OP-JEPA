@@ -14,6 +14,7 @@ from device_jepa.data import (
     dataset_fingerprint,
     design_fingerprint,
     fit_preprocessor,
+    is_op_target,
     load_dataset,
     samples_for_split,
     synthetic_dataset,
@@ -208,10 +209,12 @@ class SplitTests(unittest.TestCase):
                 build_manifest(self.dataset, "synthetic_4")
             self.dataset["samples"].remove(duplicate)
 
-    def test_exactly_five_circuits_required(self):
+    def test_arbitrary_circuit_count_supported(self):
         self.dataset["samples"] = [row for row in self.dataset["samples"] if row["circuit_id"] != "synthetic_3"]
-        with self.assertRaisesRegex(ValueError, "exactly five"):
-            build_manifest(self.dataset, "synthetic_4")
+        manifest = build_manifest(self.dataset, "synthetic_4")
+        self.assertEqual(len(manifest["train_circuits"]), 3)
+        self.assertEqual(manifest["schema_version"], 2)
+        verify_manifest(self.dataset, manifest)
 
     def test_minimum_independent_groups_and_fraction_edges(self):
         minimal = synthetic_dataset(3)
@@ -315,11 +318,12 @@ class PreprocessorTests(unittest.TestCase):
             for device in row["devices"]:
                 value = None if counter % 3 == 0 else counter * 1e-12
                 device["op"]["id"] = value
-                if value is not None:
+                if value is not None and is_op_target(device):
                     observed.append(value)
                 counter += 1
         self.refresh_integrity()
-        pp = fit_preprocessor(self.dataset, self.manifest)
+        pp = fit_preprocessor(self.dataset, self.manifest, config={
+            "weighting": "observation", "op": {"id": {"kind": "linear"}}})
         expected_mean = math.fsum(observed) / len(observed)
         expected_std = math.sqrt(math.fsum((value - expected_mean) ** 2 for value in observed) / len(observed))
         self.assertAlmostEqual(pp["op"]["mean"][0] / expected_mean, 1.0, places=14)
@@ -338,14 +342,15 @@ class PreprocessorTests(unittest.TestCase):
         self.assertEqual(pp["op"]["std"][0], 1.0)
         self.assertEqual(pp["op"]["count"][0], 0)
         self.assertEqual(pp["op"]["std"][1], 1.0)
-        self.assertAlmostEqual(pp["op"]["mean"][1] / 3e-15, 1.0)
+        self.assertAlmostEqual(pp["op"]["mean"][1], math.asinh(1.0))
+        self.assertEqual(pp["op"]["asinh_scale"][1], 3e-15)
 
     def test_tiny_units_do_not_underflow_variance(self):
         for row in self.dataset["samples"]:
             for i, device in enumerate(row["devices"]):
                 device["op"]["id"] = (i + 1) * 1e-250
         self.refresh_integrity()
-        pp = fit_preprocessor(self.dataset, self.manifest)
+        pp = fit_preprocessor(self.dataset, self.manifest, config={"op": {"id": {"kind": "linear"}}})
         self.assertGreater(pp["op"]["std"][0], 0)
         self.assertLess(pp["op"]["std"][0], 1e-248)
 

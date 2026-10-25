@@ -1,0 +1,2046 @@
+test_combine_stable_unions_and_duplicate_identity_check (test_adapter.AdapterTests.test_combine_stable_unions_and_duplicate_identity_check) ... ok
+test_combined_scope_rejects_unknown_ids_and_wrong_circuits (test_adapter.AdapterTests.test_combined_scope_rejects_unknown_ids_and_wrong_circuits) ... ok
+test_combined_source_collision_rejected (test_adapter.AdapterTests.test_combined_source_collision_rejected) ... ok
+test_combined_source_ids_are_stable_and_inputs_are_not_mutated (test_adapter.AdapterTests.test_combined_source_ids_are_stable_and_inputs_are_not_mutated) ... ok
+test_complete_import_retains_failed_samples_and_missing_metrics (test_adapter.AdapterTests.test_complete_import_retains_failed_samples_and_missing_metrics) ... ok
+test_cyclic_parameter_definitions_rejected (test_adapter.AdapterTests.test_cyclic_parameter_definitions_rejected) ... ok
+test_duplicate_and_unknown_op_device_rejected (test_adapter.AdapterTests.test_duplicate_and_unknown_op_device_rejected) ... ok
+test_duplicate_json_keys_rejected (test_adapter.AdapterTests.test_duplicate_json_keys_rejected) ... ok
+test_geometry_mismatch_strict_or_reported (test_adapter.AdapterTests.test_geometry_mismatch_strict_or_reported) ... ok
+test_inspection (test_adapter.AdapterTests.test_inspection) ... ok
+test_join_uses_sample_id_and_full_device_name_not_order (test_adapter.AdapterTests.test_join_uses_sample_id_and_full_device_name_not_order) ... ok
+test_legacy_unscoped_combined_sources_are_not_guessed (test_adapter.AdapterTests.test_legacy_unscoped_combined_sources_are_not_guessed) ... ok
+test_m_primitive_and_continuation (test_adapter.AdapterTests.test_m_primitive_and_continuation) ... ok
+test_missing_op_rows_remain_maskable_nulls (test_adapter.AdapterTests.test_missing_op_rows_remain_maskable_nulls) ... ok
+test_model_mismatch_or_orphan_op_rejected (test_adapter.AdapterTests.test_model_mismatch_or_orphan_op_rejected) ... ok
+test_nested_combination_preserves_scopes_and_deduplicates_leaves (test_adapter.AdapterTests.test_nested_combination_preserves_scopes_and_deduplicates_leaves) ... ok
+test_nonfinite_raw_values_become_json_null (test_adapter.AdapterTests.test_nonfinite_raw_values_become_json_null) ... ok
+test_parameters_file_cannot_execute_or_include (test_adapter.AdapterTests.test_parameters_file_cannot_execute_or_include) ... ok
+test_path_and_symlink_escape_rejected (test_adapter.AdapterTests.test_path_and_symlink_escape_rejected) ... ok
+test_raw_signed_op_and_non_mos_targets (test_adapter.AdapterTests.test_raw_signed_op_and_non_mos_targets) ... ok
+test_readonly_hash_provenance_no_file_mutation (test_adapter.AdapterTests.test_readonly_hash_provenance_no_file_mutation) ... ok
+test_state_metadata_is_not_inferred_from_absent_reasons (test_adapter.AdapterTests.test_state_metadata_is_not_inferred_from_absent_reasons) ... ok
+test_unknown_device_model_is_rejected (test_adapter.AdapterTests.test_unknown_device_model_is_rejected) ... ok
+test_unknown_directives_and_transient_sources_rejected (test_adapter.AdapterTests.test_unknown_directives_and_transient_sources_rejected) ... ok
+test_unknown_subcircuit_or_primitive_is_rejected (test_adapter.AdapterTests.test_unknown_subcircuit_or_primitive_is_rejected) ... ok
+test_uses_sample_parameters_not_illustrative_defaults (test_adapter.AdapterTests.test_uses_sample_parameters_not_illustrative_defaults) ... ok
+test_views_cannot_substitute_for_source_tables (test_adapter.AdapterTests.test_views_cannot_substitute_for_source_tables) ... ok
+test_wrong_vector_order_length_is_not_guessed (test_adapter.AdapterTests.test_wrong_vector_order_length_is_not_guessed) ... ok
+test_arithmetic_case_and_suffixes (test_adapter.ExpressionTests.test_arithmetic_case_and_suffixes) ... ok
+test_rejects_duplicate_parameters_and_nonfinite_names (test_adapter.ExpressionTests.test_rejects_duplicate_parameters_and_nonfinite_names) ... ok
+test_rejects_executable_or_unbounded_expressions (test_adapter.ExpressionTests.test_rejects_executable_or_unbounded_expressions) ... ok
+zerosim_device 1/2 train=1.144809 val=0.705893
+zerosim_device 2/2 train=1.106221 val=0.690147
+zerosim_pin 1/2 train=1.294515 val=0.820749
+zerosim_pin 2/2 train=1.234312 val=0.783606
+test_checkpoint_reload_metrics_and_prediction_order (test_baselines.BaselinePipelineTests.test_checkpoint_reload_metrics_and_prediction_order) ... ok
+test_empty_ood_is_reported_without_substitution (test_baselines.BaselinePipelineTests.test_empty_ood_is_reported_without_substitution) ... zerosim_device 1/1 train=1.072134 val=0.807731
+ok
+test_encoder_and_decoder_update_end_to_end (test_baselines.BaselinePipelineTests.test_encoder_and_decoder_update_end_to_end) ... ok
+test_explicit_baseline_epoch_override (test_baselines.BaselinePipelineTests.test_explicit_baseline_epoch_override) ... zerosim_device 1/1 train=1.144809 val=0.705893
+ok
+test_inputs_dataset_manifest_options_and_scalers_are_unchanged (test_baselines.BaselinePipelineTests.test_inputs_dataset_manifest_options_and_scalers_are_unchanged) ... ok
+test_invalid_mode_batch_size_and_provenance_are_rejected (test_baselines.BaselinePipelineTests.test_invalid_mode_batch_size_and_provenance_are_rejected) ... ok
+test_op_and_state_changes_do_not_change_learned_weights (test_baselines.BaselinePipelineTests.test_op_and_state_changes_do_not_change_learned_weights) ... zerosim_device 1/2 train=1.144809 val=0.705893
+zerosim_device 2/2 train=1.106221 val=0.690147
+zerosim_pin 1/2 train=1.294515 val=0.820749
+zerosim_pin 2/2 train=1.234312 val=0.783606
+ok
+test_optional_terminal_bias_is_explicit (test_baselines.BaselinePipelineTests.test_optional_terminal_bias_is_explicit) ... zerosim_pin 1/1 train=1.124730 val=0.713271
+ok
+test_report_contract_and_selected_validation_epoch (test_baselines.BaselinePipelineTests.test_report_contract_and_selected_validation_epoch) ... ok
+test_signed_target_transform_metrics_and_json_round_trip (test_baselines.BaselinePipelineTests.test_signed_target_transform_metrics_and_json_round_trip) ... zerosim_pin 1/1 train=1.288439 val=0.849927
+ok
+test_budget_raises_without_truncation (test_baselines.PinTensorizationTests.test_budget_raises_without_truncation) ... ok
+test_canonical_order_ignores_incoming_record_order (test_baselines.PinTensorizationTests.test_canonical_order_ignores_incoming_record_order) ... ok
+test_empty_batch_and_invalid_vocab_rejected (test_baselines.PinTensorizationTests.test_empty_batch_and_invalid_vocab_rejected) ... ok
+test_no_op_or_state_fields_are_consulted (test_baselines.PinTensorizationTests.test_no_op_or_state_fields_are_consulted) ... ok
+test_node_order_geometry_and_parameter_repetition (test_baselines.PinTensorizationTests.test_node_order_geometry_and_parameter_repetition) ... ok
+test_padding_null_parameters_and_missing_labels_stay_finite (test_baselines.PinTensorizationTests.test_padding_null_parameters_and_missing_labels_stay_finite) ... ok
+test_train_only_vocabulary_unknown_and_padding_are_distinct (test_baselines.PinTensorizationTests.test_train_only_vocabulary_unknown_and_padding_are_distinct) ... ok
+test_allow_only_intended_pin_architecture_differences (test_comparison.ComparisonTests.test_allow_only_intended_pin_architecture_differences) ... ok
+test_extreme_finite_errors_do_not_underflow_or_overflow_rmse (test_comparison.ComparisonTests.test_extreme_finite_errors_do_not_underflow_or_overflow_rmse) ... ok
+test_matching_seeds_and_separate_splits (test_comparison.ComparisonTests.test_matching_seeds_and_separate_splits) ... ok
+test_reject_architecture_mismatch_across_modes (test_comparison.ComparisonTests.test_reject_architecture_mismatch_across_modes) ... ok
+test_reject_architecture_mismatch_within_mode (test_comparison.ComparisonTests.test_reject_architecture_mismatch_within_mode) ... ok
+test_reject_different_targets_ids_and_duplicate_reports (test_comparison.ComparisonTests.test_reject_different_targets_ids_and_duplicate_reports) ... ok
+test_reject_duplicate_ids_and_missing_normalization (test_comparison.ComparisonTests.test_reject_duplicate_ids_and_missing_normalization) ... ok
+test_reject_mismatch (test_comparison.ComparisonTests.test_reject_mismatch) ... ok
+test_reject_missing_modes_and_seeds (test_comparison.ComparisonTests.test_reject_missing_modes_and_seeds) ... ok
+test_reject_supervised_budget_mismatch (test_comparison.ComparisonTests.test_reject_supervised_budget_mismatch) ... ok
+test_statistics_and_missing (test_comparison.ComparisonTests.test_statistics_and_missing) ... ok
+test_unrepresentable_report_value_raises_explicitly (test_comparison.ComparisonTests.test_unrepresentable_report_value_raises_explicitly) ... ok
+test_bad_schema_rejected (test_data.DatasetTests.test_bad_schema_rejected) ... ok
+test_duplicate_ids_rejected (test_data.DatasetTests.test_duplicate_ids_rejected) ... ok
+test_duplicate_json_keys_rejected (test_data.DatasetTests.test_duplicate_json_keys_rejected) ... ok
+test_feature_order_and_names_must_be_valid (test_data.DatasetTests.test_feature_order_and_names_must_be_valid) ... ok
+test_load_round_trip_preserves_metadata (test_data.DatasetTests.test_load_round_trip_preserves_metadata) ... ok
+test_missing_observations_can_be_null_or_omitted (test_data.DatasetTests.test_missing_observations_can_be_null_or_omitted) ... ok
+test_nonfinite_and_boolean_measurements_rejected (test_data.DatasetTests.test_nonfinite_and_boolean_measurements_rejected) ... ok
+test_nonfinite_context_rejected (test_data.DatasetTests.test_nonfinite_context_rejected) ... ok
+test_synthetic_minimum_and_seed_validation (test_data.DatasetTests.test_synthetic_minimum_and_seed_validation) ... ok
+test_synthetic_schema_and_repeatability (test_data.DatasetTests.test_synthetic_schema_and_repeatability) ... ok
+test_terminals_ports_and_status_validation (test_data.DatasetTests.test_terminals_ports_and_status_validation) ... ok
+test_unknown_features_rejected (test_data.DatasetTests.test_unknown_features_rejected) ... ok
+test_varying_context_is_rejected_without_context_model_features (test_data.DatasetTests.test_varying_context_is_rejected_without_context_model_features) ... ok
+test_absent_and_constant_features (test_data.PreprocessorTests.test_absent_and_constant_features) ... ok
+test_exact_population_statistics_and_missing_values (test_data.PreprocessorTests.test_exact_population_statistics_and_missing_values) ... ok
+test_preprocessor_serializes_without_nan_and_does_not_alias_spec (test_data.PreprocessorTests.test_preprocessor_serializes_without_nan_and_does_not_alias_spec) ... ok
+test_stage_one_has_no_performance_statistics_or_label_dependence (test_data.PreprocessorTests.test_stage_one_has_no_performance_statistics_or_label_dependence) ... ok
+test_tiny_units_do_not_underflow_variance (test_data.PreprocessorTests.test_tiny_units_do_not_underflow_variance) ... ok
+test_train_only_vocabulary_and_statistics (test_data.PreprocessorTests.test_train_only_vocabulary_and_statistics) ... ok
+test_arbitrary_circuit_count_supported (test_data.SplitTests.test_arbitrary_circuit_count_supported) ... ok
+test_bad_fractions_seed_and_circuit (test_data.SplitTests.test_bad_fractions_seed_and_circuit) ... ok
+test_cross_circuit_duplicates_rejected_even_if_both_id (test_data.SplitTests.test_cross_circuit_duplicates_rejected_even_if_both_id) ... ok
+test_duplicate_fingerprint_ignores_labels_and_identifiers (test_data.SplitTests.test_duplicate_fingerprint_ignores_labels_and_identifiers) ... ok
+test_exact_four_id_one_ood_and_full_partition (test_data.SplitTests.test_exact_four_id_one_ood_and_full_partition) ... ok
+test_group_split_tampering_rejected (test_data.SplitTests.test_group_split_tampering_rejected) ... ok
+test_minimum_independent_groups_and_fraction_edges (test_data.SplitTests.test_minimum_independent_groups_and_fraction_edges) ... ok
+test_ports_and_context_are_part_of_fingerprint (test_data.SplitTests.test_ports_and_context_are_part_of_fingerprint) ... ok
+test_reordering_is_deterministic (test_data.SplitTests.test_reordering_is_deterministic) ... ok
+test_same_design_conditions_and_transitive_groups_stay_together (test_data.SplitTests.test_same_design_conditions_and_transitive_groups_stay_together) ... ok
+test_seed_changes_assignments (test_data.SplitTests.test_seed_changes_assignments) ... ok
+test_split_accessor_uses_manifest_order (test_data.SplitTests.test_split_accessor_uses_manifest_order) ... ok
+test_stale_fingerprint_rejected (test_data.SplitTests.test_stale_fingerprint_rejected) ... ok
+test_unknown_duplicate_omitted_and_wrong_circuit_rejected (test_data.SplitTests.test_unknown_duplicate_omitted_and_wrong_circuit_rejected) ... ok
+pretrain 1/1 train=36.481533 val=36.272617
+decoder 1/1 train=1.067780 val=0.928898
+zerosim_pin 1/1 train=1.283268 val=1.072021
+zerosim_device 1/1 train=1.101232 val=0.928595
+test_device_evaluation_raw_precision (test_evaluation_precision.EvaluationPathsPrecisionTests.test_device_evaluation_raw_precision) ... ok
+test_jepa_evaluation_raw_precision (test_evaluation_precision.EvaluationPathsPrecisionTests.test_jepa_evaluation_raw_precision) ... ok
+test_pin_evaluation_raw_precision (test_evaluation_precision.EvaluationPathsPrecisionTests.test_pin_evaluation_raw_precision) ... ok
+test_linear_offset_keeps_small_variation (test_evaluation_precision.PhysicalPrecisionTests.test_linear_offset_keeps_small_variation) ... ok
+test_log_space_inverse_avoids_unscaled_float64_overflow (test_evaluation_precision.PhysicalPrecisionTests.test_log_space_inverse_avoids_unscaled_float64_overflow) ... ok
+test_metrics_match_raw_records_for_high_offset_low_variance (test_evaluation_precision.PhysicalPrecisionTests.test_metrics_match_raw_records_for_high_offset_low_variance) ... ok
+test_original_truth_and_normalized_truth_are_double (test_evaluation_precision.PhysicalPrecisionTests.test_original_truth_and_normalized_truth_are_double) ... ok
+test_scaled_sinh_stays_finite_when_float32_sinh_overflows (test_evaluation_precision.PhysicalPrecisionTests.test_scaled_sinh_stays_finite_when_float32_sinh_overflows) ... ok
+test_tiny_scale_is_not_cast_to_float32_zero (test_evaluation_precision.PhysicalPrecisionTests.test_tiny_scale_is_not_cast_to_float32_zero) ... ok
+test_unrepresentable_inverse_raises_not_clips (test_evaluation_precision.PhysicalPrecisionTests.test_unrepresentable_inverse_raises_not_clips) ... ok
+test_cuda_bad_workspace_rejected_before_seeding (test_evaluation_precision.SafeRuntimeTests.test_cuda_bad_workspace_rejected_before_seeding) ... ok
+test_cuda_deterministic_workspace_default_set_before_seeding (test_evaluation_precision.SafeRuntimeTests.test_cuda_deterministic_workspace_default_set_before_seeding) ... ok
+test_cuda_explicit_supported_workspace_preserved (test_evaluation_precision.SafeRuntimeTests.test_cuda_explicit_supported_workspace_preserved) ... ok
+test_patched_torch_version_keeps_weights_only (test_evaluation_precision.SafeRuntimeTests.test_patched_torch_version_keeps_weights_only) ... ok
+test_unsafe_torch_version_rejected_before_deserialization (test_evaluation_precision.SafeRuntimeTests.test_unsafe_torch_version_rejected_before_deserialization) ... ok
+test_all_missing_parameters_finite (test_model.ModelTests.test_all_missing_parameters_finite) ... ok
+test_collapse_is_penalized (test_model.ModelTests.test_collapse_is_penalized) ... ok
+test_decoder_consumes_device_memory (test_model.ModelTests.test_decoder_consumes_device_memory) ... ok
+test_frozen_encoder_stays_eval_and_bit_identical (test_model.ModelTests.test_frozen_encoder_stays_eval_and_bit_identical) ... ok
+test_full_memory_not_pooled (test_model.ModelTests.test_full_memory_not_pooled) ... ok
+test_input_order_is_canonicalized (test_model.ModelTests.test_input_order_is_canonicalized) ... ok
+test_masked_metric_loss_ignores_missing (test_model.ModelTests.test_masked_metric_loss_ignores_missing) ... ok
+test_missing_values_cannot_poison_outputs (test_model.ModelTests.test_missing_values_cannot_poison_outputs) ... ok
+test_overflow_device_count_raises_not_truncates (test_model.ModelTests.test_overflow_device_count_raises_not_truncates) ... ok
+test_padding_invariance (test_model.ModelTests.test_padding_invariance) ... ok
+test_stage1_trains_both_encoders_without_performance (test_model.ModelTests.test_stage1_trains_both_encoders_without_performance) ... ok
+test_terminal_roles_are_not_collapsed_to_adjacency_only (test_model.ModelTests.test_terminal_roles_are_not_collapsed_to_adjacency_only) ... ok
+test_unknown_device_is_not_padding (test_model.ModelTests.test_unknown_device_is_not_padding) ... ok
+test_variable_feature_and_metric_dimensions (test_model.ModelTests.test_variable_feature_and_metric_dimensions) ... ok
+test_additions_fail_existing_manifest_without_resplit (test_normalization.ExplicitSplitTests.test_additions_fail_existing_manifest_without_resplit) ... ok
+test_explicit_multiple_ood_and_per_circuit_ratios (test_normalization.ExplicitSplitTests.test_explicit_multiple_ood_and_per_circuit_ratios) ... ok
+test_explicit_zero_holdout_ratios (test_normalization.ExplicitSplitTests.test_explicit_zero_holdout_ratios) ... ok
+test_invalid_explicit_config (test_normalization.ExplicitSplitTests.test_invalid_explicit_config) ... ok
+test_label_subset_tampering_rejected_and_in_provenance (test_normalization.ExplicitSplitTests.test_label_subset_tampering_rejected_and_in_provenance) ... ok
+test_single_circuit_requires_explicit_empty_ood (test_normalization.ExplicitSplitTests.test_single_circuit_requires_explicit_empty_ood) ... ok
+test_stable_design_key_grouping_and_grouped_labels (test_normalization.ExplicitSplitTests.test_stable_design_key_grouping_and_grouped_labels) ... ok
+test_whole_group_split_tampering_rejected (test_normalization.ExplicitSplitTests.test_whole_group_split_tampering_rejected) ... ok
+test_equal_circuit_weighting_not_oversampled_topology (test_normalization.PhysicsNormalizationTests.test_equal_circuit_weighting_not_oversampled_topology) ... ok
+test_extreme_asinh_and_linear_finite_round_trips (test_normalization.PhysicsNormalizationTests.test_extreme_asinh_and_linear_finite_round_trips) ... ok
+test_fixed_and_fitted_per_collection_transform_config (test_normalization.PhysicsNormalizationTests.test_fixed_and_fitted_per_collection_transform_config) ... ok
+test_non_mos_graph_nodes_excluded_unless_explicit_target (test_normalization.PhysicsNormalizationTests.test_non_mos_graph_nodes_excluded_unless_explicit_target) ... ok
+test_ood_mutation_cannot_change_transform_or_vocabulary (test_normalization.PhysicsNormalizationTests.test_ood_mutation_cannot_change_transform_or_vocabulary) ... ok
+test_performance_only_labeled_train_and_stage_one_all_train (test_normalization.PhysicsNormalizationTests.test_performance_only_labeled_train_and_stage_one_all_train) ... ok
+test_raw_geometry_preserved_selected_electrical_fields (test_normalization.PhysicsNormalizationTests.test_raw_geometry_preserved_selected_electrical_fields) ... ok
+test_signed_zero_missing_and_round_trip (test_normalization.PhysicsNormalizationTests.test_signed_zero_missing_and_round_trip) ... ok
+test_failure_is_not_reported_as_partial_success (test_orchestration.OrchestrationTests.test_failure_is_not_reported_as_partial_success) ... + /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa split --data /tmp/tmp9fi5fva1/data.json --config /tmp/tmp9fi5fva1/experiment/config.json --output /tmp/tmp9fi5fva1/experiment/manifest.json
+ok
+test_three_modes_automatically_finish_with_comparison (test_orchestration.OrchestrationTests.test_three_modes_automatically_finish_with_comparison) ... + /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa split --data /tmp/tmpals6dhmn/data.json --config /tmp/tmpals6dhmn/experiment/config.json --output /tmp/tmpals6dhmn/experiment/manifest.json
+{"train": 40, "val": 4, "test": 4, "ood": 12, "labeled_train": 40}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa train_baseline --mode zerosim_pin --data /tmp/tmpals6dhmn/data.json --config /tmp/tmpals6dhmn/experiment/config_seed_17.json --output /tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17 --device cpu --manifest /tmp/tmpals6dhmn/experiment/manifest.json
+zerosim_pin 1/1 train=1.144463 val=0.831069
+/tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17/zerosim_pin_best.pt
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17/zerosim_pin_best.pt --split test --device cpu --output /tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17/test_report.json
+{
+  "mode": "zerosim_pin",
+  "backend": "cleanroom_zerosim_pin",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_0_0000",
+    "synthetic_1_0009",
+    "synthetic_2_0002",
+    "synthetic_3_0005"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.0,
+    "supervised_seconds": 0.18738428699998622
+  },
+  "provenance": {
+    "mode": "zerosim_pin",
+    "backend": "cleanroom_zerosim_pin",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "c1cab032e583f3b654bee9b906627825c806cde61997dfdab1eb088f841f6d00",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": false
+    },
+    "parameter_count": {
+      "total": 38337,
+      "trainable": 38337,
+      "encoder": 24352,
+      "decoder": 13985
+    },
+    "timing": {
+      "pretrain_seconds": 0.0,
+      "supervised_seconds": 0.18738428699998622
+    },
+    "training_cost": {
+      "labeled_train_count": 40,
+      "input_scaler_train_count": 40,
+      "total_parameter_count": 38337,
+      "trainable_parameter_count": 38337,
+      "encoder_parameter_count": 24352,
+      "decoder_parameter_count": 13985,
+      "optimizer_steps": 3,
+      "epochs": 1,
+      "pretrain_epochs": 0,
+      "learning_rate": 0.001,
+      "batch_size": 16,
+      "seed": 17,
+      "wall_time_seconds": 0.18738428699998622,
+      "selected_epoch": 1,
+      "supervised_optimizer_steps": 3,
+      "pretrain_optimizer_steps": 0,
+      "labeled_train_examples": 40
+    }
+  },
+  "split": "test",
+  "synthetic": true,
+  "num_samples": 4,
+  "status": "evaluated",
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen": false,
+  "encoder_frozen_verified": false,
+  "op_inputs_used": false,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 3,
+      "mae": 0.1990339964672326,
+      "rmse": 0.26437915621212976,
+      "r2": -0.12122181615202288,
+      "normalized_rmse": 0.9837956273893387
+    },
+    "power": {
+      "count": 4,
+      "mae": 0.0005960044261102487,
+      "rmse": 0.0008057462680546126,
+      "r2": -0.09591075866706733,
+      "normalized_rmse": 1.942674079674105
+    }
+  },
+  "by_circuit": {
+    "synthetic_0": {
+      "gain": {
+        "count": 0,
+        "mae": null,
+        "rmse": null,
+        "r2": null,
+        "normalized_rmse": null
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0003854796874030834,
+        "rmse": 0.0003854796874030834,
+        "r2": null,
+        "normalized_rmse": 0.9294010120169616
+      }
+    },
+    "synthetic_1": {
+      "gain": {
+        "count": 1,
+        "mae": 0.16447225595310244,
+        "rmse": 0.16447225595310244,
+        "r2": null,
+        "normalized_rmse": 0.6120266383772449
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.00014739857087771346,
+        "rmse": 0.00014739857087771346,
+        "r2": null,
+        "normalized_rmse": 0.35538158149524574
+      }
+    },
+    "synthetic_2": {
+      "gain": {
+        "count": 1,
+        "mae": 0.005301065507281377,
+        "rmse": 0.005301065507281377,
+        "r2": null,
+        "normalized_rmse": 0.01972608257507015
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0015227416586536945,
+        "rmse": 0.0015227416586536945,
+        "r2": null,
+        "normalized_rmse": 3.6713676098664645
+      }
+    },
+    "synthetic_3": {
+      "gain": {
+        "count": 1,
+        "mae": 0.42732866794131397,
+        "rmse": 0.42732866794131397,
+        "r2": null,
+        "normalized_rmse": 1.5901558995878478
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0003283977875065033,
+        "rmse": 0.0003283977875065033,
+        "r2": null,
+        "normalized_rmse": 0.7917751467239409
+      }
+    }
+  },
+  "training_cost": {
+    "labeled_train_count": 40,
+    "input_scaler_train_count": 40,
+    "total_parameter_count": 38337,
+    "trainable_parameter_count": 38337,
+    "encoder_parameter_count": 24352,
+    "decoder_parameter_count": 13985,
+    "optimizer_steps": 3,
+    "epochs": 1,
+    "pretrain_epochs": 0,
+    "learning_rate": 0.001,
+    "batch_size": 16,
+    "seed": 17,
+    "wall_time_seconds": 0.18738428699998622,
+    "selected_epoch": 1,
+    "supervised_optimizer_steps": 3,
+    "pretrain_optimizer_steps": 0,
+    "labeled_train_examples": 40
+  },
+  "selection": {
+    "split": "val",
+    "objective": "normalized_performance_mse",
+    "value": 0.8310691714286804
+  },
+  "selected_epoch": 1,
+  "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."
+}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17/zerosim_pin_best.pt --split ood --device cpu --output /tmp/tmpals6dhmn/experiment/zerosim_pin/seed_17/ood_report.json
+{
+  "mode": "zerosim_pin",
+  "backend": "cleanroom_zerosim_pin",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_4_0000",
+    "synthetic_4_0001",
+    "synthetic_4_0002",
+    "synthetic_4_0003",
+    "synthetic_4_0004",
+    "synthetic_4_0005",
+    "synthetic_4_0006",
+    "synthetic_4_0007",
+    "synthetic_4_0008",
+    "synthetic_4_0009",
+    "synthetic_4_0010",
+    "synthetic_4_0011"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.0,
+    "supervised_seconds": 0.18738428699998622
+  },
+  "provenance": {
+    "mode": "zerosim_pin",
+    "backend": "cleanroom_zerosim_pin",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "c1cab032e583f3b654bee9b906627825c806cde61997dfdab1eb088f841f6d00",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": false
+    },
+    "parameter_count": {
+      "total": 38337,
+      "trainable": 38337,
+      "encoder": 24352,
+      "decoder": 13985
+    },
+    "timing": {
+      "pretrain_seconds": 0.0,
+      "supervised_seconds": 0.18738428699998622
+    },
+    "training_cost": {
+      "labeled_train_count": 40,
+      "input_scaler_train_count": 40,
+      "total_parameter_count": 38337,
+      "trainable_parameter_count": 38337,
+      "encoder_parameter_count": 24352,
+      "decoder_parameter_count": 13985,
+      "optimizer_steps": 3,
+      "epochs": 1,
+      "pretrain_epochs": 0,
+      "learning_rate": 0.001,
+      "batch_size": 16,
+      "seed": 17,
+      "wall_time_seconds": 0.18738428699998622,
+      "selected_epoch": 1,
+      "supervised_optimizer_steps": 3,
+      "pretrain_optimizer_steps": 0,
+      "labeled_train_examples": 40
+    }
+  },
+  "split": "ood",
+  "synthetic": true,
+  "num_samples": 12,
+  "status": "evaluated",
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen": false,
+  "encoder_frozen_verified": false,
+  "op_inputs_used": false,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 10,
+      "mae": 0.5819735776811232,
+      "rmse": 0.6393496070167312,
+      "r2": -4.863151775908694,
+      "normalized_rmse": 2.3791185234416528
+    },
+    "power": {
+      "count": 12,
+      "mae": 0.000553994028825134,
+      "rmse": 0.0007582610610739004,
+      "r2": -0.15478596407493717,
+      "normalized_rmse": 1.8281860771517813
+    }
+  },
+  "by_circuit": {
+    "synthetic_4": {
+      "gain": {
+        "count": 10,
+        "mae": 0.5819735776811232,
+        "rmse": 0.6393496070167312,
+        "r2": -4.863151775908694,
+        "normalized_rmse": 2.3791185234416528
+      },
+      "power": {
+        "count": 12,
+        "mae": 0.000553994028825134,
+        "rmse": 0.0007582610610739004,
+        "r2": -0.15478596407493717,
+        "normalized_rmse": 1.8281860771517813
+      }
+    }
+  },
+  "training_cost": {
+    "labeled_train_count": 40,
+    "input_scaler_train_count": 40,
+    "total_parameter_count": 38337,
+    "trainable_parameter_count": 38337,
+    "encoder_parameter_count": 24352,
+    "decoder_parameter_count": 13985,
+    "optimizer_steps": 3,
+    "epochs": 1,
+    "pretrain_epochs": 0,
+    "learning_rate": 0.001,
+    "batch_size": 16,
+    "seed": 17,
+    "wall_time_seconds": 0.18738428699998622,
+    "selected_epoch": 1,
+    "supervised_optimizer_steps": 3,
+    "pretrain_optimizer_steps": 0,
+    "labeled_train_examples": 40
+  },
+  "selection": {
+    "split": "val",
+    "objective": "normalized_performance_mse",
+    "value": 0.8310691714286804
+  },
+  "selected_epoch": 1,
+  "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."
+}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa train_baseline --mode zerosim_device --data /tmp/tmpals6dhmn/data.json --config /tmp/tmpals6dhmn/experiment/config_seed_17.json --output /tmp/tmpals6dhmn/experiment/zerosim_device/seed_17 --device cpu --manifest /tmp/tmpals6dhmn/experiment/manifest.json
+zerosim_device 1/1 train=1.079937 val=0.727894
+/tmp/tmpals6dhmn/experiment/zerosim_device/seed_17/zerosim_device_best.pt
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/zerosim_device/seed_17/zerosim_device_best.pt --split test --device cpu --output /tmp/tmpals6dhmn/experiment/zerosim_device/seed_17/test_report.json
+{
+  "mode": "zerosim_device",
+  "backend": "cleanroom_zerosim_device",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_0_0000",
+    "synthetic_1_0009",
+    "synthetic_2_0002",
+    "synthetic_3_0005"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.0,
+    "supervised_seconds": 0.11539469899980759
+  },
+  "provenance": {
+    "mode": "zerosim_device",
+    "backend": "cleanroom_zerosim_device",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "c1cab032e583f3b654bee9b906627825c806cde61997dfdab1eb088f841f6d00",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": true
+    },
+    "parameter_count": {
+      "total": 38193,
+      "trainable": 38193,
+      "encoder": 24208,
+      "decoder": 13985
+    },
+    "timing": {
+      "pretrain_seconds": 0.0,
+      "supervised_seconds": 0.11539469899980759
+    },
+    "training_cost": {
+      "labeled_train_count": 40,
+      "input_scaler_train_count": 40,
+      "total_parameter_count": 38193,
+      "trainable_parameter_count": 38193,
+      "encoder_parameter_count": 24208,
+      "decoder_parameter_count": 13985,
+      "optimizer_steps": 3,
+      "epochs": 1,
+      "pretrain_epochs": 0,
+      "learning_rate": 0.001,
+      "batch_size": 16,
+      "seed": 17,
+      "wall_time_seconds": 0.11539469899980759,
+      "selected_epoch": 1,
+      "supervised_optimizer_steps": 3,
+      "pretrain_optimizer_steps": 0,
+      "labeled_train_examples": 40
+    }
+  },
+  "split": "test",
+  "synthetic": true,
+  "num_samples": 4,
+  "status": "evaluated",
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen": false,
+  "encoder_frozen_verified": false,
+  "op_inputs_used": false,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 3,
+      "mae": 0.2024086248329747,
+      "rmse": 0.2614521015283378,
+      "r2": -0.09653219931254409,
+      "normalized_rmse": 0.9729036053392592
+    },
+    "power": {
+      "count": 4,
+      "mae": 0.0005937891649025665,
+      "rmse": 0.000838467619344191,
+      "r2": -0.1867279627531817,
+      "normalized_rmse": 2.0215660628236525
+    }
+  },
+  "by_circuit": {
+    "synthetic_0": {
+      "gain": {
+        "count": 0,
+        "mae": null,
+        "rmse": null,
+        "r2": null,
+        "normalized_rmse": null
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.00028432280110560047,
+        "rmse": 0.00028432280110560047,
+        "r2": null,
+        "normalized_rmse": 0.6855092699365115
+      }
+    },
+    "synthetic_1": {
+      "gain": {
+        "count": 1,
+        "mae": 0.17567108250979624,
+        "rmse": 0.17567108250979624,
+        "r2": null,
+        "normalized_rmse": 0.6536991996949272
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.00024124088492857192,
+        "rmse": 0.00024124088492857192,
+        "r2": null,
+        "normalized_rmse": 0.5816377098958099
+      }
+    },
+    "synthetic_2": {
+      "gain": {
+        "count": 1,
+        "mae": 0.014417636228369002,
+        "rmse": 0.014417636228369002,
+        "r2": null,
+        "normalized_rmse": 0.05365024868820835
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0016185464745409035,
+        "rmse": 0.0016185464745409035,
+        "r2": null,
+        "normalized_rmse": 3.902355378486717
+      }
+    },
+    "synthetic_3": {
+      "gain": {
+        "count": 1,
+        "mae": 0.4171371557607588,
+        "rmse": 0.4171371557607588,
+        "r2": null,
+        "normalized_rmse": 1.5522317104673167
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.00023104649903519018,
+        "rmse": 0.00023104649903519018,
+        "r2": null,
+        "normalized_rmse": 0.5570587946486025
+      }
+    }
+  },
+  "training_cost": {
+    "labeled_train_count": 40,
+    "input_scaler_train_count": 40,
+    "total_parameter_count": 38193,
+    "trainable_parameter_count": 38193,
+    "encoder_parameter_count": 24208,
+    "decoder_parameter_count": 13985,
+    "optimizer_steps": 3,
+    "epochs": 1,
+    "pretrain_epochs": 0,
+    "learning_rate": 0.001,
+    "batch_size": 16,
+    "seed": 17,
+    "wall_time_seconds": 0.11539469899980759,
+    "selected_epoch": 1,
+    "supervised_optimizer_steps": 3,
+    "pretrain_optimizer_steps": 0,
+    "labeled_train_examples": 40
+  },
+  "selection": {
+    "split": "val",
+    "objective": "normalized_performance_mse",
+    "value": 0.727893590927124
+  },
+  "selected_epoch": 1,
+  "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."
+}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/zerosim_device/seed_17/zerosim_device_best.pt --split ood --device cpu --output /tmp/tmpals6dhmn/experiment/zerosim_device/seed_17/ood_report.json
+{
+  "mode": "zerosim_device",
+  "backend": "cleanroom_zerosim_device",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_4_0000",
+    "synthetic_4_0001",
+    "synthetic_4_0002",
+    "synthetic_4_0003",
+    "synthetic_4_0004",
+    "synthetic_4_0005",
+    "synthetic_4_0006",
+    "synthetic_4_0007",
+    "synthetic_4_0008",
+    "synthetic_4_0009",
+    "synthetic_4_0010",
+    "synthetic_4_0011"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.0,
+    "supervised_seconds": 0.11539469899980759
+  },
+  "provenance": {
+    "mode": "zerosim_device",
+    "backend": "cleanroom_zerosim_device",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "c1cab032e583f3b654bee9b906627825c806cde61997dfdab1eb088f841f6d00",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": true
+    },
+    "parameter_count": {
+      "total": 38193,
+      "trainable": 38193,
+      "encoder": 24208,
+      "decoder": 13985
+    },
+    "timing": {
+      "pretrain_seconds": 0.0,
+      "supervised_seconds": 0.11539469899980759
+    },
+    "training_cost": {
+      "labeled_train_count": 40,
+      "input_scaler_train_count": 40,
+      "total_parameter_count": 38193,
+      "trainable_parameter_count": 38193,
+      "encoder_parameter_count": 24208,
+      "decoder_parameter_count": 13985,
+      "optimizer_steps": 3,
+      "epochs": 1,
+      "pretrain_epochs": 0,
+      "learning_rate": 0.001,
+      "batch_size": 16,
+      "seed": 17,
+      "wall_time_seconds": 0.11539469899980759,
+      "selected_epoch": 1,
+      "supervised_optimizer_steps": 3,
+      "pretrain_optimizer_steps": 0,
+      "labeled_train_examples": 40
+    }
+  },
+  "split": "ood",
+  "synthetic": true,
+  "num_samples": 12,
+  "status": "evaluated",
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen": false,
+  "encoder_frozen_verified": false,
+  "op_inputs_used": false,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 10,
+      "mae": 0.5746534692918859,
+      "rmse": 0.6320525428420087,
+      "r2": -4.730080157526844,
+      "normalized_rmse": 2.351965021892116
+    },
+    "power": {
+      "count": 12,
+      "mae": 0.0005513999599858438,
+      "rmse": 0.0007991055594336949,
+      "r2": -0.2825440559215564,
+      "normalized_rmse": 1.9266631677778918
+    }
+  },
+  "by_circuit": {
+    "synthetic_4": {
+      "gain": {
+        "count": 10,
+        "mae": 0.5746534692918859,
+        "rmse": 0.6320525428420087,
+        "r2": -4.730080157526844,
+        "normalized_rmse": 2.351965021892116
+      },
+      "power": {
+        "count": 12,
+        "mae": 0.0005513999599858438,
+        "rmse": 0.0007991055594336949,
+        "r2": -0.2825440559215564,
+        "normalized_rmse": 1.9266631677778918
+      }
+    }
+  },
+  "training_cost": {
+    "labeled_train_count": 40,
+    "input_scaler_train_count": 40,
+    "total_parameter_count": 38193,
+    "trainable_parameter_count": 38193,
+    "encoder_parameter_count": 24208,
+    "decoder_parameter_count": 13985,
+    "optimizer_steps": 3,
+    "epochs": 1,
+    "pretrain_epochs": 0,
+    "learning_rate": 0.001,
+    "batch_size": 16,
+    "seed": 17,
+    "wall_time_seconds": 0.11539469899980759,
+    "selected_epoch": 1,
+    "supervised_optimizer_steps": 3,
+    "pretrain_optimizer_steps": 0,
+    "labeled_train_examples": 40
+  },
+  "selection": {
+    "split": "val",
+    "objective": "normalized_performance_mse",
+    "value": 0.727893590927124
+  },
+  "selected_epoch": 1,
+  "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."
+}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa pretrain --data /tmp/tmpals6dhmn/data.json --config /tmp/tmpals6dhmn/experiment/config_seed_17.json --output /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17 --device cpu --manifest /tmp/tmpals6dhmn/experiment/manifest.json
+pretrain 1/1 train=25.815153 val=23.691999
+/tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/pretrain_best.pt
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa train_decoder --data /tmp/tmpals6dhmn/data.json --config /tmp/tmpals6dhmn/experiment/config_seed_17.json --output /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17 --device cpu --pretrained /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/pretrain_best.pt
+decoder 1/1 train=1.048224 val=0.713032
+/tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/decoder_best.pt
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/decoder_best.pt --split test --device cpu --output /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/test_report.json
+{
+  "split": "test",
+  "synthetic": true,
+  "num_samples": 4,
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen_verified": true,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 3,
+      "mae": 0.20354796812825593,
+      "rmse": 0.26152093060025755,
+      "r2": -0.09710961466013956,
+      "normalized_rmse": 0.9731597289344853
+    },
+    "power": {
+      "count": 4,
+      "mae": 0.0005935498186025825,
+      "rmse": 0.0008457794815860476,
+      "r2": -0.20751594772157977,
+      "normalized_rmse": 2.0391951426153563
+    }
+  },
+  "by_circuit": {
+    "synthetic_0": {
+      "gain": {
+        "count": 0,
+        "mae": null,
+        "rmse": null,
+        "r2": null,
+        "normalized_rmse": null
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0002660924393213236,
+        "rmse": 0.0002660924393213236,
+        "r2": null,
+        "normalized_rmse": 0.6415554190711474
+      }
+    },
+    "synthetic_1": {
+      "gain": {
+        "count": 1,
+        "mae": 0.17832732461671053,
+        "rmse": 0.17832732461671053,
+        "r2": null,
+        "normalized_rmse": 0.6635834863668041
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.0002593465195188092,
+        "rmse": 0.0002593465195188092,
+        "r2": null,
+        "normalized_rmse": 0.6252908404271209
+      }
+    },
+    "synthetic_2": {
+      "gain": {
+        "count": 1,
+        "mae": 0.01624562876679847,
+        "rmse": 0.01624562876679847,
+        "r2": null,
+        "normalized_rmse": 0.06045249093745876
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.001636541856496758,
+        "rmse": 0.001636541856496758,
+        "r2": null,
+        "normalized_rmse": 3.945742687203491
+      }
+    },
+    "synthetic_3": {
+      "gain": {
+        "count": 1,
+        "mae": 0.4160709510012588,
+        "rmse": 0.4160709510012588,
+        "r2": null,
+        "normalized_rmse": 1.5482641980683585
+      },
+      "power": {
+        "count": 1,
+        "mae": 0.00021221845907343911,
+        "rmse": 0.00021221845907343911,
+        "r2": null,
+        "normalized_rmse": 0.5116639269899874
+      }
+    }
+  },
+  "mode": "jepa_zerosim",
+  "backend": "shared_structure_jepa_v2",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_0_0000",
+    "synthetic_1_0009",
+    "synthetic_2_0002",
+    "synthetic_3_0005"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.14820753299954958,
+    "supervised_seconds": 0.13922924700000294
+  },
+  "provenance": {
+    "mode": "jepa_zerosim",
+    "backend": "shared_structure_jepa_v2",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "8cb75e5965ad795b2a3d7a1874442b972ff461a1c6133d0632addb4e59327b50",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": true
+    },
+    "parameter_count": {
+      "total": 38193,
+      "trainable": 13985,
+      "encoder": 24208
+    },
+    "timing": {
+      "pretrain_seconds": 0.14820753299954958,
+      "supervised_seconds": 0.13922924700000294
+    },
+    "training_cost": {
+      "pretrain_optimizer_steps": 3,
+      "pretrain_examples": 40,
+      "supervised_optimizer_steps": 3,
+      "labeled_train_examples": 40
+    }
+  }
+}
++ /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m device_jepa evaluate --data /tmp/tmpals6dhmn/data.json --checkpoint /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/decoder_best.pt --split ood --device cpu --output /tmp/tmpals6dhmn/experiment/jepa_zerosim/seed_17/ood_report.json
+{
+  "split": "ood",
+  "synthetic": true,
+  "num_samples": 12,
+  "selection_used_ood": false,
+  "has_ood_holdout": true,
+  "encoder_frozen_verified": true,
+  "unobserved_training_metrics": [],
+  "metric_units": "original dataset units; see feature_spec and data provider",
+  "metrics": {
+    "gain": {
+      "count": 10,
+      "mae": 0.5743767010084284,
+      "rmse": 0.6320678241797832,
+      "r2": -4.730357236861075,
+      "normalized_rmse": 2.352021886107505
+    },
+    "power": {
+      "count": 12,
+      "mae": 0.0005516347657322434,
+      "rmse": 0.0008079017459492116,
+      "r2": -0.3109347669117246,
+      "normalized_rmse": 1.9478709899188873
+    }
+  },
+  "by_circuit": {
+    "synthetic_4": {
+      "gain": {
+        "count": 10,
+        "mae": 0.5743767010084284,
+        "rmse": 0.6320678241797832,
+        "r2": -4.730357236861075,
+        "normalized_rmse": 2.352021886107505
+      },
+      "power": {
+        "count": 12,
+        "mae": 0.0005516347657322434,
+        "rmse": 0.0008079017459492116,
+        "r2": -0.3109347669117246,
+        "normalized_rmse": 1.9478709899188873
+      }
+    }
+  },
+  "mode": "jepa_zerosim",
+  "backend": "shared_structure_jepa_v2",
+  "seed": 17,
+  "data_fingerprint": "685bd072db34f89525655c3fa4ad92df319e8199b454ac9ac3f7b7a56543f238",
+  "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+  "metric_preprocessing_fingerprint": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+  "labeled_train_ids": [
+    "synthetic_0_0001",
+    "synthetic_0_0003",
+    "synthetic_0_0004",
+    "synthetic_0_0005",
+    "synthetic_0_0006",
+    "synthetic_0_0007",
+    "synthetic_0_0008",
+    "synthetic_0_0009",
+    "synthetic_0_0010",
+    "synthetic_0_0011",
+    "synthetic_1_0000",
+    "synthetic_1_0001",
+    "synthetic_1_0002",
+    "synthetic_1_0004",
+    "synthetic_1_0005",
+    "synthetic_1_0006",
+    "synthetic_1_0007",
+    "synthetic_1_0008",
+    "synthetic_1_0010",
+    "synthetic_1_0011",
+    "synthetic_2_0000",
+    "synthetic_2_0001",
+    "synthetic_2_0003",
+    "synthetic_2_0004",
+    "synthetic_2_0005",
+    "synthetic_2_0007",
+    "synthetic_2_0008",
+    "synthetic_2_0009",
+    "synthetic_2_0010",
+    "synthetic_2_0011",
+    "synthetic_3_0000",
+    "synthetic_3_0001",
+    "synthetic_3_0002",
+    "synthetic_3_0003",
+    "synthetic_3_0004",
+    "synthetic_3_0006",
+    "synthetic_3_0007",
+    "synthetic_3_0008",
+    "synthetic_3_0009",
+    "synthetic_3_0011"
+  ],
+  "evaluation_ids": [
+    "synthetic_4_0000",
+    "synthetic_4_0001",
+    "synthetic_4_0002",
+    "synthetic_4_0003",
+    "synthetic_4_0004",
+    "synthetic_4_0005",
+    "synthetic_4_0006",
+    "synthetic_4_0007",
+    "synthetic_4_0008",
+    "synthetic_4_0009",
+    "synthetic_4_0010",
+    "synthetic_4_0011"
+  ],
+  "metric_names": [
+    "gain",
+    "power"
+  ],
+  "timings": {
+    "pretrain_seconds": 0.14820753299954958,
+    "supervised_seconds": 0.13922924700000294
+  },
+  "provenance": {
+    "mode": "jepa_zerosim",
+    "backend": "shared_structure_jepa_v2",
+    "seed": 17,
+    "partition_fingerprint": "9d192d3cd84f2571fcefa3f912e48e7d69ae34a436618abeebd2c39c37b6e030",
+    "input_op_fingerprint": "c7ce6f2fdf4afba8ad90bf34d76c80c5369a948c8c3465ae015c5e18e7d28bd7",
+    "performance_fingerprint": "9f3f4257a02aa93d73534a49143130806545027438844424b033f56556b5a41c",
+    "target_scaler_digest": "dd59dd69ac8ff5cf4072f6b3a9728eb6cc2a292bb9f5eab1f8b56da257bfe548",
+    "preprocessing_digest": "8cb75e5965ad795b2a3d7a1874442b972ff461a1c6133d0632addb4e59327b50",
+    "input_transform_digest": "22160e9a5c31cb90c28cc7af370772a415838e19b84fcbbd9b9f339420fc9cfd",
+    "labeled_train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "train_ids": [
+      "synthetic_0_0001",
+      "synthetic_0_0003",
+      "synthetic_0_0004",
+      "synthetic_0_0005",
+      "synthetic_0_0006",
+      "synthetic_0_0007",
+      "synthetic_0_0008",
+      "synthetic_0_0009",
+      "synthetic_0_0010",
+      "synthetic_0_0011",
+      "synthetic_1_0000",
+      "synthetic_1_0001",
+      "synthetic_1_0002",
+      "synthetic_1_0004",
+      "synthetic_1_0005",
+      "synthetic_1_0006",
+      "synthetic_1_0007",
+      "synthetic_1_0008",
+      "synthetic_1_0010",
+      "synthetic_1_0011",
+      "synthetic_2_0000",
+      "synthetic_2_0001",
+      "synthetic_2_0003",
+      "synthetic_2_0004",
+      "synthetic_2_0005",
+      "synthetic_2_0007",
+      "synthetic_2_0008",
+      "synthetic_2_0009",
+      "synthetic_2_0010",
+      "synthetic_2_0011",
+      "synthetic_3_0000",
+      "synthetic_3_0001",
+      "synthetic_3_0002",
+      "synthetic_3_0003",
+      "synthetic_3_0004",
+      "synthetic_3_0006",
+      "synthetic_3_0007",
+      "synthetic_3_0008",
+      "synthetic_3_0009",
+      "synthetic_3_0011"
+    ],
+    "training_config": {
+      "seed": 17,
+      "batch_size": 16,
+      "pretrain_epochs": 1,
+      "decoder_epochs": 1,
+      "pretrain_lr": 0.001,
+      "decoder_lr": 0.001,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "torch_threads": 1,
+      "baseline_epochs": 1
+    },
+    "model_config": {
+      "dim": 32,
+      "heads": 4,
+      "encoder_layers": 2,
+      "cross_layers": 1,
+      "ffn_dim": 64,
+      "decoder_layers": 1,
+      "decoder_ffn_dim": 64,
+      "dropout": 0.1,
+      "max_devices": 32,
+      "terminal_bias": true
+    },
+    "parameter_count": {
+      "total": 38193,
+      "trainable": 13985,
+      "encoder": 24208
+    },
+    "timing": {
+      "pretrain_seconds": 0.14820753299954958,
+      "supervised_seconds": 0.13922924700000294
+    },
+    "training_cost": {
+      "pretrain_optimizer_steps": 3,
+      "pretrain_examples": 40,
+      "supervised_optimizer_steps": 3,
+      "labeled_train_examples": 40
+    }
+  }
+}
+Wrote matched comparison to /tmp/tmpals6dhmn/experiment/comparison
+Comparison files: /tmp/tmpals6dhmn/experiment/comparison/summary.csv | /tmp/tmpals6dhmn/experiment/comparison/per_seed.csv | /tmp/tmpals6dhmn/experiment/comparison/costs.csv | /tmp/tmpals6dhmn/experiment/comparison/comparison.json
+usage: run_comparison.py [-h] --data DATA --config CONFIG --output OUTPUT
+                         [--seeds SEEDS [SEEDS ...]] [--device DEVICE]
+                         [--smoke]
+run_comparison.py: error: Output must be new/empty; use a new experiment directory, never overwrite results
+ok
+Completed three-mode smoke: mechanics only.
+pretrain 1/1 train=26.399612 val=25.504719
+decoder 1/1 train=1.111190 val=0.792774
+test_changed_normalization_cannot_misreport_frozen_transforms (test_pipeline.PipelineTests.test_changed_normalization_cannot_misreport_frozen_transforms) ... ok
+test_changed_state_config_is_rejected (test_pipeline.PipelineTests.test_changed_state_config_is_rejected) ... ok
+test_checkpoint_phase_boundaries_and_frozen_digest (test_pipeline.PipelineTests.test_checkpoint_phase_boundaries_and_frozen_digest) ... ok
+test_checkpoint_reloads_complete_shared_jepa_and_frozen_scalers (test_pipeline.PipelineTests.test_checkpoint_reloads_complete_shared_jepa_and_frozen_scalers) ... ok
+test_eval_separates_id_and_ood (test_pipeline.PipelineTests.test_eval_separates_id_and_ood) ... ok
+test_evaluation_has_fair_comparison_contract (test_pipeline.PipelineTests.test_evaluation_has_fair_comparison_contract) ... ok
+test_incompatible_old_checkpoint_has_clear_error (test_pipeline.PipelineTests.test_incompatible_old_checkpoint_has_clear_error) ... ok
+test_labels_can_be_attached_after_unlabeled_pretraining (test_pipeline.PipelineTests.test_labels_can_be_attached_after_unlabeled_pretraining) ... pretrain 1/1 train=26.399612 val=25.504719
+decoder 1/1 train=1.111190 val=0.792774
+ok
+test_performance_values_do_not_change_stage1_preprocessing (test_pipeline.PipelineTests.test_performance_values_do_not_change_stage1_preprocessing) ... ok
+test_stage1_explicit_no_states_accepts_raw_dataset (test_pipeline.PipelineTests.test_stage1_explicit_no_states_accepts_raw_dataset) ... pretrain 1/1 train=27.173325 val=26.506893
+ok
+test_stage1_rejects_import_state_config_mismatch (test_pipeline.PipelineTests.test_stage1_rejects_import_state_config_mismatch) ... ok
+test_stage1_state_mode_without_feature_list_uses_default_features (test_pipeline.PipelineTests.test_stage1_state_mode_without_feature_list_uses_default_features) ... pretrain 1/1 train=26.772114 val=25.763046
+ok
+test_stage2_rejects_architecture_mismatch (test_pipeline.PipelineTests.test_stage2_rejects_architecture_mismatch) ... ok
+test_stage2_rejects_design_op_and_record_changes (test_pipeline.PipelineTests.test_stage2_rejects_design_op_and_record_changes) ... ok
+test_stage2_rejects_partition_and_scaler_identity_changes (test_pipeline.PipelineTests.test_stage2_rejects_partition_and_scaler_identity_changes) ... ok
+test_git_helper_refuses_enclosing_repo (test_scripts.ScriptTests.test_git_helper_refuses_enclosing_repo) ... ok
+test_shell_syntax (test_scripts.ScriptTests.test_shell_syntax) ... ok
+test_slurm_dry_run_never_calls_sbatch (test_scripts.ScriptTests.test_slurm_dry_run_never_calls_sbatch) ... ok
+test_categorical_state_is_op_only (test_shared_structure.SharedStructureTests.test_categorical_state_is_op_only) ... ok
+test_each_branch_updates_shared_parameters_without_detach (test_shared_structure.SharedStructureTests.test_each_branch_updates_shared_parameters_without_detach) ... ok
+test_non_mos_kept_in_graph_but_not_alignment (test_shared_structure.SharedStructureTests.test_non_mos_kept_in_graph_but_not_alignment) ... ok
+test_one_shared_module_registered_once_no_predictor (test_shared_structure.SharedStructureTests.test_one_shared_module_registered_once_no_predictor) ... ok
+test_op_changes_target_only_and_design_parameters_change_input_only (test_shared_structure.SharedStructureTests.test_op_changes_target_only_and_design_parameters_change_input_only) ... ok
+test_structure_does_not_see_parameter_op_state_or_label_values (test_shared_structure.SharedStructureTests.test_structure_does_not_see_parameter_op_state_or_label_values) ... ok
+test_structure_once_in_training_and_no_inplace_branch_mutation (test_shared_structure.SharedStructureTests.test_structure_once_in_training_and_no_inplace_branch_mutation) ... ok
+test_all_44_op_fields_signs_and_source_metadata_preserved (test_states.ApplyCheckEncodingTests.test_all_44_op_fields_signs_and_source_metadata_preserved) ... ok
+test_all_mos_is_explicit_derived_opt_in (test_states.ApplyCheckEncodingTests.test_all_mos_is_explicit_derived_opt_in) ... ok
+test_ambiguous_run_checklists_rejected (test_states.ApplyCheckEncodingTests.test_ambiguous_run_checklists_rejected) ... ok
+test_combined_provenance_and_ambiguous_same_run_id (test_states.ApplyCheckEncodingTests.test_combined_provenance_and_ambiguous_same_run_id) ... ok
+test_config_validation_and_group_selection (test_states.ApplyCheckEncodingTests.test_config_validation_and_group_selection) ... ok
+test_conflicting_checklists_and_reasons_rejected (test_states.ApplyCheckEncodingTests.test_conflicting_checklists_and_reasons_rejected) ... ok
+test_conflicting_threshold_sources_rejected (test_states.ApplyCheckEncodingTests.test_conflicting_threshold_sources_rejected) ... ok
+test_default_no_scope_does_not_invent_passes (test_states.ApplyCheckEncodingTests.test_default_no_scope_does_not_invent_passes) ... ok
+test_different_runs_join_exact_sample_run_id (test_states.ApplyCheckEncodingTests.test_different_runs_join_exact_sample_run_id) ... ok
+test_duplicate_source_ids_rejected_without_choosing_first (test_states.ApplyCheckEncodingTests.test_duplicate_source_ids_rejected_without_choosing_first) ... ok
+test_explicit_empty_scope_does_not_invent_passes (test_states.ApplyCheckEncodingTests.test_explicit_empty_scope_does_not_invent_passes) ... ok
+test_explicit_thresholds_can_fill_gaps_but_not_override (test_states.ApplyCheckEncodingTests.test_explicit_thresholds_can_fill_gaps_but_not_override) ... ok
+test_failure_label_without_threshold_stays_unknown_unless_missing (test_states.ApplyCheckEncodingTests.test_failure_label_without_threshold_stays_unknown_unless_missing) ... ok
+test_failure_reason_contradicting_computed_pass_rejected (test_states.ApplyCheckEncodingTests.test_failure_reason_contradicting_computed_pass_rejected) ... ok
+test_legacy_combined_sources_never_borrow_another_circuits_run (test_states.ApplyCheckEncodingTests.test_legacy_combined_sources_never_borrow_another_circuits_run) ... ok
+test_missing_or_unmatched_run_id_does_not_borrow_thresholds (test_states.ApplyCheckEncodingTests.test_missing_or_unmatched_run_id_does_not_borrow_thresholds) ... ok
+test_non_mos_always_unchecked_even_with_raw_zero_or_checked_list (test_states.ApplyCheckEncodingTests.test_non_mos_always_unchecked_even_with_raw_zero_or_checked_list) ... ok
+test_preserve_only_has_no_state_features (test_states.ApplyCheckEncodingTests.test_preserve_only_has_no_state_features) ... ok
+test_raw_reason_only_establishes_that_group_was_checked (test_states.ApplyCheckEncodingTests.test_raw_reason_only_establishes_that_group_was_checked) ... ok
+test_run_checklist_is_explicit_scope_evidence (test_states.ApplyCheckEncodingTests.test_run_checklist_is_explicit_scope_evidence) ... ok
+test_same_circuit_different_sources_do_not_share_run_settings (test_states.ApplyCheckEncodingTests.test_same_circuit_different_sources_do_not_share_run_settings) ... ok
+test_sample_checklist_and_run_thresholds (test_states.ApplyCheckEncodingTests.test_sample_checklist_and_run_thresholds) ... ok
+test_scoped_combined_sources_join_source_circuit_and_run (test_states.ApplyCheckEncodingTests.test_scoped_combined_sources_join_source_circuit_and_run) ... ok
+test_unscoped_multicircuit_root_does_not_guess_run_ownership (test_states.ApplyCheckEncodingTests.test_unscoped_multicircuit_root_does_not_guess_run_ownership) ... ok
+test_each_group_needs_its_own_threshold (test_states.CheckEncodingTests.test_each_group_needs_its_own_threshold) ... ok
+test_equal_threshold_passes_and_signed_pmos_current (test_states.CheckEncodingTests.test_equal_threshold_passes_and_signed_pmos_current) ... ok
+test_independent_simultaneous_failures (test_states.CheckEncodingTests.test_independent_simultaneous_failures) ... ok
+test_invalid_checked_and_threshold_inputs_rejected (test_states.CheckEncodingTests.test_invalid_checked_and_threshold_inputs_rejected) ... ok
+test_missing_checked_group_known_without_threshold (test_states.CheckEncodingTests.test_missing_checked_group_known_without_threshold) ... ok
+test_nonmissing_checked_without_threshold_remains_unknown (test_states.CheckEncodingTests.test_nonmissing_checked_without_threshold_remains_unknown) ... ok
+test_saturation_keeps_sign (test_states.CheckEncodingTests.test_saturation_keeps_sign) ... ok
+test_unchecked_is_masked_not_missing_or_passing (test_states.CheckEncodingTests.test_unchecked_is_masked_not_missing_or_passing) ... ok
+test_zero_and_missing_are_different (test_states.CheckEncodingTests.test_zero_and_missing_are_different) ... ok
+test_changed_explicit_threshold_rejected_even_if_categories_unchanged (test_states.StateValidationTests.test_changed_explicit_threshold_rejected_even_if_categories_unchanged) ... ok
+test_changed_raw_evidence_requires_reimport (test_states.StateValidationTests.test_changed_raw_evidence_requires_reimport) ... ok
+test_corrupt_provenance_rejected (test_states.StateValidationTests.test_corrupt_provenance_rejected) ... ok
+test_corrupt_values_rejected_including_bool_and_float_aliases (test_states.StateValidationTests.test_corrupt_values_rejected_including_bool_and_float_aliases) ... ok
+test_default_config_matches_default_import (test_states.StateValidationTests.test_default_config_matches_default_import) ... ok
+test_disabled_state_request_deliberately_bypasses_existing_encoding (test_states.StateValidationTests.test_disabled_state_request_deliberately_bypasses_existing_encoding) ... ok
+test_matching_encoding_validates_without_mutation (test_states.StateValidationTests.test_matching_encoding_validates_without_mutation) ... ok
+test_missing_device_states_and_missing_null_feature_rejected (test_states.StateValidationTests.test_missing_device_states_and_missing_null_feature_rejected) ... ok
+test_missing_metadata_or_bad_version_rejected (test_states.StateValidationTests.test_missing_metadata_or_bad_version_rejected) ... ok
+test_requested_threshold_conflict_rejected_with_reimport_guidance (test_states.StateValidationTests.test_requested_threshold_conflict_rejected_with_reimport_guidance) ... ok
+test_unencoded_dataset_is_not_silently_accepted (test_states.StateValidationTests.test_unencoded_dataset_is_not_silently_accepted) ... ok
+test_wrong_features_or_feature_order_rejected (test_states.StateValidationTests.test_wrong_features_or_feature_order_rejected) ... ok
+test_wrong_mode_rejected_even_when_values_are_all_unknown (test_states.StateValidationTests.test_wrong_mode_rejected_even_when_values_are_all_unknown) ... ok
+
+----------------------------------------------------------------------
+Ran 211 tests in 6.979s
+
+OK

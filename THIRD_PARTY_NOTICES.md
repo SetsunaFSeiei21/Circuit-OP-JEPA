@@ -16,3 +16,8 @@ The inspected ZeroSim repository root did not show a license file, and its main-
 ZeroSim citation: Xiaomeng Yang, Jian Gao, Yanzhi Wang and Xuan Zhang, “ZeroSim: Zero-Shot Analog Circuit Evaluation with Unified Transformer Embeddings,” ICCAD 2025, DOI [10.1109/ICCAD66269.2025.11240890](https://doi.org/10.1109/ICCAD66269.2025.11240890).
 
 PyTorch and NumPy are installed dependencies and retain their own licenses. No dependency binaries are bundled in the source archive. This demo is hosted in the private Circuit-OP-JEPA repository. Choose an appropriate project license before public distribution.
+
+
+## v2 data and comparison extension (2026-10-25)
+
+Analog-Agent collector check semantics were inspected in the user-provided repository https://github.com/SetsunaFSeiei21/Analog-Agent-NN-Memory (source reference commit ab6aad06). The parser/state encoding and three-mode experiment utilities are independent implementations. No PDK, simulator, actual dataset, official ZeroSim source or model weights are bundled. The pin baseline is explicitly a clean-room ZeroSim-style reference, not an untouched upstream model or exact published-result reproduction. Both supervised references use the same local mask-aware model family and matched experimental preprocessing, so named-feature embeddings, safe missingness and normalization choices differ from an exact upstream run.

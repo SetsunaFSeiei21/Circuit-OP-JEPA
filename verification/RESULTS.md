@@ -1,3 +1,7 @@
+# Historical v0.1 verification
+
+This record is from the original 2026-10-21 demo. See [V2_RESULTS.md](V2_RESULTS.md) for the current shared-structure, real-data adapter and three-mode comparison validation.
+
 # Verification record
 
 Date: 2026-10-21. Tested with Python 3.12 and PyTorch 2.14.1+cpu on CPU.

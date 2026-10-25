@@ -7,6 +7,7 @@ import unittest
 import torch
 
 from device_jepa.data import build_manifest, dataset_fingerprint, fit_preprocessor, synthetic_dataset
+from device_jepa.states import apply_op_states
 from device_jepa.training import evaluate, load_checkpoint, pretrain, train_decoder
 
 
@@ -17,7 +18,7 @@ class PipelineTests(unittest.TestCase):
         cls.options["training"]["pretrain_epochs"] = 1
         cls.options["training"]["decoder_epochs"] = 1
         cls.options["model"].update(dim=16, heads=4, ffn_dim=32, decoder_ffn_dim=32)
-        cls.data = synthetic_dataset(6, 17)
+        cls.data = apply_op_states(synthetic_dataset(6, 17), cls.options["op_state"])
         cls.manifest = build_manifest(cls.data, "synthetic_4", seed=17)
         cls.temp = tempfile.TemporaryDirectory()
         cls.p = pretrain(cls.data, cls.manifest, cls.options, cls.temp.name)
@@ -26,6 +27,33 @@ class PipelineTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
+
+    def test_stage1_state_mode_without_feature_list_uses_default_features(self):
+        from device_jepa.states import STATE_FEATURES
+        options = copy.deepcopy(self.options)
+        options["op_state"] = {"mode": "all_mos"}
+        data = apply_op_states(synthetic_dataset(6, 17), options["op_state"])
+        manifest = build_manifest(data, config=options["dataset"])
+        with tempfile.TemporaryDirectory() as folder:
+            path = pretrain(data, manifest, options, folder)
+            checkpoint = load_checkpoint(path)
+            self.assertEqual(checkpoint["preprocessing"]["op_state_features"], STATE_FEATURES)
+
+    def test_stage1_rejects_import_state_config_mismatch(self):
+        data = apply_op_states(synthetic_dataset(6, 17), {"mode": "all_mos"})
+        manifest = build_manifest(data, config=self.options["dataset"])
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "OP-state.*Re-import"):
+                pretrain(data, manifest, self.options, folder)
+
+    def test_stage1_explicit_no_states_accepts_raw_dataset(self):
+        options = copy.deepcopy(self.options)
+        options["op_state"] = {"features": []}
+        data = synthetic_dataset(6, 17)
+        manifest = build_manifest(data, config=options["dataset"])
+        with tempfile.TemporaryDirectory() as folder:
+            path = pretrain(data, manifest, options, folder)
+            self.assertEqual(load_checkpoint(path)["preprocessing"]["op_state_features"], [])
 
     def test_checkpoint_phase_boundaries_and_frozen_digest(self):
         p, d = load_checkpoint(self.p), load_checkpoint(self.d)
@@ -105,6 +133,48 @@ class PipelineTests(unittest.TestCase):
             torch.save(checkpoint, path)
             with self.assertRaisesRegex(ValueError, "partition"):
                 train_decoder(self.data, path, self.options, self.temp.name)
+
+    def test_incompatible_old_checkpoint_has_clear_error(self):
+        old = Path(self.temp.name) / "old_checkpoint.pt"
+        torch.save({"checkpoint_version": 1}, old)
+        with self.assertRaisesRegex(ValueError, "Incompatible old checkpoint"):
+            load_checkpoint(old)
+
+    def test_changed_normalization_cannot_misreport_frozen_transforms(self):
+        options = copy.deepcopy(self.options)
+        options["normalization"]["op"]["id"] = {"kind": "linear"}
+        with self.assertRaisesRegex(ValueError, "Normalization config differs"):
+            train_decoder(self.data, self.p, options, self.temp.name)
+
+    def test_changed_state_config_is_rejected(self):
+        options = copy.deepcopy(self.options)
+        options["op_state"]["features"] = []
+        with self.assertRaisesRegex(ValueError, "OP-state config differs"):
+            train_decoder(self.data, self.p, options, self.temp.name)
+
+    def test_checkpoint_reloads_complete_shared_jepa_and_frozen_scalers(self):
+        from device_jepa.training import encoder_from_metadata
+        from device_jepa.model import JEPAModel
+        source = load_checkpoint(self.p)
+        prep = source["preprocessing"]
+        encoder = encoder_from_metadata(source["model_config"], prep)
+        model = JEPAModel(encoder, len(prep["feature_spec"]["op_names"]), len(prep["op_state_features"]))
+        model.load_state_dict(source["model_state"], strict=True)
+        self.assertIs(model.encoder.structure_encoder, model.op_encoder.structure_encoder)
+        downstream = load_checkpoint(self.d)
+        self.assertEqual(prep["parameters"], downstream["preprocessing"]["parameters"])
+        self.assertEqual(prep["op"], downstream["preprocessing"]["op"])
+        self.assertEqual(source["checkpoint_version"], 2)
+
+    def test_evaluation_has_fair_comparison_contract(self):
+        result = evaluate(self.data, self.d, split="test")
+        self.assertEqual(result["mode"], "jepa_zerosim")
+        self.assertEqual(result["metric_names"], ["gain", "power"])
+        self.assertEqual(result["labeled_train_ids"], self.manifest["labeled_train"])
+        self.assertIn("target_scaler_digest", result["provenance"])
+        self.assertGreater(result["timings"]["pretrain_seconds"], 0)
+        self.assertGreater(result["timings"]["supervised_seconds"], 0)
+        self.assertIn("normalized_target", result["predictions"][0])
 
     def test_stage2_rejects_architecture_mismatch(self):
         options = copy.deepcopy(self.options)

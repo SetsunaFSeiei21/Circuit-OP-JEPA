@@ -1,0 +1,13 @@
+mode,seed,split,timing,parameter_count
+jepa_zerosim,17,ood,"{""pretrain_seconds"": 1.0289927930007252, ""supervised_seconds"": 1.0149396000006163}","{""encoder"": 24208, ""total"": 38193, ""trainable"": 13985}"
+jepa_zerosim,17,test,"{""pretrain_seconds"": 1.0289927930007252, ""supervised_seconds"": 1.0149396000006163}","{""encoder"": 24208, ""total"": 38193, ""trainable"": 13985}"
+jepa_zerosim,29,ood,"{""pretrain_seconds"": 1.072870872000749, ""supervised_seconds"": 1.024826882000525}","{""encoder"": 24208, ""total"": 38193, ""trainable"": 13985}"
+jepa_zerosim,29,test,"{""pretrain_seconds"": 1.072870872000749, ""supervised_seconds"": 1.024826882000525}","{""encoder"": 24208, ""total"": 38193, ""trainable"": 13985}"
+zerosim_device,17,ood,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2355789679995723}","{""decoder"": 13985, ""encoder"": 24208, ""total"": 38193, ""trainable"": 38193}"
+zerosim_device,17,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2355789679995723}","{""decoder"": 13985, ""encoder"": 24208, ""total"": 38193, ""trainable"": 38193}"
+zerosim_device,29,ood,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.1601291110000602}","{""decoder"": 13985, ""encoder"": 24208, ""total"": 38193, ""trainable"": 38193}"
+zerosim_device,29,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.1601291110000602}","{""decoder"": 13985, ""encoder"": 24208, ""total"": 38193, ""trainable"": 38193}"
+zerosim_pin,17,ood,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2113303699998141}","{""decoder"": 13985, ""encoder"": 24352, ""total"": 38337, ""trainable"": 38337}"
+zerosim_pin,17,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2113303699998141}","{""decoder"": 13985, ""encoder"": 24352, ""total"": 38337, ""trainable"": 38337}"
+zerosim_pin,29,ood,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2214958810000098}","{""decoder"": 13985, ""encoder"": 24352, ""total"": 38337, ""trainable"": 38337}"
+zerosim_pin,29,test,"{""pretrain_seconds"": 0.0, ""supervised_seconds"": 1.2214958810000098}","{""decoder"": 13985, ""encoder"": 24352, ""total"": 38337, ""trainable"": 38337}"

@@ -20,6 +20,9 @@ from typing import Any
 
 TERMINAL_NAMES = ["d", "g", "s", "b", "p", "n"]
 SPLITS = ("train", "val", "test", "ood")
+MANIFEST_VERSION = 2
+PREPROCESSING_VERSION = 2
+OP_GEOMETRY_FIELDS = frozenset({"w_um", "l_um", "multiplicity"})
 
 
 def _nonempty_string(value: Any, location: str) -> None:
@@ -103,8 +106,13 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         loc = f"samples[{i}]"
         if not isinstance(sample, dict):
             raise ValueError(f"{loc} must be an object")
-        for key in ("sample_id", "design_id", "circuit_id"):
+        for key in ("sample_id", "circuit_id"):
             _nonempty_string(sample.get(key), f"{loc}.{key}")
+        if "design_id" not in sample and "design_key" not in sample:
+            raise ValueError(f"{loc} requires a stable design_id or design_key")
+        for key in ("design_id", "design_key"):
+            if key in sample:
+                _nonempty_string(sample[key], f"{loc}.{key}")
         if sample["sample_id"] in seen_samples:
             raise ValueError(f"duplicate sample_id: {sample['sample_id']}")
         seen_samples.add(sample["sample_id"])
@@ -130,6 +138,8 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"{dloc} must be an object")
             for key in ("device_id", "device_type"):
                 _nonempty_string(device.get(key), f"{dloc}.{key}")
+            if "op_target" in device and type(device["op_target"]) is not bool:
+                raise ValueError(f"{dloc}.op_target must be a boolean")
             if device["device_type"] in ("<PAD>", "<UNK>"):
                 raise ValueError(f"{dloc}.device_type uses a reserved vocabulary token")
             if device["device_id"] in seen_devices:
@@ -206,10 +216,14 @@ def input_op_fingerprint(dataset: dict[str, Any]) -> str:
 
 
 def partition_fingerprint(manifest: dict[str, Any]) -> str:
-    """Hash sample membership and held-out circuit independently of labels."""
+    """Hash experiment membership, including the supervised training subset.
+
+    Performance observations never enter this immutable partition provenance.
+    """
     content = {key: sorted(manifest[key]) for key in SPLITS}
-    content["ood_circuit"] = manifest["ood_circuit"]
-    content["id_circuits"] = sorted(manifest["id_circuits"])
+    content["labeled_train"] = sorted(manifest.get("labeled_train", manifest["train"]))
+    content["ood_circuits"] = sorted(manifest.get("ood_circuits", [manifest.get("ood_circuit")]))
+    content["train_circuits"] = sorted(manifest.get("train_circuits", manifest["id_circuits"]))
     return hashlib.sha256(_canonical(content).encode("utf-8")).hexdigest()
 
 
@@ -259,16 +273,18 @@ class _UnionFind:
 def _design_groups(dataset: dict[str, Any]) -> dict[str, list[list[str]]]:
     samples = sorted(dataset["samples"], key=lambda item: item["sample_id"])
     uf = _UnionFind([sample["sample_id"] for sample in samples])
-    seen_designs: dict[tuple[str, str], str] = {}
+    seen_designs: dict[tuple[str, str, str], str] = {}
     seen_groups: dict[tuple[str, str], str] = {}
     seen_fingerprints: dict[str, tuple[str, str]] = {}
     for sample in samples:
         sid, circuit = sample["sample_id"], sample["circuit_id"]
-        key = (circuit, sample["design_id"])
-        if key in seen_designs:
-            uf.union(sid, seen_designs[key])
-        else:
-            seen_designs[key] = sid
+        for field in ("design_id", "design_key"):
+            if field in sample:
+                design_key = (circuit, field, sample[field])
+                if design_key in seen_designs:
+                    uf.union(sid, seen_designs[design_key])
+                else:
+                    seen_designs[design_key] = sid
         if "group_id" in sample:
             key = (circuit, sample["group_id"])
             if key in seen_groups:
@@ -293,164 +309,454 @@ def _design_groups(dataset: dict[str, Any]) -> dict[str, list[list[str]]]:
             for circuit, groups in sorted(grouped.items())}
 
 
-def build_manifest(
-    dataset: dict[str, Any], ood_circuit: str, seed: int = 17,
-    val_fraction: float = 0.15, test_fraction: float = 0.15,
-) -> dict[str, Any]:
-    """Split four ID circuits by design groups, holding the fifth entirely OOD.
+def _positive_fraction(value: Any, location: str, allow_one: bool = False) -> float:
+    upper_ok = value <= 1 if isinstance(value, (int, float)) and not isinstance(value, bool) else False
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0 or not upper_ok or (value == 1 and not allow_one)):
+        raise ValueError(f"{location} must be a finite positive fraction {'at most' if allow_one else 'less than'} one")
+    return float(value)
 
-    Fractions apply to independent groups, not samples; repeated conditions can
-    therefore change sample-level proportions. At least three independent
-    groups are required in each ID circuit. Every ID circuit has nonempty
-    train/validation/test splits. Hash ranking makes assignment input-order
-    independent and independent of Python's randomized hash seed.
+
+def _circuit_list(value: Any, location: str, allow_empty: bool = False) -> list[str]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        raise ValueError(f"{location} must be an explicit {'possibly empty ' if allow_empty else 'nonempty '}list")
+    for item in value:
+        _nonempty_string(item, location)
+    if len(set(value)) != len(value):
+        raise ValueError(f"{location} must not contain duplicates")
+    return sorted(value)
+
+
+def _manifest_config(dataset, ood_circuit, seed, val_fraction, test_fraction, config):
+    circuits = {row["circuit_id"] for row in dataset["samples"]}
+    if config is None:
+        _nonempty_string(ood_circuit, "ood_circuit (or supply an explicit dataset config)")
+        train_circuits, ood_circuits = sorted(circuits - {ood_circuit}), [ood_circuit]
+        val = 0.1 if val_fraction is None else _positive_fraction(val_fraction, "val_fraction")
+        test = 0.1 if test_fraction is None else _positive_fraction(test_fraction, "test_fraction")
+        if val + test >= 1:
+            raise ValueError("val_fraction + test_fraction must be less than one")
+        ratios, label_fraction = [1 - val - test, val, test], 1.0
+    else:
+        if not isinstance(config, dict):
+            raise ValueError("dataset config must be an object")
+        train_circuits = _circuit_list(config.get("train_circuits"), "train_circuits")
+        ood_circuits = _circuit_list(config.get("ood_circuits"), "ood_circuits", allow_empty=True)
+        if ood_circuit is not None and ood_circuits != [ood_circuit]:
+            raise ValueError("ood_circuit conflicts with explicit ood_circuits")
+        if val_fraction is not None or test_fraction is not None:
+            raise ValueError("use split_ratios, not legacy fractions, with dataset config")
+        ratios = config.get("split_ratios", [0.8, 0.1, 0.1])
+        if (not isinstance(ratios, (list, tuple)) or len(ratios) != 3
+                or any(isinstance(x, bool) or not isinstance(x, (int, float))
+                       or not math.isfinite(x) or not 0 <= x <= 1 for x in ratios)
+                or ratios[0] <= 0 or not math.isclose(math.fsum(ratios), 1.0, abs_tol=1e-12, rel_tol=0)):
+            raise ValueError("split_ratios must be three finite nonnegative fractions summing to one, with positive train")
+        ratios = [float(x) for x in ratios]
+        seed = config.get("split_seed", seed)
+        label_fraction = _positive_fraction(config.get("finetune_label_fraction", 1.0), "finetune_label_fraction", True)
+    if type(seed) is not int:
+        raise ValueError("split_seed/seed must be an integer")
+    if not train_circuits or set(train_circuits) & set(ood_circuits):
+        raise ValueError("train_circuits must be nonempty and disjoint from ood_circuits")
+    if set(train_circuits) | set(ood_circuits) != circuits:
+        raise ValueError("train_circuits and ood_circuits must exhaustively match dataset circuits")
+    return train_circuits, ood_circuits, ratios, seed, label_fraction
+
+
+def _group_rank(seed: int, circuit: str, ids: list[str], purpose: str) -> str:
+    return hashlib.sha256(_canonical([seed, circuit, purpose, ids]).encode("utf-8")).hexdigest()
+
+
+def _group_counts(n_groups: int, ratios: list[float]) -> list[int]:
+    active = [i for i, ratio in enumerate(ratios) if ratio > 0]
+    if n_groups < len(active):
+        raise ValueError(f"needs at least {len(active)} independent design groups; found {n_groups}")
+    # Fractions count independent groups, not repeated rows. Guarantee each
+    # requested split at least one group, then give the rounding remainder to train.
+    counts = [0, max(1, int(n_groups * ratios[1])) if ratios[1] else 0,
+              max(1, int(n_groups * ratios[2])) if ratios[2] else 0]
+    while counts[1] + counts[2] >= n_groups:
+        largest = max((i for i in (1, 2) if counts[i] > 1), key=lambda i: (counts[i], -i), default=None)
+        if largest is None:
+            raise ValueError("not enough independent groups for nonempty splits")
+        counts[largest] -= 1
+    counts[0] = n_groups - counts[1] - counts[2]
+    return counts
+
+
+def _labeled_ids(groups, train_ids, circuits, fraction, seed):
+    selected = []
+    train_ids = set(train_ids)
+    for circuit in circuits:
+        eligible = [group for group in groups[circuit] if set(group) <= train_ids]
+        ranked = sorted(eligible, key=lambda ids: (_group_rank(seed, circuit, ids, "labeled_train"), ids))
+        # A positive label fraction always selects one whole design group per
+        # ID circuit. Rounding is down except for that minimum, never row-wise.
+        count = max(1, int(len(ranked) * fraction))
+        selected.extend(sid for group in ranked[:count] for sid in group)
+    return sorted(selected)
+
+
+def build_manifest(
+    dataset: dict[str, Any], ood_circuit: str | None = None, seed: int = 17,
+    val_fraction: float | None = None, test_fraction: float | None = None,
+    *, config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a NEW v2 grouped experiment partition, never update an old one.
+
+    Prefer explicit ``config={train_circuits: [...], ood_circuits: [...],
+    split_ratios: [.8,.1,.1], split_seed: 17, finetune_label_fraction: 1}``.
+    Empty OOD is supported only by explicitly passing ``ood_circuits=[]``;
+    this makes no OOD generalization claim. The legacy single-OOD argument
+    infers the other circuits. Ratios and label fractions apply to independent
+    design groups per circuit, not rows; repeated conditions stay together.
+
+    Persist and verify this manifest for every subsequent run. Any changed or
+    added dataset content fails verification. Calling this function explicitly
+    creates a new experiment, and must not silently overwrite a saved split.
     """
     validate_dataset(dataset)
-    _nonempty_string(ood_circuit, "ood_circuit")
-    if type(seed) is not int:
-        raise ValueError("seed must be an integer")
-    for name, value in (("val_fraction", val_fraction), ("test_fraction", test_fraction)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value < 1:
-            raise ValueError(f"{name} must be a finite number strictly between zero and one")
-    if val_fraction + test_fraction >= 1:
-        raise ValueError("val_fraction + test_fraction must be less than one")
+    train_circuits, ood_circuits, ratios, seed, fraction = _manifest_config(
+        dataset, ood_circuit, seed, val_fraction, test_fraction, config)
     groups = _design_groups(dataset)
-    if len(groups) != 5:
-        raise ValueError(f"exactly five distinct circuits are required; found {len(groups)}")
-    if ood_circuit not in groups:
-        raise ValueError(f"ood_circuit {ood_circuit!r} is not present")
-    id_circuits = sorted(set(groups) - {ood_circuit})
     manifest: dict[str, Any] = {split: [] for split in SPLITS}
-    manifest.update({"ood_circuit": ood_circuit, "id_circuits": id_circuits, "seed": seed,
-                     "dataset_fingerprint": dataset_fingerprint(dataset),
-                     "val_fraction": val_fraction, "test_fraction": test_fraction,
-                     "grouping": "circuit-scoped design_id/group_id plus exact design fingerprint"})
-    for circuit in id_circuits:
-        circuit_groups = groups[circuit]
-        n_groups = len(circuit_groups)
-        if n_groups < 3:
-            raise ValueError(f"ID circuit {circuit!r} needs at least 3 independent design groups; found {n_groups}")
-        def rank(ids: list[str]) -> str:
-            return hashlib.sha256(_canonical([seed, circuit, ids]).encode("utf-8")).hexdigest()
-        ranked = sorted(circuit_groups, key=lambda ids: (rank(ids), ids))
-        n_val = max(1, int(n_groups * val_fraction))
-        n_test = max(1, int(n_groups * test_fraction))
-        while n_val + n_test >= n_groups:
-            if n_val >= n_test and n_val > 1:
-                n_val -= 1
-            elif n_test > 1:
-                n_test -= 1
-            else:
-                raise ValueError("not enough independent groups for nonempty splits")
+    manifest.update({
+        "schema_version": MANIFEST_VERSION,
+        "train_circuits": train_circuits, "id_circuits": list(train_circuits),
+        "ood_circuits": ood_circuits, "ood_circuit": ood_circuits[0] if len(ood_circuits) == 1 else None,
+        "split_ratios": ratios, "split_seed": seed, "seed": seed,
+        "val_fraction": ratios[1], "test_fraction": ratios[2],
+        "finetune_label_fraction": fraction,
+        "dataset_fingerprint": dataset_fingerprint(dataset),
+        "grouping": "circuit-scoped design_key/design_id/group_id plus exact design fingerprint",
+    })
+    for circuit in train_circuits:
+        try:
+            _, n_val, n_test = _group_counts(len(groups[circuit]), ratios)
+        except ValueError as exc:
+            raise ValueError(f"ID circuit {circuit!r} {exc}") from exc
+        ranked = sorted(groups[circuit], key=lambda ids: (_group_rank(seed, circuit, ids, "split"), ids))
         for split, subset in (("val", ranked[:n_val]), ("test", ranked[n_val:n_val + n_test]),
                               ("train", ranked[n_val + n_test:])):
             manifest[split].extend(sid for group in subset for sid in group)
-    manifest["ood"] = [sid for group in groups[ood_circuit] for sid in group]
+    manifest["ood"] = [sid for circuit in ood_circuits for group in groups[circuit] for sid in group]
     for split in SPLITS:
         manifest[split].sort()
+    manifest["labeled_train"] = _labeled_ids(groups, manifest["train"], train_circuits, fraction, seed)
     verify_manifest(dataset, manifest)
     return manifest
 
 
 def verify_manifest(dataset: dict[str, Any], manifest: dict[str, Any]) -> None:
-    """Raise ValueError for stale manifests, omitted/duplicate IDs or leakage."""
+    """Reject stale content, invalid circuit membership, leakage or label subsets.
+
+    Dataset hashing is strict (including labels); adding even one sample does
+    not trigger a resplit. Stage two may explicitly refresh ONLY the label
+    integrity digest after separately checking immutable input/OP provenance.
+    """
     validate_dataset(dataset)
-    if not isinstance(manifest, dict):
-        raise ValueError("manifest must be an object")
+    if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != MANIFEST_VERSION):
+        raise ValueError("manifest schema_version must be 2; create a new explicit experiment")
     if manifest.get("dataset_fingerprint") != dataset_fingerprint(dataset):
-        raise ValueError("manifest dataset_fingerprint does not match dataset")
+        raise ValueError("manifest dataset_fingerprint does not match dataset; do not silently resplit")
+    required = {"train_circuits", "ood_circuits", "split_ratios", "split_seed", "finetune_label_fraction"}
+    if required - set(manifest):
+        raise ValueError(f"manifest is missing v2 configuration fields: {sorted(required - set(manifest))}")
+    train_circuits, ood_circuits, ratios, seed, fraction = _manifest_config(
+        dataset, None, 17, None, None, manifest)
+    if (manifest.get("train_circuits") != train_circuits or manifest.get("ood_circuits") != ood_circuits
+            or manifest.get("id_circuits") != train_circuits):
+        raise ValueError("manifest circuit lists must be sorted, explicit and consistent")
+    expected_ood = ood_circuits[0] if len(ood_circuits) == 1 else None
+    if manifest.get("ood_circuit") != expected_ood or manifest.get("seed") != seed:
+        raise ValueError("manifest legacy circuit/seed aliases disagree")
+    if manifest.get("val_fraction") != ratios[1] or manifest.get("test_fraction") != ratios[2]:
+        raise ValueError("manifest fraction aliases disagree with split_ratios")
     samples = {sample["sample_id"]: sample for sample in dataset["samples"]}
-    circuits = {sample["circuit_id"] for sample in samples.values()}
-    ood_circuit = manifest.get("ood_circuit")
-    _nonempty_string(ood_circuit, "manifest.ood_circuit")
-    if len(circuits) != 5 or ood_circuit not in circuits:
-        raise ValueError("manifest requires exactly five circuits and one valid OOD circuit")
-    id_circuits = sorted(circuits - {ood_circuit})
-    if manifest.get("id_circuits") != id_circuits:
-        raise ValueError("manifest id_circuits must list the four sorted non-OOD circuits")
     assignment: dict[str, str] = {}
     for split in SPLITS:
         ids = manifest.get(split)
-        if not isinstance(ids, list) or not ids:
-            raise ValueError(f"manifest {split} must be a nonempty list")
+        if not isinstance(ids, list):
+            raise ValueError(f"manifest {split} must be a list")
         for sid in ids:
             if not isinstance(sid, str) or sid not in samples:
                 raise ValueError(f"manifest {split} contains an unknown sample ID: {sid!r}")
             if sid in assignment:
                 raise ValueError(f"sample {sid!r} appears more than once in manifest")
             assignment[sid] = split
-            is_ood = samples[sid]["circuit_id"] == ood_circuit
+            is_ood = samples[sid]["circuit_id"] in ood_circuits
             if is_ood != (split == "ood"):
                 raise ValueError(f"sample {sid!r} violates ID/OOD circuit separation")
-        if split != "ood" and {samples[sid]["circuit_id"] for sid in ids} != set(id_circuits):
-            raise ValueError(f"manifest {split} must contain samples from all four ID circuits")
+        if split != "ood":
+            requested = ratios[("train", "val", "test").index(split)] > 0
+            if requested and {samples[sid]["circuit_id"] for sid in ids} != set(train_circuits):
+                raise ValueError(f"manifest {split} must contain samples from every ID circuit")
+            if not requested and ids:
+                raise ValueError(f"manifest {split} must be empty for its zero split ratio")
     if set(assignment) != set(samples):
         raise ValueError("manifest must contain every dataset sample exactly once")
-    for circuit_groups in _design_groups(dataset).values():
+    groups = _design_groups(dataset)
+    for circuit_groups in groups.values():
         for group in circuit_groups:
             if len({assignment[sid] for sid in group}) != 1:
                 raise ValueError(f"design group is split across subsets: {group!r}")
+    # Reject editing whole groups across splits as well as splitting a group:
+    # a saved experiment must continue to match its explicit seed and ratios.
+    for circuit in train_circuits:
+        _, n_val, n_test = _group_counts(len(groups[circuit]), ratios)
+        ranked = sorted(groups[circuit], key=lambda ids: (_group_rank(seed, circuit, ids, "split"), ids))
+        for split, subset in (("val", ranked[:n_val]), ("test", ranked[n_val:n_val + n_test]),
+                              ("train", ranked[n_val + n_test:])):
+            expected_ids = {sid for group in subset for sid in group}
+            actual_ids = {sid for sid in manifest[split] if samples[sid]["circuit_id"] == circuit}
+            if actual_ids != expected_ids:
+                raise ValueError(f"manifest {split} does not match deterministic grouped split config for {circuit!r}")
+    labeled = manifest.get("labeled_train")
+    if (not isinstance(labeled, list) or any(not isinstance(sid, str) for sid in labeled)
+            or len(set(labeled)) != len(labeled) or not set(labeled) <= set(manifest["train"])):
+        raise ValueError("labeled_train must be a unique subset of train sample IDs")
+    expected = _labeled_ids(groups, manifest["train"], train_circuits, fraction, seed)
+    if sorted(labeled) != expected:
+        raise ValueError("labeled_train must be the deterministic grouped training-only subset")
 
 
 def samples_for_split(dataset: dict[str, Any], manifest: dict[str, Any], split: str) -> list[dict[str, Any]]:
     """Return original sample objects in manifest order after verifying safety."""
-    if split not in SPLITS:
-        raise ValueError(f"unknown split {split!r}; expected one of {SPLITS}")
+    if split not in (*SPLITS, "labeled_train"):
+        raise ValueError(f"unknown split {split!r}; expected one of {(*SPLITS, 'labeled_train')}")
     verify_manifest(dataset, manifest)
     lookup = {sample["sample_id"]: sample for sample in dataset["samples"]}
     return [lookup[sid] for sid in manifest[split]]
 
 
-def _statistics(rows: list[dict[str, Any]], names: list[str]) -> dict[str, list[Any]]:
-    means, stds, counts = [], [], []
+def is_op_target(device: dict[str, Any]) -> bool:
+    """Explicit eligibility wins; otherwise only case-insensitive NMOS/PMOS."""
+    return device.get("op_target", device["device_type"].lower() in {"nmos", "pmos"})
+
+
+def _default_kind(collection: str, name: str) -> str:
+    if collection != "op":
+        return "linear"
+    lower = name.lower()
+    if lower.endswith("_v_v") or lower.endswith("_v_inv") or "ratio" in lower:
+        return "asinh"
+    if lower.endswith("_v") or lower in {"vds", "vgs", "vbs", "vth", "vdsat", "vd", "vg", "vs", "vb"}:
+        return "linear"
+    return "asinh"
+
+
+def _preprocessing_config(config, spec):
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError("preprocessing config must be an object")
+    config = copy.deepcopy(config)
+    # Accept either a focused preprocessing block or a full application config.
+    if "preprocessing" in config:
+        config = config["preprocessing"]
+    if not isinstance(config, dict):
+        raise ValueError("preprocessing config must be an object")
+    normalization = config.get("normalization", config)
+    if not isinstance(normalization, dict):
+        raise ValueError("normalization must be an object")
+    weighting = config.get("weighting", normalization.get("weighting", "equal_circuit"))
+    if weighting not in ("equal_circuit", "observation"):
+        raise ValueError("weighting must be equal_circuit or observation")
+    fields = config.get("op_fields")
+    if fields is None:
+        fields = [name for name in spec["op_names"] if name.lower() not in OP_GEOMETRY_FIELDS]
+    if (not isinstance(fields, list) or not fields or any(not isinstance(name, str) for name in fields)
+            or len(fields) != len(set(fields)) or not set(fields) <= set(spec["op_names"])):
+        raise ValueError("op_fields must be a nonempty unique subset of raw feature_spec.op_names")
+    result = {"op_fields": list(fields), "weighting": weighting}
+    for collection, names in (("parameters", spec["parameter_names"]), ("op", fields), ("performance", spec["metric_names"])):
+        rules = normalization.get(collection, {})
+        if not isinstance(rules, dict):
+            raise ValueError(f"normalization.{collection} must map fields to rules")
+        declared_names = spec["op_names"] if collection == "op" else names
+        if set(rules) - set(declared_names):
+            raise ValueError(f"normalization.{collection} has undeclared fields")
+        result[collection] = {}
+        for name in names:
+            rule = rules.get(name, {})
+            if not isinstance(rule, dict) or set(rule) - {"kind", "scale"}:
+                raise ValueError(f"normalization.{collection}.{name} must contain only kind/scale")
+            kind = rule.get("kind", _default_kind(collection, name))
+            scale = rule.get("scale", "fit" if kind == "asinh" else 1.0)
+            if kind not in ("linear", "asinh"):
+                raise ValueError(f"normalization.{collection}.{name}.kind must be linear or asinh")
+            if scale != "fit" and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0):
+                raise ValueError(f"normalization.{collection}.{name}.scale must be fit or finite positive")
+            result[collection][name] = {"kind": kind, "scale": scale}
+    return result
+
+
+def _weighted_values(rows, name, weighting, nonzero=False):
+    by_circuit = defaultdict(list)
+    for circuit, row in rows:
+        if row.get(name) is not None and (not nonzero or row[name] != 0):
+            by_circuit[circuit].append(float(row[name]))
+    count = sum(len(values) for values in by_circuit.values())
+    result = []
+    for circuit in sorted(by_circuit):
+        values = by_circuit[circuit]
+        weight = 1.0 / (len(by_circuit) * len(values)) if weighting == "equal_circuit" else 1.0 / count
+        result.extend((value, weight) for value in values)
+    return result, len(by_circuit)
+
+
+def _fit_asinh_scale(rows, name, weighting):
+    values, _ = _weighted_values(rows, name, weighting, nonzero=True)
+    if not values:
+        return 1.0
+    ordered = sorted((abs(value), weight) for value, weight in values)
+    total = math.fsum(weight for _, weight in ordered)
+    cumulative = 0.0
+    for value, weight in ordered:
+        cumulative += weight
+        if cumulative >= total * 0.5 - 1e-15:
+            return value
+    return ordered[-1][0]
+
+
+def _asinh_scaled(value: float, scale: float) -> float:
+    ratio = value / scale
+    if math.isfinite(ratio):
+        return math.asinh(ratio)
+    # Finite x and s can have an overflowing x/s. In this large-ratio regime
+    # asinh(x/s) = sign(x) * (log(abs(x))-log(s)+log(2)) to float precision.
+    return math.copysign(math.log(abs(value)) - math.log(scale) + math.log(2.0), value)
+
+
+def _statistics(rows, names, rules, weighting):
+    result = {"mean": [], "std": [], "count": [], "kind": [], "asinh_scale": [],
+              "circuit_count": [], "version": PREPROCESSING_VERSION, "weighting": weighting}
     for name in names:
-        values = [float(row[name]) for row in rows if row.get(name) is not None]
-        count = len(values)
-        if not count:
-            mean, std = 0.0, 1.0
-        else:
-            # Scale first to prevent overflow/underflow; do not floor variance
-            # in absolute SI units (e.g. nanometer lengths, picoamp currents).
-            scale = max(abs(value) for value in values)
-            if not scale:
-                mean, std = 0.0, 1.0
+        rule = rules[name]
+        kind = rule["kind"]
+        scale = (_fit_asinh_scale(rows, name, weighting) if rule["scale"] == "fit" else float(rule["scale"])) if kind == "asinh" else 1.0
+        observations, n_circuits = _weighted_values(rows, name, weighting)
+        values = [(_asinh_scaled(value, scale) if kind == "asinh" else value, weight)
+                  for value, weight in observations]
+        mean, std = 0.0, 1.0
+        magnitude = max((abs(value) for value, _ in values), default=0.0)
+        if magnitude:
+            total_weight = math.fsum(weight for _, weight in values)
+            normalized = [(value / magnitude, weight) for value, weight in values]
+            relative_mean = math.fsum(value * weight for value, weight in normalized) / total_weight
+            mean = relative_mean * magnitude
+            relative_std = math.sqrt(math.fsum(weight * (value - relative_mean) ** 2 for value, weight in normalized) / total_weight)
+            std = relative_std * magnitude
+            if std == 0.0:
+                std = 1.0
+        result["mean"].append(mean)
+        result["std"].append(std)
+        result["count"].append(len(observations))
+        result["kind"].append(kind)
+        result["asinh_scale"].append(scale)
+        result["circuit_count"].append(n_circuits)
+    return result
+
+
+def transform_value(value: float, stats: dict[str, Any], feature_index: int) -> float:
+    """Physics transform then z-score a finite scalar, preserving its polarity.
+
+    Null handling/masks belong to the caller. Standard-library float arithmetic
+    avoids premature tensor float32 underflow for e.g. picoamp/femtofarad data.
+    """
+    _finite_number(value, "transform value")
+    if value is None:
+        raise ValueError("transform value must not be null; use the observation mask")
+    i = feature_index
+    transformed = float(value)
+    kind = stats.get("kind", ["linear"] * len(stats["mean"]))[i]
+    if kind == "asinh":
+        transformed = _asinh_scaled(transformed, stats["asinh_scale"][i])
+    mean, std = stats["mean"][i], stats["std"][i]
+    difference = transformed - mean
+    result = difference / std if math.isfinite(difference) else transformed / std - mean / std
+    if not math.isfinite(result):
+        raise ValueError("non-finite transformed value; inspect units and fitted transform")
+    return result
+
+
+def inverse_transform_value(value: float, stats: dict[str, Any], feature_index: int) -> float:
+    """Invert z-scoring and the field's signed asinh transform, without clipping."""
+    _finite_number(value, "inverse transform value")
+    if value is None:
+        raise ValueError("inverse transform value must not be null")
+    i = feature_index
+    transformed = float(value) * stats["std"][i] + stats["mean"][i]
+    if not math.isfinite(transformed):
+        magnitude = max(abs(stats["std"][i]), abs(stats["mean"][i]))
+        transformed = (float(value) * (stats["std"][i] / magnitude) + stats["mean"][i] / magnitude) * magnitude
+    kind = stats.get("kind", ["linear"] * len(stats["mean"]))[i]
+    if kind == "asinh":
+        scale = stats["asinh_scale"][i]
+        try:
+            if abs(transformed) < 710:
+                result = math.sinh(transformed) * scale
             else:
-                normalized = [value / scale for value in values]
-                relative_mean = math.fsum(normalized) / count
-                mean = relative_mean * scale
-                relative_std = math.sqrt(math.fsum((value - relative_mean) ** 2 for value in normalized) / count)
-                std = relative_std * scale
-                if relative_std <= 1e-12 or std == 0.0:
-                    std = 1.0
-        means.append(mean)
-        stds.append(std)
-        counts.append(count)
-    return {"mean": means, "std": stds, "count": counts}
+                result = math.copysign(math.exp(abs(transformed) + math.log(scale) - math.log(2.0)), transformed)
+        except OverflowError as exc:
+            raise ValueError("inverse transform exceeds finite physical range") from exc
+    else:
+        result = transformed
+    if not math.isfinite(result):
+        raise ValueError("inverse transform exceeds finite physical range")
+    return result
 
 
-def fit_preprocessor(dataset: dict[str, Any], manifest: dict[str, Any], include_performance: bool = False) -> dict[str, Any]:
-    """Fit vocabulary and population mean/std on training data only.
+def fit_preprocessor(
+    dataset: dict[str, Any], manifest: dict[str, Any], include_performance: bool = False,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fit v2 field transforms and vocabulary on ID training observations only.
 
-    The default pretraining path never fits/returns performance statistics.
-    ``include_performance=True`` is exclusively for the later supervised
-    decoder phase. Manifest integrity validation hashes labels, but no label
-    value enters parameter/OP statistics or vocabulary. Unseen device types map
-    to ``<UNK>`` in downstream tensorization. Missing observations are ignored;
-    all-missing features use mean 0/std 1, constant features use std 1.
+    Default weighting gives each circuit equal mass independently per field,
+    with observed device slots (parameters/OP) or sample observations (labels)
+    uniform within that circuit. The fitted asinh scale is the similarly
+    circuit-balanced weighted median absolute NONZERO training value. Zeros
+    remain measured values for mean/std/count; null/omitted values are missing.
+
+    OP statistics include only ``is_op_target`` devices; graph/parameter inputs
+    retain every real device. Raw OP is never rewritten. Default selected OP
+    fields exclude source geometry w_um/l_um/multiplicity. Voltage-like fields
+    are linear; signed currents/conductances/capacitances/ratios use asinh before
+    population z-scoring. Parameters/performance default linear and each field
+    can override kind and positive fixed scale (or ``fit``).
+
+    Stage one uses every ID train row and never reads performance values for
+    statistics. Stage two fits label transforms ONLY from ``labeled_train``.
+    Neither stage fits anything from validation, test, or OOD observations.
     """
     train = samples_for_split(dataset, manifest, "train")
-    spec = dataset["feature_spec"]
-    devices = [device for sample in train for device in sample["devices"]]
-    types = sorted({device["device_type"] for device in devices})
+    raw_spec = dataset["feature_spec"]
+    normalized_config = _preprocessing_config(config, raw_spec)
+    spec = copy.deepcopy(raw_spec)
+    spec["op_names"] = normalized_config["op_fields"][:]
+    devices = [(sample["circuit_id"], device) for sample in train for device in sorted(sample["devices"], key=lambda d: d["device_id"])]
+    types = sorted({device["device_type"] for _, device in devices})
+    weighting = normalized_config["weighting"]
     result: dict[str, Any] = {
+        "preprocessing_version": PREPROCESSING_VERSION,
         "device_vocab": {"<PAD>": 0, "<UNK>": 1, **{name: index + 2 for index, name in enumerate(types)}},
-        "feature_spec": copy.deepcopy(spec),
-        "parameters": _statistics([device["parameters"] for device in devices], spec["parameter_names"]),
-        "op": _statistics([device["op"] for device in devices], spec["op_names"]),
-        "fitted_sample_ids": list(manifest["train"]),
+        "feature_spec": spec, "raw_feature_spec": copy.deepcopy(raw_spec),
+        "transform_config": normalized_config,
+        "normalization_config": copy.deepcopy(normalized_config),
+        "parameters": _statistics([(circuit, device["parameters"]) for circuit, device in devices], spec["parameter_names"], normalized_config["parameters"], weighting),
+        "op": _statistics([(circuit, device["op"]) for circuit, device in devices if is_op_target(device)], spec["op_names"], normalized_config["op"], weighting),
+        "fitted_sample_ids": sorted(manifest["train"]),
+        "fit_ids": {"parameters": sorted(manifest["train"]), "op": sorted(manifest["train"]), "vocabulary": sorted(manifest["train"])},
     }
     if include_performance:
-        result["performance"] = _statistics([sample["performance"] for sample in train], spec["metric_names"])
+        lookup = {sample["sample_id"]: sample for sample in train}
+        labeled = [lookup[sid] for sid in sorted(manifest["labeled_train"])]
+        result["performance"] = _statistics([(sample["circuit_id"], sample["performance"]) for sample in labeled], spec["metric_names"], normalized_config["performance"], weighting)
+        result["performance_fitted_sample_ids"] = sorted(manifest["labeled_train"])
+        result["fit_ids"]["performance"] = sorted(manifest["labeled_train"])
     return result
 
 

@@ -1,53 +1,58 @@
-# Canonical data contract (schema_version = 1)
+# Canonical dataset and preprocessing contract (v2 pipeline)
 
-The converter from Analog Agent must be written against real example files, not guessed. This contract is the intermediate format accepted by the demo. [sample_schema.json](sample_schema.json) contains one explicitly synthetic record as a formatting example; it is not a full five-circuit training dataset.
+The canonical JSON dataset remains schema_version=1; experiment manifests, fitted preprocessing and model checkpoints are version 2. The schema example in sample_schema.json is only a small historical synthetic formatting example, not a complete experiment or the real Opamp2 data.
 
 ## Dataset fields
 
-- `schema_version`: integer 1.
-- `feature_spec.parameter_names`: ordered, unique parameter feature names, e.g. `W`, `L`, `M`, `R`, `C`, `Ib`. No feature count is hardcoded.
-- `feature_spec.op_names`: ordered, unique OP fields, e.g. `id`, `gm`, `gds`, `vds`, `vgs`. Do not assume every device supports every field.
-- `feature_spec.metric_names`: ordered performance targets. Use actual names/units from your dataset, not the two synthetic placeholders. Declare the metric names before stage one; values may be absent until stage two.
-- `feature_spec.terminal_names`: currently exactly `["d", "g", "s", "b", "p", "n"]`, in that order. Map source aliases deliberately.
-- `metadata`: optional JSON metadata, including dataset provenance and `synthetic: true` for toy data. Recommended: specify units per named feature and the simulation/tool/PDK versions.
-- `samples`: nonempty array of the records below.
+- feature_spec.parameter_names, op_names and metric_names: explicit ordered unique field names. Raw op_names preserves all 44 source fields; preprocessing chooses the training subset without altering source records.
+- feature_spec.terminal_names: exactly d,g,s,b,p,n in that order.
+- metadata: units, synthetic flag and OP-state encoding metadata when used.
+- provenance: source file hashes, parser identity, run configuration/constraints and original condition metadata.
+- samples: records below. No feasibility filtering is performed by default.
 
-## Each sample
+Each sample contains globally unique sample_id, circuit_id, stable design_id/design_key, optional group_id, devices, performance, ports and fixed context. Adapter sample IDs are circuit-prefixed source IDs. Repeated observations/exports of one design retain design/group identity. raw_design_parameters preserves source design-vector semantics; source_sampling and source_observation preserve original run/state/check provenance.
 
-- `sample_id`: globally unique, nonempty string for this observation.
-- `design_id`: stable sizing/design identity within this circuit. Repeated runs of the same design must retain it.
-- `circuit_id`: circuit/topology family. The split command requires exactly five different values and one explicit OOD ID.
-- `group_id`: optional circuit-scoped grouping across repeated or related designs; all group members stay together.
-- `context`: optional JSON object for fixed simulation conditions. Every sample must have the same context in this demo. Different supply/temperature/corners/loads must first be represented as explicit modeled features in a later extension.
-- `ports`: optional map from external port name to net string, e.g. `{ "input": "vin", "output": "vout", "ground": "0" }`. Exact names are retained for adapters/audit; the current model only encodes which terminal roles touch an external port.
-- `op_status`: optional `complete`, `partial` or `failed`. This status is provenance; individual OP null masks control learning. A failed record should not carry falsely valid OP numbers.
-- `devices`: nonempty array of actual physical devices, not pin nodes. Every record is matched by `device_id` and sorted canonically for batching.
-- `performance`: object mapping declared metric names to finite numbers or null. `{}` is valid in stage one. Missing metrics are skipped in stage-two loss and evaluation.
+Each device contains device_id, device_type, optional model_name, parameters, op, terminals, op_target and optional op_state/provenance. MOS terminals are D/G/S/B mapped to lower case; independent sources and ideal R/C use p/n. Current source is a physical graph device even when no measured device OP exists. Non-MOS op_target defaults false. Unknown numerical strings, duplicate keys, contradictory device/model joins and nonfinite canonical values are rejected, not silently guessed.
 
-## Each device
+## Actual source adapter
 
-- `device_id`: unique within a sample; stable instance name such as `M1`.
-- `device_type`: nonempty semantic type string such as `nmos`, `pmos`, `resistor`, `capacitor`, `voltage_source`. `<PAD>` and `<UNK>` are reserved.
-- `parameters`: object of declared parameter names and finite numerical values or null. Any omitted declared feature is also missing. Keep units identical for a field across every circuit.
-- `op`: same structure for OP observations. A true measured zero stays `0`; unmeasured/failed values are `null` or omitted.
-- `terminals`: nonempty map from declared terminal roles to net strings. MOS usually has d/g/s/b; two-terminal devices usually p/n. Connected nets must use consistent names, including ground and global supplies.
+`adapter.py` reads supported SQLite tables in read-only mode, validates tables rather than executing saved SQL, and parses the supplied DUT text. It accepts a bounded set of MOS instances (known models or supported model declarations), DC independent sources, ideal R/C, simple parameter definitions and arithmetic. Unknown DUT devices/directives, unsafe include paths, unsupported expressions or unresolved parameter names are errors.
 
-Unknown feature names, duplicate JSON keys, duplicate sample/device IDs, invalid port maps, NaN/Infinity and unexpected strings in numerical fields cause clear errors instead of silent coercion. The converter must interpret raw `NULL`, `nan`, unit suffixes and aliases deliberately. This is especially important when a failed run contains partial useful OP data.
+Expression evaluation uses an AST whitelist for arithmetic, unary signs, parentheses, names and recognized SPICE suffixes. No eval/exec, function calls, arbitrary attributes, imports or simulator execution occur. Expression length, depth, AST count, exponent magnitude and finite intermediate size are bounded. M is milli; MEG is mega. W/L unit semantics and .option scale are applied explicitly. Include/parameter files must remain within the provided dataset root.
 
-## Stages and provenance
+Current actual-source parameter fields are W_m, L_m, m and dc_current_A. Optional supported devices add dc_voltage_V, R_ohm or C_F. All physical fields must have consistent declared units across combined circuits. Raw OP field suffixes retain their original units, including w_um/l_um; no raw OP sign or geometry value is overwritten.
 
-Stage one may receive `performance: {}` for every record. It fits parameter/OP statistics and type vocabulary on the ID training partition only, constructs no label tensors, and uses no performance objective. Records with all performance labels missing must not be filtered out of OP pretraining.
+The supplied Opamp2 audit contains 32 samples, 17 independent design parameters, 15 MOS + 1 current source per sample, 480 MOS OP records, 44 OP fields and 9 performance metrics. All 21,120 OP scalar positions and all 288 metric positions are preserved; 23 metric missing values remain null. This source has one circuit, not five. These counts are a data-integrity check, not a model-quality result.
 
-Performance labels may be attached or corrected before stage two. The stage-one checkpoint contains an immutable fingerprint excluding **only** performance values, plus an independent partition digest. Stage two accepts changed performance dictionaries but rejects changes to record/design/circuit/device identity, topology, parameters, OP, feature order, context and other metadata. Declare the same metric schema up front. No new records or repartitioning are silently accepted.
+## Missingness and state labels
 
-Stage two retains the saved train/val/test/OOD memberships, refits only target statistics on ID train, and records both the original pretraining full dataset fingerprint and the newly labeled full fingerprint. Evaluation uses the exact stage-two dataset fingerprint. If you need new feature schemas or data records, create an explicit new experiment rather than editing a manifest.
+JSON null or an omitted declared field means missing. Measured zero is valid. Raw NaN/Infinity from source measurements become null; masks remain explicit in parameter, OP and performance tensors. Padding is separate from unknown device types. Only MOS targets with observed OP contribute to alignment.
 
-## Missingness and transformations
+`states.py` encodes two independent collector-check groups:
 
-The collator constructs separate parameter/OP/performance boolean masks. Values are standardized with train-only statistics and missing entries replaced by zero **only after masking**. Thus a zero-filled slot is not treated as a measured zero. Unknown device types use UNK rather than PAD.
+- current_missing, current_below, current_pass;
+- saturation_missing, saturation_below, saturation_pass.
 
-No log transform, signed-log transform, clipping or unit conversion is guessed. Those should be explicitly agreed when the real data arrives. Statistics are global per named field, not a single shared statistic across heterogeneous columns. Constant observed fields use std=1; unobserved fields mean=0/std=1. Consider domain-aware transforms if OP spans many orders of magnitude.
+Checked-but-missing has an explicit missing one-hot. Unchecked or insufficiently evidenced groups have all null entries, therefore all masks false. A recognized raw reason is positive evidence only for its corresponding group. Thresholds and device-check scope come from unambiguous sample/run provenance or explicit config; no absent reason is interpreted as pass. `:saturation` is a violation of a minimum saturation margin, not a positive saturation-region label. Contradictory reason/measurement/checklist evidence is rejected. Categories are never z-scored and never enter the shared structure/input branch.
 
-## Duplicate handling
+Default mode collector_checked preserves original check scope conservatively. Explicit all_mos recomputes checks under known thresholds and records derived_not_original_collector; it does not overwrite original reasons/status. preserve_only disables categorical encoding. Raw OP vectors and polarity conventions are unchanged in every mode. The collector's abs(Id) check is used only for that specific current threshold, not as a blanket OP preprocessing rule.
 
-Repeated design_id/group_id records and exact equal design content are grouped. Content fingerprints ignore labels and device/sample names, but retain terminal/net names, parameters, device types, ports and context. They do not solve graph isomorphism. Use a stable group_id when net renaming or near-duplicate exports could otherwise hide the same design. Exact content duplicates appearing under different circuit IDs are rejected, including ID/OOD duplicates.
+## Split configuration
+
+train_circuits and ood_circuits are explicit, disjoint and exhaustive. Empty OOD requires an explicit empty list and is reported as no OOD experiment. There is no hardcoded five-circuit requirement; the intended future four-ID/one-OOD setup is expressed in config.
+
+Within every ID circuit, design_key/design_id/group_id and exact design fingerprints form indivisible groups. Defaults allocate 80/10/10 train/val/test by group count, with at least one group per requested nonempty split. finetune_label_fraction selects complete train groups only. Every mode/seed reuses the same persisted labeled_train and split IDs. The fingerprint ignores target values for design grouping but retains parameters, types, terminals, ports and context. It is not a net-renaming graph-isomorphism detector.
+
+The manifest includes its version, explicit circuits, ratios, seed, memberships, labeled IDs and dataset fingerprint. Existing manifests are verified, never silently rebuilt after additions or config changes. Changed inputs require a new experiment. Performance values can be added later through the stage-transition provenance checks; no new records, input changes or repartitioning are silently accepted.
+
+## Fitted physics transforms
+
+Preprocessing version 2 saves raw_feature_spec, selected feature_spec, device vocabulary, transform rules, fitted asinh scales, mean/std/count, weighting and fitted sample IDs. Default selected OP fields exclude w_um/l_um/multiplicity, preserving them only in raw data. Input parameter/vocabulary/OP fitting uses ID train; performance fitting uses only labeled_train. OOD/validation/test never fit anything.
+
+Default equal_circuit weighting gives each observed circuit equal mass per field, then averages observed values/device slots within each circuit. Signed wide-dynamic OP fields use asinh(x/s), preserving sign and zero; voltage-like fields use linear transform. The default fitted s is the circuit-balanced weighted median of nonzero |x| from training only. Zero observations still participate in the subsequent mean/std. A fixed positive physical scale can be configured. Missing and padding never enter either fit. No sign-erasing abs transform, negative-value log or clipping is applied.
+
+Rules are configurable under normalization with op_fields, weighting and field mappings under parameters/op/performance. Each field rule uses kind linear/asinh and optional scale positive-number/fit. Constant or entirely unobserved fields are explicitly counted and use finite fallback scaling. Transforms and input statistics stay frozen for stage two and evaluation; old scaler versions or conflicting stage-two configs fail clearly.
+
+## Fixed context limitation
+
+All samples currently require identical modeled context. Different process corners, supply, temperature, common-mode or load conditions cannot silently be mixed while omitted from model inputs. Extend the explicit input schema/model before using varied conditions. Unknown extra metadata is preserved for audit, not automatically converted into model features.

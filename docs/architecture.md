@@ -1,48 +1,51 @@
-# Architecture and invariants
+# Architecture and comparison protocol (v2)
 
-## Input encoder
+## Three declared modes
 
-The reference inspected was the public [ZeroSim repository](https://github.com/xz-group/ZeroSim), especially [circuitformer.py](https://github.com/xz-group/ZeroSim/blob/main/model/circuitformer.py), [modules.py](https://github.com/xz-group/ZeroSim/blob/main/model/modules.py), [config.yaml](https://github.com/xz-group/ZeroSim/blob/main/configs/config.yaml), and [preprocess_topology.py](https://github.com/xz-group/ZeroSim/blob/main/scripts/preprocess_topology.py). This demo is an original conceptual implementation, not a source copy or exact replication.
+- `zerosim_pin`: independently implemented pin/port-node ZeroSim-style supervised reference.
+- `zerosim_device`: the same local input/decoder family with one token per physical device, supervised end to end.
+- `jepa_zerosim`: device-node structure/OP joint alignment, followed by strictly frozen input-encoder probing with a metric-query decoder.
 
-The default preserves the high-level 128-dimensional, six-layer, eight-head structure, alternating local/global self-attention and own-parameter cross-attention in the final four layers. Each input device has one token. A graph token precedes the device tokens, and all tokens are retained as decoder memory.
+The pin reference is a clean-room reimplementation, not imported official source, not an exact original-paper reproduction, and not a generic pin GNN relabeled as ZeroSim. It uses learned token/absolute-position embeddings, alternating local/global Transformer attention, own-parameter cross-attention in the last configured layers, a graph token, and a per-metric query Transformer decoder. Sources and deliberate differences are listed in THIRD_PARTY_NOTICES.md.
 
-1. Canonicalize the supplied device list by stable device_id.
-2. Embed the **device type**, not pin type or circuit identity. Add absolute learned position and terminal-role external-port indicators.
-3. Build a device graph: two devices are adjacent when any terminals share a net. Preserve a multi-hot terminal-pair vector for every device pair. A learned per-head bias distinguishes D→G from D→D, etc. Self edges are allowed; the graph token attends globally as in the reference design.
-4. Embed each observed named parameter as scalar projection + feature-name embedding. Device rows can cross-attend only their own observed parameters. The graph token may attend all observed parameters. Rows with none receive a dedicated null token, preventing all-masked softmax NaNs.
-5. Alternate local and global self-attention blocks; insert parameter cross-attention after self-attention in the configured last layers. Use residual post-LayerNorm blocks, feed-forward networks and dropout. Separate norm modules per sublayer are a deliberate robustness difference.
-6. Final LayerNorm + linear projection produce `[B, 1+N, D]`. Padding nodes have zero output and remain excluded from attention keys and decoder memory.
+All three modes use the same canonical samples, grouped manifest, labeled_train subset and target transforms. Baselines optimize encoder+decoder on labels; JEPA additionally learns from OP on the full ID training partition. Equal labeled-data budget is not equal total compute. Reports record pretraining/supervised time, optimizer counts and parameter counts separately. Multiple seeds must retain the same dataset/split/target preprocessing and a stable within-mode architecture and supervised training protocol.
 
-Other deliberate adaptations include train-only normalization, UNK distinct from PAD, explicit missing masks, no silent node truncation, named parameter embeddings, terminal-pair bias and safe handling of all-missing parameter rows. They are not claims about the official implementation.
+## Structure sharing boundary
 
-## OP branch and objective
+For default encoder_layers=6 and cross_layers=4, the first two blocks precede the first design-parameter fusion. `StructureEncoder` owns this entire pure-structure prefix:
 
-One shared `2O → 2D → D` GELU MLP receives each device's standardized observed OP values concatenated with its O-dimensional observed mask. The input branch's device token passes through a `D → 2D → D` predictor. The predictor is discarded at stage two; the encoder itself is retained.
+1. Device-type embedding, learned absolute-position embedding and graph token.
+2. Structural terminal-pair attention bias and external-port terminal-role indicators.
+3. Alternating local/global self-attention plus feed-forward blocks in the prefix.
 
-The loss combines per-device MSE with variance and off-diagonal covariance regularization on **both** learned branch outputs. This follows the anti-collapse motivation in [VICReg](https://arxiv.org/abs/2105.04906), but the exact device-token batching and implementation are demo choices. Variance uses the population centered second moment plus 1e-4 before square root; covariance uses the sample denominator n−1. Each branch's penalty is averaged with the other branch. Tokens in the same circuit are correlated; larger/more varied minibatches and anti-collapse diagnostics should be examined on real data.
+The remaining four input-side blocks retain self-attention and own-parameter cross-attention. They are parameter-conditioned, design-specific and **not** shared with the OP branch. This boundary keeps the reference's six-layer layout rather than silently adding six new structure layers. It is deliberately not described as “all attention is shared.”
 
-There is no performance prediction objective, OP value reconstruction, EMA teacher or stop-gradient in stage one. It is a joint embedding alignment prototype rather than a canonical I-JEPA reproduction. The graph token is not directly aligned to an OP vector, but receives gradients through its interactions with device tokens. Unit tests confirm nonzero graph-token gradients.
+`DeviceEncoder` registers the shared module once. `SharedOPEncoder.structure_encoder` references that exact module object without a second registration. `JEPAModel.forward` calls the structure module exactly once and passes the same non-detached tensor to both branches. Thus both branches see the same structural dropout realization and both gradient paths update the shared parameters. There is no teacher copy, EMA, stop-gradient, or synchronization procedure.
 
-## Frozen-encoder downstream stage
+The shared module reads only type, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
 
-Each metric has one learned query. A standard Transformer decoder applies query self-attention, cross-attention to `[graph, every device]`, and a feed-forward sublayer. A shared `D → D → 1` GELU regressor predicts one scalar per query. The decoder feed-forward default is 2048, matching PyTorch's default used by the inspected reference.
+## Alignment objective and limitations
 
-`FrozenPerformanceModel` enforces all three:
+The objective is symmetric device-wise MSE plus variance and off-diagonal covariance penalties on both branch outputs (VICReg-style anti-collapse regularization). Defaults are 25/25/1 with a standard-deviation floor of 1. At least two eligible observed MOS tokens are required per minibatch. Entirely missing OP vectors and non-target devices do not contribute.
 
-- `encoder.requires_grad_(False)` and optimizer containing decoder parameters only.
-- `encoder.eval()` even after the wrapper is switched to train mode, disabling encoder dropout.
-- Encoder forward runs inside `torch.no_grad()`.
+This is an explicit alignment prototype, not a canonical I-JEPA implementation. Sharing structure creates a genuine shortcut risk: the branches could agree on topology while underusing sizing/OP. Regularization addresses constant-vector collapse, not every shortcut. Meaningful research needs within-topology representation checks, OP pairing/shuffle ablations and downstream comparisons, not only decreasing alignment loss. The current smoke verifies mechanics, not scientific benefit.
 
-Every epoch compares a SHA-256 digest over the encoder's entire state_dict (parameters AND registered buffers) against the stage-one checkpoint and verifies absence of encoder gradients. Stage two never constructs OP tensors. Performance labels are masked and standardized using ID train statistics only. Their MSE is averaged over observed scalar targets.
+## Device graph and pin reference
 
-## Split and checkpoint provenance
+Device mode has one node per DUT device, including current sources and passive elements. Two devices connect when terminals share a net; terminal-pair features distinguish D→G from D→D. Only MOS nodes are default OP targets. The graph token and every real device token remain decoder memory.
 
-Only circuit IDs in the manifest's train/val/test partitions appear in any fitting step. Dataset validation inspects and integrity-hashes every record, including OOD, but this does not fit statistics or feed OOD to the model. Feature names are an explicit caller-provided schema, not learned by inspecting the fifth circuit.
+Pin mode converts those same samples only at tensorization time: explicit external-port nodes first, then canonical per-device terminal nodes. Pins belonging to a device form an internal clique; shared nets and their external ports create the electrical connectivity. Named parameter values/masks are repeated for the corresponding device's pins. Pin/port vocabulary is fitted from ID train only, with separate UNK and PAD. Dataset IDs, design grouping and target scalers never change. The pin reference disables the device terminal-pair attention-bias extension by default; its effective config is recorded.
 
-Splits unite records sharing a circuit-scoped design_id, group_id or exact design fingerprint. The fingerprint excludes OP/performance labels and sample/device identity strings. It retains device types, named parameters, terminal/net mapping, ports and context. Exact duplicates across different circuits raise an error rather than silently contaminating ID/OOD. The detector is not a graph-isomorphism solver.
+Differences from an exact upstream reproduction include strict missing/padding masks, named parameter embeddings, train-only circuit-balanced preprocessing, safe null-parameter attention, no silent truncation, and independent implementation choices in normalization modules. These safeguards are kept explicit rather than claimed to reproduce published numbers.
 
-Within each ID circuit, seed-based hashes order independent groups; validation and test each receive max(1, floor(group_count × fraction)) groups, with the remainder training. All four ID circuits must have at least three groups. No sample appears in multiple splits.
+## Decoder and frozen behavior
 
-Checkpoints store architecture/options, feature order, train-only preprocessing/vocabulary, explicit sample split IDs, full dataset fingerprint, immutable input/OP fingerprint, independent partition digest, source encoder hash, selection objective/epoch, Python/Torch versions, and a synthetic-data flag. Labels affect the integrity hash only, never pretraining gradients, preprocessing or selection. A separate adversarial review verified identical stage-one tensors under performance-label poisoning.
+Each metric has a learned query. A Transformer decoder performs query self-attention, cross-attention over `[graph, all real input tokens]`, and feed-forward processing. A shared D→D→1 regressor outputs metric values. The default decoder has two layers and a 2048-wide feed-forward block.
 
-Stage two explicitly permits later performance-label attachment. It compares the input/OP fingerprint against stage one, verifies the original partition digest and scaler fitted IDs, then refreshes the full dataset fingerprint for the labeled data without changing any membership. The original full pretraining fingerprint is retained in the stage-two checkpoint. Changes to inputs, OP, records, schema or partitions are rejected.
+For JEPA stage two, the entire input encoder is set requires_grad=False, is kept in eval even when its wrapper trains, and executes under no_grad. Only decoder parameters enter the optimizer. Every epoch verifies a digest over all encoder parameters and registered buffers and checks absent encoder gradients. Baselines instead update both input encoder and decoder; no OP/state tensors are passed to either baseline model.
+
+## Provenance and evaluation
+
+Version-2 checkpoints store architecture, selected field order, signed transform rules and fitted scales, state config, explicit split/label IDs, dataset/partition/input-OP digests, validation selection, phase timing and counts. Old v1 checkpoints fail with a clear incompatibility message. Adding downstream performance labels is allowed only while immutable input/OP/identity and split provenance remain unchanged. Changed normalization or OP-state configuration is rejected during stage transition rather than mislabeled as the requested new configuration.
+
+Metrics are computed only on observed targets: original-unit MAE/RMSE/R² plus normalized-space errors under frozen training-target transforms. R² is undefined for fewer than two labels or zero variance and remains null. Target values and both physical/normalized predictions are emitted per sample. Comparison rejects unmatched data, labels, splits, evaluated samples, target scalers, label budgets or supervised training protocol. Pin and device architectures intentionally differ; comparisons require per-mode consistency across seeds, not identical node counts or parameter counts across methods.

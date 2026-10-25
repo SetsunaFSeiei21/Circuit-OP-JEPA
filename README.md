@@ -1,121 +1,145 @@
 # Circuit-OP-JEPA
 
-器件级电路表示预训练 → 冻结输入编码器 → 性能预测。独立新项目，不改 ZeroSim 或 Analog Agent 仓库。
+器件级共享结构编码、OP 表示对齐，以及可直接比较的三个模式：
 
-仓库：https://github.com/SetsunaFSeiei21/Circuit-OP-JEPA （私有）。
+- `zerosim_pin`：独立复现的 **pin-node ZeroSim-style** 监督基线，训练 encoder + metric-query decoder。
+- `zerosim_device`：器件节点 ZeroSim-style 监督基线，训练 encoder + decoder。
+- `jepa_zerosim`：器件节点共享结构 OP 预训练，然后冻结整个输入 encoder，只训练 decoder。
 
-## 已实现的约定
+`zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。三种模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。
 
-1. **输入分支**：拓扑 + 设计参数，参考 ZeroSim 的 Transformer 编码结构，但每个 **器件只有一个 node/token**，不是一个 pin 一个 node。
-2. **OP 分支**：所有器件、所有电路共用一个可训练 MLP，输入该器件标准化 OP 向量及 missing mask。
-3. **阶段一**：按 device_id 对齐两个分支，优化 OP 表示对齐；不使用性能标签、性能预测头或性能 loss。
-4. **阶段二**：加载阶段一输入编码器，固定其全部参数及状态，仅训练 **metric-query Transformer decoder**。每个指标一个 query，包含 query self-attention、读取完整器件序列的 cross-attention，以及共享 scalar regressor。
-5. **划分**：指定一个电路整体作为 OOD。剩余四个电路分别按 design/group 做 train/val/test；重复设计不会跨集合。OOD 不参与预训练、scaler/vocabulary 拟合、早停或 checkpoint 选择。
+## 快速开始
 
-没有 graph-token MLP 性能头，也没有把所有器件平均池化后再给 decoder。保留一个辅助 graph token，但 decoder memory 是 `[graph, device_1, ..., device_N]`。
-
-> 当前仅合成数据验证流程与约束，**不是电路仿真，不代表真实预测精度/OOD 泛化性能**。Analog Agent 的五个真实电路数据尚未接入。
-
-## 快速运行
-
-Python 3.10+。CPU 环境示例，先安装官方 CPU PyTorch，避免意外安装大型 CUDA 依赖：
+Python 3.10+、稳定版 PyTorch 2.6+，建议独立环境。旧版 PyTorch 的 `weights_only=True` 存在已知安全缺陷，运行时也会拒绝加载 checkpoint；仅加载可信来源的模型文件。CPU 示例：
 
 ```bash
-git clone https://github.com/SetsunaFSeiei21/Circuit-OP-JEPA.git
-cd Circuit-OP-JEPA
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install "torch>=2.6" --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -e .
 python -m unittest discover -s tests -v
-python -m device_jepa smoke --output runs/smoke
+python -m device_jepa smoke --output runs/synthetic_jepa
 ```
 
-`device-jepa smoke` 是等价入口。也可以运行 `bash scripts/run_smoke.sh`。合成 smoke 使用较小模型、2 个预训练 epoch 和 3 个 decoder epoch，仅用于检查数据/梯度/保存加载/评估是否贯通。
-
-默认研究配置在 `configs/default.json`：128 维、6 层 encoder、8 heads、FFN 512、后 4 层参数 cross-attention；2 层 metric-query decoder，decoder FFN 2048。真实实验所需 epoch、batch size、OP feature transforms 和 loss 权重需随后验证。
-
-### 分开执行两个阶段
+真实 Opamp2 的短流程检查：
 
 ```bash
-python -m device_jepa make_synthetic --output runs/demo/data.json
-python -m device_jepa split \
-  --data runs/demo/data.json --ood-circuit synthetic_4 \
-  --output runs/demo/manifest.json
-
-python -m device_jepa pretrain \
-  --data runs/demo/data.json --manifest runs/demo/manifest.json \
-  --config configs/default.json --output runs/demo
-
-python -m device_jepa train_decoder \
-  --data runs/demo/data.json --pretrained runs/demo/pretrain_best.pt \
-  --config configs/default.json --output runs/demo
-
-python -m device_jepa evaluate \
-  --data runs/demo/data.json --checkpoint runs/demo/decoder_best.pt \
-  --split test --output runs/demo/test_report.json
-python -m device_jepa evaluate \
-  --data runs/demo/data.json --checkpoint runs/demo/decoder_best.pt \
-  --split ood --output runs/demo/ood_report.json
+python -m device_jepa smoke_real \
+  --input /path/to/tmp_data/Opamp2 \
+  --config configs/opamp2_smoke.json \
+  --output runs/opamp2_smoke
 ```
 
-阶段一允许所有 performance 都为 {}，随后添加性能标签进入阶段二；输入、OP、记录身份与划分必须不变，性能指标名字需要提前声明。
+真实数据不包含在仓库中。目前收到的 Opamp2 只有一个电路，32 个设计样本，每个 15 个 MOS + 1 个电流源，44 个原始 OP 字段、9 个性能指标。配置明确 `ood_circuits: []`，**该 smoke 不能验证跨电路 OOD 泛化，也不是预测效果实验**。不会因为原始 `feasible=false` 就丢掉样本。
 
-所有配置均显式保存到 checkpoint。GPU 可传 `--device cuda`，但本版本只在 CPU 上做过验证。严格确定性模式可能使某些 GPU kernel 报错，而不会悄悄改变执行方式。
+三模式、多个随机种子的自动运行及结果处理，见 [scripts/README.md](scripts/README.md)。脚本分为 `scripts/git/`、`scripts/smoke_test/`、`scripts/run/`，与 Analog-Agent 的组织方式对应。先做 smoke，再运行正式实验。
 
-## 预训练目标：明确的 demo 选择
+## 数据处理流程
 
-`h_i = input_encoder(topology, parameters)[i]`，`p_i = predictor(h_i)`，`z_i = shared_OP_MLP(OP_i, observed_i)`。
+```bash
+python -m device_jepa import_analog_agent \
+  --input /path/to/Opamp2 \
+  --config configs/opamp2_smoke.json \
+  --output runs/opamp2/data.json
 
-默认 objective：
+python -m device_jepa split \
+  --data runs/opamp2/data.json \
+  --config configs/opamp2_smoke.json \
+  --output runs/opamp2/manifest.json
+```
+
+导入器只读 SQLite 和 SPICE 文本，不运行仿真、网表、外部 Python 或 SQL 脚本。它会：
+
+1. 提取 DUT 器件、类型、模型、D/G/S/B 或 P/N、端口和参数表达式。
+2. 按对应样本的 design vector 解析 W/L/m 等表达式。采用有界语法树白名单，不使用 `eval`；不支持的语法明确报错，不静默漏器件。
+3. 按 `(sample_id, device_name)` 精确匹配 OP，保留全部 44 个原始字段及符号，性能 NaN 转为 `null`。
+4. 将电流源等非 MOS 保留在输入图中，但不把它们当作 MOS OP 对齐目标。
+5. 保存原始 reasons、check scope、阈值来源和运行 provenance。多来源合并通过 source_id + circuit_id + run_id 关联检查记录，不能仅用不同电路可能重复的 run_id。类别只进入 OP 分支，不进入共享结构或设计输入。
+
+预训练启用状态特征时，会从原始证据重新推导并核对已存编码与配置；不匹配或缺少 provenance 时要求重新导入，不能把缺失编码静默当作全未知。显式 `features: []` 可关闭状态输入。
+
+当前参数采用明确单位：`W_m`、`L_m`、`m`、`dc_current_A` 等；原始 OP 的 `w_um`、`l_um` 等不改写。默认训练 OP 字段排除 `w_um/l_um/multiplicity`，避免从 OP 几何字段直接抄回设计参数。详细契约见 [docs/data_schema.md](docs/data_schema.md)。
+
+## 划分与归一化
+
+配置明确指定：
+
+```json
+{
+  "dataset": {
+    "train_circuits": ["CircuitA", "CircuitB", "CircuitC", "CircuitD"],
+    "ood_circuits": ["CircuitE"],
+    "split_ratios": [0.8, 0.1, 0.1],
+    "split_seed": 17,
+    "finetune_label_fraction": 1.0
+  }
+}
+```
+
+先按电路分出 OOD，再在每个 ID 电路内按 `design_key/design_id/group_id` 和精确重复设计分组划分。标签预算只抽取 train 内的完整设计组，绝不从验证/测试补标签。OOD 不参与 OP 预训练、任何统计量拟合、模型选择或标签抽样。
+
+manifest 保存版本、样本集合、指纹和随机种子。再次运行只验证；增删数据或换配置会报错，必须显式选择新实验目录，不会偷偷重新划分。阶段一可以没有性能标签，阶段二可只补充/更改性能值；输入/OP/身份/划分仍必须完全一致。
+
+按物理字段拟合变换，默认每个训练电路等权：
+
+- 电压：线性 z-score。
+- 带符号、跨数量级的电流/电导/电容/比值：`asinh(x/s)` 后 z-score。
+- `s` 可固定，也可只用 ID train 拟合；默认是电路均衡的非零绝对值加权中位数。
+- `0` 是有效测量，missing/padding 不参加拟合。不对负值取 log，不 blanket abs，不裁剪极值。
+- OP/输入统计使用 ID train，性能统计只使用 `labeled_train`。所有变换/尺度/字段顺序保存到 checkpoint，后续评估与冻结输入复用。
+
+## 共享结构与两阶段
+
+默认 `encoder_layers=6, cross_layers=4`，切分点是 **第一次参数融合之前**：
+
+- 前 2 层完整纯结构 prefix：器件 embedding、位置、端子连接及 local/global attention。
+- 后 4 层设计专属：local/global attention + own-parameter cross-attention。
+
+这不是“只共享最初 embedding”，也不是“6 层全部共享”。两个分支引用同一个结构模块对象，结构 forward 只执行一次，复用同一份 dropout 结果；两条梯度路径都回到共享参数，没有 EMA、detach 或复制后同步。
 
 ```text
-25 * MSE(p, z)
-+ 25 * variance_penalty(p, z)
-+  1 * off_diagonal_covariance_penalty(p, z)
+                  同一结构模块 S(G)，只算一次
+                    /                   \
+设计参数 -> 后4层参数融合 -> h       concat(S, OP, mask, states) -> shared OP MLP -> z
+                         直接对齐 h 与 z
 ```
 
-- 两个 encoder 都训练，没有偷偷把 OP MLP 固定为随机 teacher。
-- 没有 EMA teacher、stop-gradient、masked-context 任务或 OP reconstruction decoder。
-- 仅做 MSE 可能产生常数表示，所以加入 VICReg-style 方差/协方差正则。这是**对齐式 demo 的 anti-collapse 设计**，不是声称逐项复现 I-JEPA，也不是已证明不会塌缩或能迁移的结果。
-- 所有有至少一个有效 OP 的器件参与对齐；部分缺失 OP 由 mask 明确表示。整个 OP 向量缺失的器件不参与任何对齐/正则项。正则以 minibatch 内有效器件 token 为样本，需要至少 2 个。
-- Stage1 checkpoint 根据 ID validation 的同一 OP objective 选择；stage2 根据 ID validation 标准化性能 MSE 选择。没有根据 OOD 调参。
+已移除独立 predictor。目标是 MSE + variance/covariance anti-collapse 正则，不是原版 I-JEPA 的 EMA/masked-context 复现。共享结构也可能形成 shortcut，必须在正式实验检查同拓扑不同设计的表示差异、OP 打乱消融与下游迁移，不能只看 loss 下降。
 
-详见 [architecture.md](docs/architecture.md)。
+阶段二对整个输入 encoder `requires_grad=False + eval + no_grad`，优化器只有 metric-query decoder；每个 epoch 检查 encoder 参数和 buffers 的摘要完全不变。decoder 读取 `[graph token, 全部器件 token]`，不是 pooled 单 token。
 
-## 数据交接
+## OP 工作检查类别
 
-完整契约与一条样例在 [data_schema.md](docs/data_schema.md) 和 [sample_schema.json](docs/sample_schema.json)。原始 Analog Agent 格式尚未知，**未臆造 converter**。
+这里编码的是 collector 的**检查结果**，不是 cutoff/triode/saturation 三种互斥工作区。
 
-给到真实数据后主要补充：
-- 五个 circuit_id 和明确的 OOD circuit_id；design_id / 重复仿真 group_id。
-- 器件 ID、类型、D/G/S/B 或 P/N 的 net 映射，端口信息。
-- 设计参数、OP 字段名/单位，失败/部分成功记录的缺失语义。
-- 性能指标列表、单位、有效标签 mask，固定的工艺/电源/温度/负载条件。
+- current：missing / below threshold / pass。
+- saturation margin：missing / below threshold / pass。
 
-请把原始 `NULL`、NaN 等转换为 JSON `null`，不要用数值 0 代替缺失。数值 0 是有效测量。性能全部缺失但有 OP 的样本仍可做阶段一预训练。
+两个组可以同时失败。`:saturation` 是“不满足饱和裕量要求”的 violation，不是“处于饱和区”。默认 `collector_checked`，没有检查证据的组全部 mask=false；“没有 reason”绝不等于正常。`all_mos` 是需显式选择的派生重算模式，不冒充原 collector 的原始检查。类别保持 one-hot，不进行数值 z-score。
 
-## 代码导航
+## 单模式命令
 
-- `device_jepa/data.py`：schema、去重分组、manifest、train-only scaler/vocabulary、synthetic fixtures。
-- `device_jepa/tensors.py`：标准化、missing/padding masks、器件连接及 terminal-pair features。
-- `device_jepa/model.py`：输入 encoder、共享 OP MLP、predictor、对齐 loss、metric-query decoder、冻结包装。
-- `device_jepa/training.py`：两个训练阶段、checkpoint integrity、原单位 MAE/RMSE/R² 与逐电路报告。
-- `device_jepa/cli.py`：命令行；`configs/` 为可编辑配置。
-- `tests/`：数据泄漏、OP/参数缺失、padding、梯度、冻结参数/状态、checkpoint 和端到端回归测试。
+```bash
+python -m device_jepa pretrain --data DATA --manifest MANIFEST --config CONFIG --output RUN
+python -m device_jepa train_decoder --data DATA --pretrained RUN/pretrain_best.pt --config CONFIG --output RUN
+python -m device_jepa train_baseline --mode zerosim_pin --data DATA --manifest MANIFEST --config CONFIG --output RUN_PIN
+python -m device_jepa train_baseline --mode zerosim_device --data DATA --manifest MANIFEST --config CONFIG --output RUN_DEVICE
+python -m device_jepa evaluate --data DATA --checkpoint CHECKPOINT --split test --output report.json
+```
 
-## 已知边界
+正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，smoke 用小模型与极少 epoch。checkpoint/preprocessing 现为 v2，旧版 checkpoint 明确拒绝加载，需要重新预训练。
 
-- 独立概念实现，不承诺与 ZeroSim 权重/结果兼容；未复制或分发它的源代码。来源与许可检查见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-- 保留 ZeroSim-style absolute learned position embedding，按 device_id 排序；输入 JSON 记录重排不影响输出，但重新命名器件、拓扑同构不保证不变。
-- 端子角色进入 attention bias；外部端口进入 terminal-role 指示。端口名字/输入输出功能仅保留在数据中，未做语义 embedding。net 名只用来确定连接关系，不作为数值 token。
-- `context` 目前不是模型输入。因此验证器要求所有样本 context 相同；多工艺角/不同电源/温度/负载需要后续显式 context 特征，不能直接混入。
-- 图和参数 attention 使用 dense masks，适合小型模拟电路，不是大图高性能实现。超过 `max_devices` 会报错，不截断。
-- 精确重复检测保留 net 名，不能自动发现 net 重命名后的同构重复；跨来源样本应提供稳定 group_id。
-- scaler 只做按具名字段的 z-score；未自动猜测 OP 符号、对数变换或单位。训练集未观测的设备类型映射到 UNK，不是 padding。
-- checkpoint 支持两个阶段衔接及评估，不含训练中断恢复功能。阶段一到阶段二允许只补充/更改性能标签，评估要求同一阶段二数据 manifest；另一个任意新数据集的 predict 入口可在真实数据接入时添加。
-- 本 demo 不包含 SPICE/PDK、Analog Agent 数据转换、ACCFormer 独立变体或集群脚本。
+## 代码说明与建议审查顺序
 
-## English summary
+见 [docs/review_order.md](docs/review_order.md)。重点顺序：adapter → states → data/split/normalization → tensors → shared model → 两阶段冻结 → baselines → comparison → scripts。
 
-An independent, device-node adaptation of the ZeroSim-style topology/parameter Transformer. Stage 1 jointly trains a shared per-device OP MLP and the design branch using symmetric alignment plus explicit variance/covariance regularization. Stage 2 freezes the full design encoder, disables its dropout and gradients, and trains only a metric-query Transformer decoder over all device tokens. Four circuit families are ID; the fifth is excluded from every training/scaler/model-selection step. Synthetic tests validate mechanics only, not real circuit accuracy.
+## 边界
+
+- 不是无条件通用 SPICE parser；不支持的 DUT、表达式或未知模型会报错。
+- 当前 context 要求固定；不同工艺角/温度/供电/负载需显式建模后才能混训。
+- 学习位置编码按稳定器件 ID 排序，不保证器件重命名/图同构不变。
+- 精确重复检测不求解 net 重命名图同构；跨来源重复应提供可靠 group_id。
+- 标准 checkpoint 支持阶段衔接与评估，不支持任意中断恢复；现有数据只做短 smoke，不宣称性能或 OOD 优势。
+- 来源、原实现与本实现差异见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、[docs/architecture.md](docs/architecture.md)。
+
+数值评估使用 float64 稳定反变换，物理单位真值直接读取原始标签，不经 float32 归一化往返。CUDA 确定性要求在初始化前设置 `CUBLAS_WORKSPACE_CONFIG=:4096:8`（代码在设种子时默认设置，允许显式 `:16:8`）；若在 notebook 中已初始化 CUDA，请在启动进程前设置。当前验证为 CPU，不声称 GPU 实测。PyTorch 安全依据：[CVE-2025-32434 官方公告](https://github.com/pytorch/pytorch/security/advisories/GHSA-53q9-r3pm-6pq6)。

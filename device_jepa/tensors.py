@@ -1,6 +1,8 @@
 """Mask-aware batches: design inputs, OP targets and labels stay separated."""
 import torch
 
+from .data import is_op_target, transform_value, inverse_transform_value
+
 
 def collate_samples(samples, preprocessing, include_op=True, include_performance=False):
     if not samples:
@@ -21,7 +23,12 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
         "device_ids": [],
     }
     if include_op:
-        batch.update(op=torch.zeros(b, n, o), op_mask=torch.zeros(b, n, o, dtype=torch.bool))
+        batch.update(op=torch.zeros(b, n, o), op_mask=torch.zeros(b, n, o, dtype=torch.bool),
+                     op_target_mask=torch.zeros(b, n, dtype=torch.bool))
+        states = preprocessing.get("op_state_features", [])
+        if states:
+            batch.update(op_state=torch.zeros(b, n, len(states)),
+                         op_state_mask=torch.zeros(b, n, len(states), dtype=torch.bool))
     if include_performance:
         if "performance" not in preprocessing:
             raise ValueError("Performance statistics must be fitted on ID train before using labels")
@@ -40,8 +47,16 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
             _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
                   device.get("parameters", {}), pn, preprocessing["parameters"])
             if include_op:
+                batch["op_target_mask"][bi, ni] = is_op_target(device)
                 _fill(batch["op"][bi, ni], batch["op_mask"][bi, ni],
                       device.get("op", {}), on, preprocessing["op"])
+                for si, name in enumerate(preprocessing.get("op_state_features", [])):
+                    value = device.get("op_state", {}).get(name)
+                    if value is not None:
+                        if value not in (0, 1):
+                            raise ValueError(f"OP state {name} must be categorical 0/1/null")
+                        batch["op_state"][bi, ni, si] = value
+                        batch["op_state_mask"][bi, ni, si] = True
             for terminal, net in device["terminals"].items():
                 ti = terminal_index[terminal]
                 nets.setdefault(net, []).append((ni, ti))
@@ -62,7 +77,7 @@ def _fill(values, mask, mapping, names, stats):
     for i, name in enumerate(names):
         value = mapping.get(name)
         if value is not None:
-            normalized = (float(value) - stats["mean"][i]) / stats["std"][i]
+            normalized = transform_value(float(value), stats, i)
             if not torch.isfinite(torch.tensor(normalized, dtype=values.dtype)):
                 raise ValueError(f"Non-finite standardized feature {name}; inspect units/transforms")
             values[i], mask[i] = normalized, True
@@ -74,4 +89,28 @@ def to_device(batch, device):
 
 
 def denormalize(prediction, statistics):
-    return prediction * prediction.new_tensor(statistics["std"]) + prediction.new_tensor(statistics["mean"])
+    """Evaluation-only inverse in float64, using the stable scalar transform.
+
+    Reporting must not cast physical scales/offsets into float32: that can erase
+    small target variation, underflow tiny scales, or overflow sinh before its
+    physical scale is applied. This deliberately detached CPU scalar path also
+    handles finite scaled-sinh results whose unscaled sinh would overflow.
+    """
+    if prediction.ndim < 1 or prediction.shape[-1] != len(statistics["mean"]):
+        raise ValueError("Prediction shape does not match target statistics")
+    flat = prediction.detach().to(device="cpu", dtype=torch.float64).reshape(-1, prediction.shape[-1])
+    values = [[inverse_transform_value(value, statistics, j) for j, value in enumerate(row)]
+              for row in flat.tolist()]
+    return torch.tensor(values, dtype=torch.float64, device=prediction.device).reshape(prediction.shape)
+
+
+def evaluation_targets(samples, preprocessing):
+    """Physical truths come from original data, never a float32 round trip."""
+    names, stats = preprocessing["feature_spec"]["metric_names"], preprocessing["performance"]
+    raw, normalized = [], []
+    for sample in samples:
+        values = [sample["performance"].get(name) for name in names]
+        raw.append([float(value) if value is not None else 0. for value in values])
+        normalized.append([transform_value(float(value), stats, j) if value is not None else 0.
+                           for j, value in enumerate(values)])
+    return torch.tensor(raw, dtype=torch.float64), torch.tensor(normalized, dtype=torch.float64)
