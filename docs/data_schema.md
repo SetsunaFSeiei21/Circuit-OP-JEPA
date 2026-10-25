@@ -1,6 +1,6 @@
 # Canonical dataset and preprocessing contract (v2 pipeline)
 
-The canonical JSON dataset remains schema_version=1; experiment manifests, fitted preprocessing and model checkpoints are version 2. The schema example in sample_schema.json is only a small historical synthetic formatting example, not a complete experiment or the real Opamp2 data.
+The canonical JSON dataset remains schema_version=1; experiment manifests, fitted preprocessing and model checkpoint containers remain version 2. Newly fitted preprocessing/checkpoints additionally declare `input_contract_version: 2` for heterogeneous parameter masks and coarse device categories. Legacy v2 checkpoints without this field use input contract 1 (see compatibility below). The schema example in sample_schema.json is only a small historical synthetic formatting example, not a complete experiment or the real Opamp2 data.
 
 ## Dataset fields
 
@@ -12,7 +12,7 @@ The canonical JSON dataset remains schema_version=1; experiment manifests, fitte
 
 Each sample contains globally unique sample_id, circuit_id, stable design_id/design_key, optional group_id, devices, performance, ports and fixed context. Adapter sample IDs are circuit-prefixed source IDs. Repeated observations/exports of one design retain design/group identity. raw_design_parameters preserves source design-vector semantics; source_sampling and source_observation preserve original run/state/check provenance.
 
-Each device contains device_id, device_type, optional model_name, parameters, op, terminals, op_target and optional op_state/provenance. MOS terminals are D/G/S/B mapped to lower case; independent sources and ideal R/C use p/n. Current source is a physical graph device even when no measured device OP exists. Non-MOS op_target defaults false. Unknown numerical strings, duplicate keys, contradictory device/model joins and nonfinite canonical values are rejected, not silently guessed.
+Each device contains device_id, device_type, optional model_name, parameters, op, terminals, op_target and optional op_state/provenance. An optional `parameter_applicability` object may explicitly map declared parameter names to booleans; an observed value cannot be marked inapplicable. MOS terminals are D/G/S/B mapped to lower case; independent sources and ideal R/C use p/n. Current source is a physical graph device even when no measured device OP exists. Non-MOS op_target defaults false; an explicit eligibility override remains supported. Unknown numerical strings, duplicate keys, contradictory device/model joins and nonfinite canonical values are rejected, not silently guessed.
 
 ## Actual source adapter
 
@@ -26,14 +26,52 @@ The supplied Opamp2 audit contains 32 samples, 17 independent design parameters,
 
 ## Missingness and state labels
 
-JSON null or an omitted declared field means missing. Measured zero is valid. Raw NaN/Infinity from source measurements become null; masks remain explicit in parameter, OP and performance tensors. Padding is separate from unknown device types. Only MOS targets with observed OP contribute to alignment.
+For an applicable field, JSON null or an omitted value means missing. Measured zero is valid. A field outside a device's physical parameter schema is not applicable, rather than an observed zero or a failed measurement. Raw NaN/Infinity from source measurements become null; masks remain explicit in parameter, OP and performance tensors. Padding is separate from unknown device types. Only eligible targets with observed OP contribute to alignment; the current source collector supplies MOS device OP, not passive/source device OP. This is a data-coverage boundary, not a claim that passive devices have no physical DC state.
+
+### Heterogeneous device inputs (all five newly trained modes)
+
+Concrete `device_type` stays intact: NMOS and PMOS remain distinct, as do resistor, capacitor, independent current source and independent voltage source. A second fixed semantic vocabulary supplements these subtypes:
+
+| Coarse category | IDs / meaning |
+| --- | --- |
+| padding | `0`, never a real node |
+| unknown | `1`, unsupported/custom type; not padding |
+| active | `2`, NMOS/PMOS |
+| passive | `3`, resistor/capacitor (and an explicitly provided inductor type) |
+| source | `4`, independent current/voltage sources; not silently forced into active/passive |
+| port | `5`, standalone external-port tokens in pin mode |
+
+This fixed `device_category_vocab` is not fitted from held-out samples. Concrete subtype/pin vocabularies remain ID-train-only; unseen subtypes map to their unknown token. The coarse `device_categories` tensor is consumed by an additional learned embedding in the shared structure encoder. The adapter still rejects unsupported DUT primitives; assigning a category does not add parser support.
+
+Parameters use one shared ordered feature space, preserving their own physical fields rather than assigning W/L/M to every device. Known MOS schemas recognize W/L/M (or adapter `W_m/L_m/m`); R and C use resistance and capacitance fields; sources use their actual current/voltage fields. The same applicability helper is used in both device and pin collators. Known primitive schemas distinguish legacy unrelated null padding from a missing applicable parameter; additional observed fields remain supported. For custom types, explicitly supplied keys, including null keys, provide the fallback schema; use `parameter_applicability` when that evidence is insufficient.
+
+The padded tensors distinguish:
+
+| Case | `device_mask` | `parameter_applicability` | `parameter_mask` |
+| --- | --- | --- | --- |
+| observed value, including true zero | true | true | true |
+| applicable but missing value | true | true | false |
+| not applicable to this device | true | false | false |
+| padded node | false | false | false |
+
+These are actual model inputs, not reporting-only flags. Contract-2 named parameter tokens project `(normalized value, observed bit)`; missing values are replaced by zero before projection. Applicable-but-missing tokens remain visible to own-node feature attention with observed bit 0; inapplicable tokens are excluded by the attention mask. The device type/category stays visible in either case. Pin tokens inherit their parent device's category, parameter values and both masks; standalone ports carry no live parameter tokens.
+
+### Direct DC OP inputs versus JEPA targets
+
+`zerosim_pin_op` and `zerosim_device_op` add selected continuous OP `(value, observed bit)` tokens to the existing own-node feature fusion. They do not add OP-check one-hot states, a predictor, a separate JEPA branch or extra fusion layers. Device-level OP/masks/eligibility are repeated onto that device's own observed pins in pin mode; ports, padding and noneligible devices have no live OP tokens. Current collector non-MOS observations are unavailable, not fabricated. Both new models require the OP tensor/mask/eligibility contract at **training and inference**; per-field missing values remain supported. A training set with no eligible observed selected OP is rejected. Inference reports count observed/possible OP values and samples with no observed OP, counting original devices rather than repeated pins.
+
+The original `zerosim_pin`/`zerosim_device` models and the frozen JEPA input encoder do not read OP at inference. JEPA uses OP on its pretraining target branch only. All five modes share parameter scalers and target-label budgets; all OP-using methods share selected continuous OP fields and ID-train-only transforms. OP acquisition time is unmeasured (`null`, not zero) and reported separately from model training time.
+
+### Input-contract compatibility
+
+The top-level checkpoint and its preprocessing declare matching `input_contract_version`. Version 2 includes the fixed category vocabulary/embedding and two-channel parameter projection above; old v2-container checkpoints without the input-contract field reconstruct version 1 (no coarse embedding, one-channel parameter projection, observed-only parameter attention). New weights are therefore never silently loaded into the old architecture. Continuing a legacy pretraining checkpoint preserves its actual contract through decoder training and evaluation; do not mix old and new input contracts in a matched model comparison. The loader rejects inconsistent input-contract/category metadata and new direct-OP checkpoints that omit their explicit OP training/inference requirement.
 
 `states.py` encodes two independent collector-check groups:
 
 - current_missing, current_below, current_pass;
 - saturation_missing, saturation_below, saturation_pass.
 
-Checked-but-missing has an explicit missing one-hot. Unchecked or insufficiently evidenced groups have all null entries, therefore all masks false. A recognized raw reason is positive evidence only for its corresponding group. Thresholds and device-check scope come from unambiguous sample/run provenance or explicit config; no absent reason is interpreted as pass. `:saturation` is a violation of a minimum saturation margin, not a positive saturation-region label. Contradictory reason/measurement/checklist evidence is rejected. Categories are never z-scored and never enter the shared structure/input branch.
+Checked-but-missing has an explicit missing one-hot. Unchecked or insufficiently evidenced groups have all null entries, therefore all masks false. A recognized raw reason is positive evidence only for its corresponding group. Thresholds and device-check scope come from unambiguous sample/run provenance or explicit config; no absent reason is interpreted as pass. `:saturation` is a violation of a minimum saturation margin, not a positive saturation-region label. Contradictory reason/measurement/checklist evidence is rejected. These **OP check-state categories** are never z-scored and never enter the shared structure/design-input branch; they are distinct from the coarse device categories described above.
 
 Default mode collector_checked preserves original check scope conservatively. Explicit all_mos recomputes checks under known thresholds and records derived_not_original_collector; it does not overwrite original reasons/status. preserve_only disables categorical encoding. Raw OP vectors and polarity conventions are unchanged in every mode. The collector's abs(Id) check is used only for that specific current threshold, not as a blanket OP preprocessing rule.
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from device_jepa.cli import main as cli
 from device_jepa.data import synthetic_dataset
 from device_jepa.states import apply_op_states
+from device_jepa.comparison import MODES, LEGACY_MODES, OP_MODES
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('comparison_runner', ROOT/'scripts/run/run_comparison.py')
@@ -19,7 +20,7 @@ spec.loader.exec_module(runner)
 
 
 class OrchestrationTests(unittest.TestCase):
-    def test_three_modes_automatically_finish_with_comparison(self):
+    def test_five_modes_automatically_finish_with_paired_comparison(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data = root/'data.json'
@@ -36,14 +37,49 @@ class OrchestrationTests(unittest.TestCase):
             with patch.object(sys, 'argv', argv), patch.object(runner.subprocess, 'run', side_effect=invoke):
                 runner.main()
             result = json.loads((output/'comparison/comparison.json').read_text())
-            self.assertEqual({r['mode'] for r in result['per_seed']}, {'zerosim_pin', 'zerosim_device', 'jepa_zerosim'})
+            self.assertEqual({r['mode'] for r in result['per_seed']}, set(MODES))
             self.assertEqual({r['split'] for r in result['per_seed']}, {'test', 'ood'})
-            self.assertEqual(sum(c[0] == 'train_baseline' for c in calls), 2)
-            self.assertEqual(sum(c[0] == 'evaluate' for c in calls), 6)
-            for filename in ['summary.csv', 'per_seed.csv', 'costs.csv', 'README.txt']:
+            self.assertEqual(sum(c[0] == 'train_baseline' for c in calls), 4)
+            self.assertEqual(sum(c[0] == 'evaluate' for c in calls), 10)
+            self.assertEqual({r['node_granularity'] for r in result['paired_summary']}, {'pin', 'device'})
+            self.assertEqual({r['split'] for r in result['paired_summary']}, {'test', 'ood'})
+            self.assertTrue(result['complete'])
+            for cost in result['run_costs']:
+                self.assertEqual(cost['requires_op_at_inference'], cost['mode'] in OP_MODES)
+                self.assertIsNone(cost['op_acquisition_cost_seconds'])
+            for filename in ['summary.csv', 'per_seed.csv', 'costs.csv', 'paired_per_seed.csv', 'paired_summary.csv', 'README.txt']:
                 self.assertTrue((output/'comparison'/filename).is_file())
             with patch.object(sys, 'argv', argv), self.assertRaises(SystemExit):
                 runner.main()
+
+    def test_explicit_legacy_three_modes_remain_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root/'data.json'
+            data.write_text(json.dumps(apply_op_states(synthetic_dataset(12))))
+            output = root/'experiment'
+            def invoke(command, **kwargs):
+                cli(command[3:])
+                return subprocess.CompletedProcess(command, 0)
+            argv = ['run_comparison.py', '--data', str(data), '--config', str(ROOT/'configs/smoke.json'),
+                    '--output', str(output), '--seeds', '17', '--smoke', '--modes', *LEGACY_MODES]
+            with patch.object(sys, 'argv', argv), patch.object(runner.subprocess, 'run', side_effect=invoke):
+                runner.main()
+            result = json.loads((output/'comparison/comparison.json').read_text())
+            self.assertEqual(set(result['compared_modes']), set(LEGACY_MODES))
+            self.assertEqual(result['paired_per_seed'], [])
+            self.assertTrue(result['complete'])
+            self.assertFalse((output/'comparison/paired_summary.csv').exists())
+
+    def test_duplicate_modes_rejected_before_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ['run_comparison.py', '--data', str(Path(tmp)/'data.json'),
+                    '--config', str(ROOT/'configs/smoke.json'), '--output', str(Path(tmp)/'experiment'),
+                    '--modes', 'zerosim_pin', 'zerosim_pin']
+            with patch.object(sys, 'argv', argv), patch.object(runner.subprocess, 'run') as invoke:
+                with self.assertRaises(SystemExit):
+                    runner.main()
+                invoke.assert_not_called()
 
     def test_failure_is_not_reported_as_partial_success(self):
         with tempfile.TemporaryDirectory() as tmp:

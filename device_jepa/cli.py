@@ -59,7 +59,7 @@ def main(argv=None):
         else:
             command.add_argument("--pretrained", required=True)
     baseline = commands.add_parser("train_baseline", help="Clean-room supervised pin/device ZeroSim-style baseline")
-    baseline.add_argument("--mode", choices=["zerosim_pin", "zerosim_device"], required=True)
+    baseline.add_argument("--mode", choices=["zerosim_pin", "zerosim_device", "zerosim_pin_op", "zerosim_device_op"], required=True)
     baseline.add_argument("--data", required=True)
     baseline.add_argument("--manifest", required=True)
     baseline.add_argument("--config", required=True)

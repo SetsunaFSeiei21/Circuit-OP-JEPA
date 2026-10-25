@@ -1,12 +1,16 @@
 # Circuit-OP-JEPA
 
-器件级共享结构编码、OP 表示对齐，以及可直接比较的三个模式：
+器件级共享结构编码、OP 表示对齐，以及可直接比较的五个模式：
 
 - `zerosim_pin`：独立复现的 **pin-node ZeroSim-style** 监督基线，训练 encoder + metric-query decoder。
 - `zerosim_device`：器件节点 ZeroSim-style 监督基线，训练 encoder + decoder。
-- `jepa_zerosim`：器件节点共享结构 OP 预训练，然后冻结整个输入 encoder，只训练 decoder。
+- `jepa_zerosim`：器件节点共享结构 OP 预训练，然后冻结整个输入 encoder，只训练 decoder；性能推理不读取 OP。
+- `zerosim_pin_op`：在匹配的 pin-node 监督基线上，加入逐器件电气 OP 与观测 mask；训练和推理均使用 OP。
+- `zerosim_device_op`：在匹配的 device-node 监督基线上，加入逐器件电气 OP 与观测 mask；训练和推理均使用 OP。
 
-`zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。三种模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。
+`zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。五种模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。两种 OP 输入模式是信息增强对照，分别与对应无 OP 基线配对，不是同等推理成本的零仿真替代品。OP 采集成本未测量，报告标为 `not_measured`/`null`，不默认为零。
+
+新版完整交接与独立复审提示见 [docs/REVIEW_HANDOFF_ZH.md](docs/REVIEW_HANDOFF_ZH.md)；本轮有限验证与历史三模式证据分开见 [verification/five_mode/RESULTS.md](verification/five_mode/RESULTS.md)。
 
 ## 快速开始
 
@@ -32,7 +36,7 @@ python -m device_jepa smoke_real \
 
 真实数据不包含在仓库中。目前收到的 Opamp2 只有一个电路，32 个设计样本，每个 15 个 MOS + 1 个电流源，44 个原始 OP 字段、9 个性能指标。配置明确 `ood_circuits: []`，**该 smoke 不能验证跨电路 OOD 泛化，也不是预测效果实验**。不会因为原始 `feasible=false` 就丢掉样本。
 
-三模式、多个随机种子的自动运行及结果处理，见 [scripts/README.md](scripts/README.md)。脚本分为 `scripts/git/`、`scripts/smoke_test/`、`scripts/run/`，与 Analog-Agent 的组织方式对应。先做 smoke，再运行正式实验。
+默认五模式、多个随机种子的自动运行及成对结果处理，见 [scripts/README.md](scripts/README.md)。脚本分为 `scripts/git/`、`scripts/smoke_test/`、`scripts/run/`，与 Analog-Agent 的组织方式对应。先做 smoke，再运行正式实验。
 
 ## 数据处理流程
 
@@ -54,11 +58,22 @@ python -m device_jepa split \
 2. 按对应样本的 design vector 解析 W/L/m 等表达式。采用有界语法树白名单，不使用 `eval`；不支持的语法明确报错，不静默漏器件。
 3. 按 `(sample_id, device_name)` 精确匹配 OP，保留全部 44 个原始字段及符号，性能 NaN 转为 `null`。
 4. 将电流源等非 MOS 保留在输入图中，但不把它们当作 MOS OP 对齐目标。
-5. 保存原始 reasons、check scope、阈值来源和运行 provenance。多来源合并通过 source_id + circuit_id + run_id 关联检查记录，不能仅用不同电路可能重复的 run_id。类别只进入 OP 分支，不进入共享结构或设计输入。
+5. 保存原始 reasons、check scope、阈值来源和运行 provenance。多来源合并通过 source_id + circuit_id + run_id 关联检查记录，不能仅用不同电路可能重复的 run_id。collector 工作检查类别只进入 JEPA 的 OP 目标分支，不进入共享结构、设计输入或两个直接 OP 监督模型。
 
 预训练启用状态特征时，会从原始证据重新推导并核对已存编码与配置；不匹配或缺少 provenance 时要求重新导入，不能把缺失编码静默当作全未知。显式 `features: []` 可关闭状态输入。
 
-当前参数采用明确单位：`W_m`、`L_m`、`m`、`dc_current_A` 等；原始 OP 的 `w_um`、`l_um` 等不改写。默认训练 OP 字段排除 `w_um/l_um/multiplicity`，避免从 OP 几何字段直接抄回设计参数。详细契约见 [docs/data_schema.md](docs/data_schema.md)。
+当前参数采用明确单位：`W_m`、`L_m`、`m`、`R_ohm`、`C_F`、`dc_current_A`、`dc_voltage_V`；原始 OP 的 `w_um`、`l_um` 等不改写。默认训练 OP 字段排除 `w_um/l_um/multiplicity`，避免从 OP 几何字段直接抄回设计参数。详细契约见 [docs/data_schema.md](docs/data_schema.md)。
+
+## 异构器件和缺失语义
+
+具体 NMOS/PMOS/R/C/源类型保留，并增加 `active/passive/source/unknown` 粗分类；pin 图有额外 `port` 类，粗分类不替代具体类型。所有新训练模式都使用同一输入契约。
+
+- `parameter_mask` 表示实际观测，`parameter_applicability` 表示字段是否适用于该器件。
+- 适用但缺失的参数保留命名 token 与 observed=0；不适用字段不进入参数注意力；真实零是 observed=1。
+- R/C 和源使用自己的真实参数字段，不被统一塞入 W/L 槽位。未知类型可显式声明适用字段。
+- 当前 collector 只有 MOS OP，非 MOS 仍保留在图中，但不会编造其 OP；这不是声称无源器件没有物理 DC 状态。
+
+两个 `*_op` 模式把命名电气 OP 值及观测位加入后段 own-node 输入融合；pin 模式只复制到父器件自己的 pins，端口无伪 OP。新增 OP token 会增加参数量，所以配对比较是信息增强消融，并非严格参数量匹配的纯因果实验。
 
 ## 划分与归一化
 
@@ -124,10 +139,12 @@ python -m device_jepa pretrain --data DATA --manifest MANIFEST --config CONFIG -
 python -m device_jepa train_decoder --data DATA --pretrained RUN/pretrain_best.pt --config CONFIG --output RUN
 python -m device_jepa train_baseline --mode zerosim_pin --data DATA --manifest MANIFEST --config CONFIG --output RUN_PIN
 python -m device_jepa train_baseline --mode zerosim_device --data DATA --manifest MANIFEST --config CONFIG --output RUN_DEVICE
+python -m device_jepa train_baseline --mode zerosim_pin_op --data DATA --manifest MANIFEST --config CONFIG --output RUN_PIN_OP
+python -m device_jepa train_baseline --mode zerosim_device_op --data DATA --manifest MANIFEST --config CONFIG --output RUN_DEVICE_OP
 python -m device_jepa evaluate --data DATA --checkpoint CHECKPOINT --split test --output report.json
 ```
 
-正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，smoke 用小模型与极少 epoch。checkpoint/preprocessing 现为 v2，旧版 checkpoint 明确拒绝加载，需要重新预训练。
+正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，smoke 用小模型与极少 epoch。checkpoint/preprocessing 容器保持 v2，新输入契约为 `input_contract_version=2`；旧 v2 元数据缺少该字段时按旧输入投影和无粗类 embedding 重建。旧容器 v1 仍不兼容；新旧输入契约不能混作一组公平比较。
 
 ## 代码说明与建议审查顺序
 

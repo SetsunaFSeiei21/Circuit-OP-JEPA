@@ -1,0 +1,136 @@
+{
+  "status": "complete_final_smoke_and_report_refresh",
+  "source_baseline_commit": "76040663a163c30b79a3e801c6c8d45bc157d51f",
+  "real_source_zip_sha256": "54e16b0e3bb6ffc33e19efc5b01428e83bd672d2faa925e152223e31a6141edc",
+  "real_source_sqlite_sha256": "f7b262d93d46f154fcc14848612eabd36cb97112892bb575eeea2f4d53b89b86",
+  "runtime": {
+    "python": "3.12.14",
+    "torch": "2.14.1+cpu",
+    "numpy": "2.5.4",
+    "device": "cpu"
+  },
+  "full_suite": {
+    "tests": 241,
+    "passed": true,
+    "listed_test_names": 241
+  },
+  "report_refresh": {
+    "reports": 15,
+    "predictions_unchanged": true,
+    "training_rerun_required": false,
+    "reason": "report-only state_config/coverage preservation and within-mode OP protocol comparison guard"
+  },
+  "runs": {
+    "synthetic": {
+      "split_counts": {
+        "train": 80,
+        "val": 8,
+        "test": 8,
+        "ood": 24,
+        "labeled_train": 80
+      },
+      "complete": true,
+      "modes": [
+        "zerosim_pin",
+        "zerosim_device",
+        "jepa_zerosim",
+        "zerosim_pin_op",
+        "zerosim_device_op"
+      ],
+      "seeds": [
+        17
+      ],
+      "epochs_per_phase": 1,
+      "evaluated_reports": 10,
+      "aggregate_row_counts": {
+        "summary": 140,
+        "per_seed": 140,
+        "paired_summary": 56,
+        "paired_per_seed": 56,
+        "run_costs": 10
+      },
+      "shared_identity_digests": {
+        "partition_fingerprint": "8a359825ecd8075f812439262be75640f13a10a64e4f0a154d1d70a48ceb6111",
+        "target_scaler_digest": "c62b1dcceda1eba0bf54c3f4bd55d3201ef45f07d1452d2ecdc8c46132a314cd",
+        "input_transform_digest": "179f29dc12685e54dcfc685bf5aac72da80b6fbc646a813e59b708dbf6f43718",
+        "op_input_transform_digest": "7458255d76af3d6f58d166d8c26050f09caf2eb3d68a0f6d856977bdd4bfff5c"
+      }
+    },
+    "opamp2_smoke": {
+      "split_counts": {
+        "train": 26,
+        "val": 3,
+        "test": 3,
+        "ood": 0,
+        "labeled_train": 26
+      },
+      "complete": true,
+      "modes": [
+        "zerosim_pin",
+        "zerosim_device",
+        "jepa_zerosim",
+        "zerosim_pin_op",
+        "zerosim_device_op"
+      ],
+      "seeds": [
+        17
+      ],
+      "epochs_per_phase": 1,
+      "evaluated_reports": 5,
+      "aggregate_row_counts": {
+        "summary": 180,
+        "per_seed": 180,
+        "paired_summary": 72,
+        "paired_per_seed": 72,
+        "run_costs": 5
+      },
+      "shared_identity_digests": {
+        "partition_fingerprint": "0446b16710c1ab5bb2873bda6ed37d251a6502587b5e49eb88e02aac9fe8193c",
+        "target_scaler_digest": "5e5b4bae88bfe538f21e5963034cf0c3b61f86a36cadb74df6d346e55529978b",
+        "input_transform_digest": "a6390be953a8f690e5cbfe83524993710bd144791dd7bfe3e2a08b69bd5e799c",
+        "op_input_transform_digest": "ca0f2dfed9a9ac2beacc90e00aed57fb64a38fa69b14ecd3e2a48f0ec2aff3c1"
+      }
+    }
+  },
+  "code_and_test_sha256": {
+    "configs/default.json": "a4de130c4c9421a6ee607207b5ed0e8b51c0bbb46fb11fb3244070d596822a72",
+    "configs/opamp2_smoke.json": "fe6f19d1b6ad39148a165cf369d2fce64d1338d2f146bdee6e1ea36f319f9105",
+    "configs/smoke.json": "e57f4282e9b1c77c4bafa87104d1ec099d082fd796084184d5d9a65ca4a122df",
+    "device_jepa/__init__.py": "7f08ac23d55e047af8b00334cd10619bd6f61892b8139f8ff6f92410eab8e336",
+    "device_jepa/__main__.py": "cf7390a2508a0fcad4777a4a629fc5212ab655cb45845975995f835676a834e3",
+    "device_jepa/adapter.py": "35841ddce5dfdef174e6d5c4f5c6b7392215eef18747cfca00259cde53ce64e3",
+    "device_jepa/baselines.py": "69ecee95756191f0699fb7a6923e67b65c8d1591e7623e73f8b0042f63fd0b2e",
+    "device_jepa/cli.py": "5f29f143c1b03576228b4cb8de48ce6a9887fec5ca196098b87f4a5bf26a757b",
+    "device_jepa/comparison.py": "2895d3057701ec47735c6064c30d067117276ee86e48e95ed5609d5aa8889ff3",
+    "device_jepa/data.py": "c632913faaad1199e6bf19beca322cce002ecdad3f435e95133bb81c3c6cb6b5",
+    "device_jepa/defaults/default.json": "a4de130c4c9421a6ee607207b5ed0e8b51c0bbb46fb11fb3244070d596822a72",
+    "device_jepa/defaults/opamp2_smoke.json": "fe6f19d1b6ad39148a165cf369d2fce64d1338d2f146bdee6e1ea36f319f9105",
+    "device_jepa/defaults/smoke.json": "e57f4282e9b1c77c4bafa87104d1ec099d082fd796084184d5d9a65ca4a122df",
+    "device_jepa/model.py": "f4faaa0a9f02494e48d3ef5fabfc9fceef86b9339ed58def8236b9bb259ebe46",
+    "device_jepa/states.py": "4ce8121a6cc2e2fadb2b4bdd2c7a96ca34c52c510d37a96690d150e8316a48f3",
+    "device_jepa/tensors.py": "ace175f279cb525a0996a24f5b9e028e1848055d3659a4a151b5b652823f75ea",
+    "device_jepa/training.py": "2a91642aa22835c6381767455bae9030ae74a7151f1f6636761bf6018b9e4fe9",
+    "pyproject.toml": "a16e00186cf92fe315d94897865d849ec824b70b49a904cff11b05d6aa3bb132",
+    "scripts/run/run_comparison.py": "aba36ed0fb29196e85e34b8b6be8791ce402339041b016851acf7a5de91ab6e0",
+    "tests/test_adapter.py": "aeeaac98e3ea6c09579f38ebc3c5f66cd36b5c5e735599dfe3f61dc9eacfb919",
+    "tests/test_baselines.py": "a2bf2c624714889e8cad105767581c7f1343e931cb1f65e87040ac0b150f6a40",
+    "tests/test_comparison.py": "dbbf0d329d2bfad6d5530676f1c0b030f58cc02516a620e966afaf489022170c",
+    "tests/test_data.py": "30fdabcf240a9dae6427d6f4bbc3f8680745a7f80c1939ecd1df63f0ed6e5228",
+    "tests/test_evaluation_precision.py": "ea12dc069c87d8928177e8e17afe933a587c8cfb85b15ef26ef4d836e7cba0e5",
+    "tests/test_model.py": "2c230d7192aa6a1d0c1fb60c2d451421833156bf99f3e2a0986d1f07af668fc2",
+    "tests/test_normalization.py": "8ee57cda92705926235ac7eb3521d050a682fe15b46e117a1a3861e133782b6f",
+    "tests/test_op_inputs.py": "f3211e5e332d1cf83dca55ebd9d1e5e78b0e9dd1bafe6dea673717a530c15563",
+    "tests/test_orchestration.py": "2a1b10adacaf0895efe7fa85628fdd8200a8442fb135fe597b6958f2d45ec44e",
+    "tests/test_pipeline.py": "3763cac2a8e479ff167e46e99e6f9c26a3b64c62bc080fd11b7c630e4433abf7",
+    "tests/test_scripts.py": "da2f470f16615b0454b8735d5f40e0b8072880eb729ca817f42c46403f3d9e98",
+    "tests/test_shared_structure.py": "3c65f0676bef1c1ae13e64d539c3726394b0e2eba6880849c2cf99a3045659e5",
+    "tests/test_states.py": "d77c53ecdde9d356251ebfe5412cd9c3c55954670d8f7329efe20fc22b198080"
+  },
+  "wheel_verification": {
+    "version": "0.3.0",
+    "sha256": "0f1ed556db9feba0fde18d858e6eef1f95bdc7c31b0170ca8841df1d212bd421",
+    "clean_target_import_verified": true,
+    "all_four_supervised_modes_present": true,
+    "bundled_default_config_present": true
+  }
+}

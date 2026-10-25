@@ -1,20 +1,22 @@
-# Architecture and comparison protocol (v2)
+# Five mode architecture and comparison protocol
 
-## Three declared modes
+## Five declared modes
 
 - `zerosim_pin`: independently implemented pin/port-node ZeroSim-style supervised reference.
 - `zerosim_device`: the same local input/decoder family with one token per physical device, supervised end to end.
-- `jepa_zerosim`: device-node structure/OP joint alignment, followed by strictly frozen input-encoder probing with a metric-query decoder.
+- `jepa_zerosim`: device-node structure/OP joint alignment, followed by strictly frozen input-encoder probing with a metric-query decoder. Performance inference does not read OP.
+- `zerosim_pin_op`: matched pin/port supervised model with continuous device OP and observation masks at training **and inference**.
+- `zerosim_device_op`: matched device supervised model with continuous device OP and observation masks at training **and inference**.
 
 The pin reference is a clean-room reimplementation, not imported official source, not an exact original-paper reproduction, and not a generic pin GNN relabeled as ZeroSim. It uses learned token/absolute-position embeddings, alternating local/global Transformer attention, own-parameter cross-attention in the last configured layers, a graph token, and a per-metric query Transformer decoder. Sources and deliberate differences are listed in THIRD_PARTY_NOTICES.md.
 
-All three modes use the same canonical samples, grouped manifest, labeled_train subset and target transforms. Baselines optimize encoder+decoder on labels; JEPA additionally learns from OP on the full ID training partition. Equal labeled-data budget is not equal total compute. Reports record pretraining/supervised time, optimizer counts and parameter counts separately. Multiple seeds must retain the same dataset/split/target preprocessing and a stable within-mode architecture and supervised training protocol.
+All five modes use the same canonical samples, grouped manifest, labeled_train subset and target transforms. Baselines optimize encoder+decoder on labels; JEPA additionally learns from OP on the full ID training partition. Equal labeled-data budget is not equal total compute or inference information. Direct OP models are paired with their matching no-OP baseline; their extra projections/embeddings increase parameter count, so this is not a perfectly parameter-matched causal ablation. OP acquisition cost is unmeasured, not zero. Reports record pretraining/supervised time, optimizer counts and parameter counts separately. Multiple seeds must retain the same dataset/split/target preprocessing and a stable within-mode architecture and supervised training protocol.
 
 ## Structure sharing boundary
 
 For default encoder_layers=6 and cross_layers=4, the first two blocks precede the first design-parameter fusion. `StructureEncoder` owns this entire pure-structure prefix:
 
-1. Device-type embedding, learned absolute-position embedding and graph token.
+1. Concrete device-type and coarse-category embeddings, learned absolute-position embedding and graph token.
 2. Structural terminal-pair attention bias and external-port terminal-role indicators.
 3. Alternating local/global self-attention plus feed-forward blocks in the prefix.
 
@@ -22,7 +24,7 @@ The remaining four input-side blocks retain self-attention and own-parameter cro
 
 `DeviceEncoder` registers the shared module once. `SharedOPEncoder.structure_encoder` references that exact module object without a second registration. `JEPAModel.forward` calls the structure module exactly once and passes the same non-detached tensor to both branches. Thus both branches see the same structural dropout realization and both gradient paths update the shared parameters. There is no teacher copy, EMA, stop-gradient, or synchronization procedure.
 
-The shared module reads only type, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
+The shared module reads only concrete type, coarse category, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
 
 ## Alignment objective and limitations
 
@@ -34,18 +36,38 @@ This is an explicit alignment prototype, not a canonical I-JEPA implementation. 
 
 Device mode has one node per DUT device, including current sources and passive elements. Two devices connect when terminals share a net; terminal-pair features distinguish D→G from D→D. Only MOS nodes are default OP targets. The graph token and every real device token remain decoder memory.
 
-Pin mode converts those same samples only at tensorization time: explicit external-port nodes first, then canonical per-device terminal nodes. Pins belonging to a device form an internal clique; shared nets and their external ports create the electrical connectivity. Named parameter values/masks are repeated for the corresponding device's pins. Pin/port vocabulary is fitted from ID train only, with separate UNK and PAD. Dataset IDs, design grouping and target scalers never change. The pin reference disables the device terminal-pair attention-bias extension by default; its effective config is recorded.
+Pin mode converts those same samples only at tensorization time: explicit external-port nodes first, then canonical per-device terminal nodes. Pins belonging to a device form an internal clique; shared nets and their external ports create the electrical connectivity. Named parameter values, observation masks and applicability masks are repeated for the corresponding device's pins; parent-device categories are retained, and independent ports use a distinct port category. Pin/port vocabulary is fitted from ID train only, with separate UNK and PAD. Dataset IDs, design grouping and target scalers never change. The pin reference disables the device terminal-pair attention-bias extension by default; its effective config is recorded.
 
 Differences from an exact upstream reproduction include strict missing/padding masks, named parameter embeddings, train-only circuit-balanced preprocessing, safe null-parameter attention, no silent truncation, and independent implementation choices in normalization modules. These safeguards are kept explicit rather than claimed to reproduce published numbers.
+
+## Heterogeneous input contract
+
+Newly fitted preprocessing records `input_contract_version=2`. Concrete NMOS, PMOS, resistor, capacitor and independent-source identity is retained. Fixed coarse categories supplement it: active/passive/source/unknown, plus PAD and pin-mode port. The fixed physical category map is not a vocabulary learned from held-out samples; subtype and pin vocabularies are train-only.
+
+Physical design fields remain named and unit-specific: W_m/L_m/m, R_ohm, C_F, dc_current_A and dc_voltage_V for imported data. A field has independent observation and applicability masks. An applicable missing field retains a named token with observed=0, an observed zero has observed=1, and an inapplicable field has no live input token. Contradictory observed-but-inapplicable data are rejected. Unknown/custom types may supply explicit applicability metadata.
+
+`OperatingPointDeviceEncoder` extends the same own-node input fusion, not the pure structure prefix. Named electrical OP tokens encode normalized value and observed bit alongside design tokens, with no additional Transformer layers. Eligible missing observations retain explicit mask information. Pin OP comes only from each pin's own parent device; ports and currently ineligible non-MOS devices have no live OP tokens. Both new modes train the encoder and decoder end to end and do not consume discrete collector state categories. They are not JEPA OP target branches.
+
+The current adapter collects MOS OP only. No passive/source OP is fabricated; this is a collector-scope statement, not a claim that passive devices lack DC states. Explicit OP eligibility is part of the canonical contract and must not be silently reinterpreted.
+
+Checkpoint/preprocessing container version remains 2. Older v2 preprocessing without an input-contract field reconstructs the legacy value-only parameter projection and category-less structure. New v2 inputs use observed-bit projections and category embeddings. Legacy loading is not permission to mix old and new input contracts in one matched comparison.
 
 ## Decoder and frozen behavior
 
 Each metric has a learned query. A Transformer decoder performs query self-attention, cross-attention over `[graph, all real input tokens]`, and feed-forward processing. A shared D→D→1 regressor outputs metric values. The default decoder has two layers and a 2048-wide feed-forward block.
 
-For JEPA stage two, the entire input encoder is set requires_grad=False, is kept in eval even when its wrapper trains, and executes under no_grad. Only decoder parameters enter the optimizer. Every epoch verifies a digest over all encoder parameters and registered buffers and checks absent encoder gradients. Baselines instead update both input encoder and decoder; no OP/state tensors are passed to either baseline model.
+For JEPA stage two, the entire input encoder is set requires_grad=False, is kept in eval even when its wrapper trains, and executes under no_grad. Only decoder parameters enter the optimizer. Every epoch verifies a digest over all encoder parameters and registered buffers and checks absent encoder gradients. All four supervised baselines instead update both input encoder and decoder. The original two receive no OP/state tensors; the new two receive continuous OP and masks but no collector state categories.
 
 ## Provenance and evaluation
 
 Version-2 checkpoints store architecture, selected field order, signed transform rules and fitted scales, state config, explicit split/label IDs, dataset/partition/input-OP digests, validation selection, phase timing and counts. Old v1 checkpoints fail with a clear incompatibility message. Adding downstream performance labels is allowed only while immutable input/OP/identity and split provenance remain unchanged. Changed normalization or OP-state configuration is rejected during stage transition rather than mislabeled as the requested new configuration.
 
 Metrics are computed only on observed targets: original-unit MAE/RMSE/R² plus normalized-space errors under frozen training-target transforms. R² is undefined for fewer than two labels or zero variance and remains null. Target values and both physical/normalized predictions are emitted per sample. Comparison rejects unmatched data, labels, splits, evaluated samples, target scalers, label budgets or supervised training protocol. Pin and device architectures intentionally differ; comparisons require per-mode consistency across seeds, not identical node counts or parameter counts across methods.
+
+## Paired reporting and cost boundaries
+
+The runner defaults to all five modes; `--modes` can explicitly select a legacy-three cohort or a narrower pair. Strict aggregation checks input/target/dataset identity, grouped split and labels, selected OP transform, supervised protocol and within-mode architecture. Matching OP/no-OP pairs have identical base model hyperparameters; extra OP projections are declared capacity changes.
+
+`paired_per_seed.csv` computes OP-minus-no-OP differences before aggregation. `paired_summary.csv` summarizes the actual matched differences with sample SD; undefined R2 remains null and one-seed SD remains blank. Negative MAE/RMSE deltas and positive R2 deltas favor OP inputs, but smoke deltas do not establish scientific benefit.
+
+Report provenance exposes `requires_op_at_inference`, `op_information`, train/inference use, train-only OP scaler IDs, and original-device OP coverage (not inflated repeated-pin counts). Acquisition cost is null with `not_measured`. `costs.csv` may repeat a run's training cost for test/OOD; deduplicate by mode/seed before summing. It does not measure DC solve, label collection or deployment latency.

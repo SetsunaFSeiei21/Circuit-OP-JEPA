@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run three matched methods; one immutable split and train-label budget."""
+"""Run five matched methods; one immutable split and train-label budget."""
 import argparse
 import copy
 import json
@@ -9,6 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from device_jepa.comparison import MODES
 
 
 def main():
@@ -17,6 +18,8 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--seeds', nargs='+', type=int, default=[17, 29, 43])
+    parser.add_argument('--modes', nargs='+', choices=MODES, default=list(MODES),
+                        help='Methods to run; defaults to all five. List the original three for a legacy experiment.')
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--smoke', action='store_true', help='Force exactly one epoch per phase; mechanics only')
     args = parser.parse_args()
@@ -29,6 +32,8 @@ def main():
         parser.error('Output must be new/empty; use a new experiment directory, never overwrite results')
     if len(set(args.seeds)) != len(args.seeds):
         parser.error('Seeds must be unique')
+    if len(set(args.modes)) != len(args.modes):
+        parser.error('Modes must be unique')
     out.mkdir(parents=True, exist_ok=True)
     if args.smoke:
         for key in ('pretrain_epochs', 'decoder_epochs', 'baseline_epochs'):
@@ -53,7 +58,7 @@ def main():
         options['training']['seed'] = seed
         cfg = out/f'config_seed_{seed}.json'
         cfg.write_text(json.dumps(options, indent=2)+'\n')
-        for mode in ('zerosim_pin', 'zerosim_device', 'jepa_zerosim'):
+        for mode in args.modes:
             dest = out/mode/f'seed_{seed}'
             common = ['--data', data, '--config', cfg, '--output', dest, '--device', args.device]
             if mode == 'jepa_zerosim':
@@ -69,9 +74,11 @@ def main():
                     '--device', args.device, '--output', report)
                 reports.append(str(report))
     from device_jepa.comparison import main as compare
-    compare(['--reports', *reports, '--output', str(out/'comparison')])
+    compare(['--reports', *reports, '--output', str(out/'comparison'), '--modes', *args.modes])
     print(f"Comparison files: {out/'comparison/summary.csv'} | {out/'comparison/per_seed.csv'} | {out/'comparison/costs.csv'} | {out/'comparison/comparison.json'}", flush=True)
-    print('Completed three-mode smoke: mechanics only.' if args.smoke else 'Completed matched three-mode experiment.')
+    if (out/'comparison/paired_summary.csv').exists():
+        print(f"OP/no-OP paired deltas: {out/'comparison/paired_summary.csv'} | {out/'comparison/paired_per_seed.csv'}", flush=True)
+    print(f'Completed {len(args.modes)}-mode smoke: mechanics only.' if args.smoke else f'Completed matched {len(args.modes)}-mode experiment.')
 
 
 if __name__ == '__main__':

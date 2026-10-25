@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from .data import (dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
+from .data import (DEVICE_CATEGORY_VOCAB, dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
                    partition_fingerprint, samples_for_split, verify_manifest, is_op_target)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
@@ -46,7 +46,8 @@ def state_digest(module):
 def encoder_from_metadata(config, prep):
     spec = prep["feature_spec"]
     return DeviceEncoder(ModelConfig(**config), len(prep["device_vocab"]),
-                         len(spec["parameter_names"]), len(spec["terminal_names"]))
+                         len(spec["parameter_names"]), len(spec["terminal_names"]),
+                         prep.get("input_contract_version", 1), len(prep.get("device_category_vocab", {})))
 
 
 def _batches(samples, batch_size, seed=None):
@@ -86,6 +87,8 @@ def _check_dataset_options(options, manifest):
 
 def _provenance(dataset, manifest, options):
     return {"checkpoint_version": 2, "model_config": options["model"],
+            "input_contract_version": 2,
+            "requires_op_at_inference": False,
             "options": copy.deepcopy(options), "manifest": copy.deepcopy(manifest),
             "input_op_fingerprint": input_op_fingerprint(dataset),
             "partition_fingerprint": partition_fingerprint(manifest),
@@ -200,6 +203,15 @@ def load_checkpoint(path):
         raise ValueError("Incompatible old checkpoint: shared-structure architecture and signed preprocessing require version 2; re-run pretraining")
     if checkpoint.get("preprocessing", {}).get("preprocessing_version") != 2:
         raise ValueError("Incompatible preprocessing version; do not reuse old scalers")
+    prep = checkpoint["preprocessing"]
+    contract = prep.get("input_contract_version", 1)
+    if contract not in (1, 2) or checkpoint.get("input_contract_version", contract) != contract:
+        raise ValueError("Checkpoint input contract version mismatch")
+    if contract == 2 and prep.get("device_category_vocab") != DEVICE_CATEGORY_VOCAB:
+        raise ValueError("Checkpoint coarse device-category schema mismatch")
+    if checkpoint.get("mode") in {"zerosim_pin_op", "zerosim_device_op"}:
+        if not checkpoint.get("requires_op_at_inference") or not checkpoint.get("op_inputs_used"):
+            raise ValueError("Direct OP checkpoint must declare its training and inference OP requirement")
     return checkpoint
 
 
@@ -293,6 +305,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         if record["val"]["normalized_mse"] < best:
             best = record["val"]["normalized_mse"]
             checkpoint = {**_provenance(dataset, manifest, options), "stage": "decoder",
+                          "input_contract_version": prep.get("input_contract_version", 1),
                           "epoch": epoch+1, "selection": {"split": "val", "objective": "normalized_performance_mse", "value": best},
                           "preprocessing": prep, "encoder_state": model.encoder.state_dict(),
                           "decoder_state": model.decoder.state_dict(), "encoder_digest": frozen_digest,
@@ -370,23 +383,54 @@ def _json_digest(value):
 
 
 def report_provenance(source, dataset, rows):
-    """Shared report contract for all three modes, including comparison guards."""
+    """Shared report contract with explicit training/inference OP information."""
     prep, manifest = source["preprocessing"], source["manifest"]
     target_digest = _json_digest({"metric_names": prep["feature_spec"]["metric_names"],
                                   "statistics": prep["performance"]})
     performance_digest = _json_digest([{ "sample_id": row["sample_id"], "performance": row["performance"]}
                                        for row in sorted(dataset["samples"], key=lambda r: r["sample_id"])])
     mode = source.get("mode", "jepa_zerosim")
+    uses_op_input = mode in {"zerosim_pin_op", "zerosim_device_op"}
+    uses_op = uses_op_input or mode == "jepa_zerosim"
+    op_information = {
+        "training_use": "input" if uses_op_input else "pretraining_target" if uses_op else "none",
+        "inference_use": "input" if uses_op_input else "none",
+        "source": "dataset_dc_operating_point" if uses_op else None,
+        "feature_names": prep["feature_spec"]["op_names"] if uses_op else [],
+        "state_features": prep.get("op_state_features", []) if mode == "jepa_zerosim" else [],
+        "state_config": copy.deepcopy(source["options"].get("op_state", {"features": []})) if mode == "jepa_zerosim" else {},
+        "eligibility": "is_op_target; MOS by default; current adapter has no passive/source OP",
+        "scaler_fitted_sample_ids": prep["fit_ids"]["op"] if uses_op else [],
+        "acquisition_cost_seconds": None,
+        "acquisition_cost_status": "not_measured",
+    }
+    if uses_op_input:
+        names = prep["feature_spec"]["op_names"]
+        devices = [d for row in rows for d in row["devices"] if is_op_target(d)]
+        op_information["evaluation_coverage"] = {
+            "counting_unit": "original devices, not repeated pin tokens",
+            "eligible_devices": len(devices),
+            "observed_devices": sum(any(d.get("op", {}).get(name) is not None for name in names) for d in devices),
+            "observed_values": sum(d.get("op", {}).get(name) is not None for d in devices for name in names),
+            "possible_values": len(devices) * len(names),
+            "samples_without_observed_op": sum(not any(d.get("op", {}).get(name) is not None
+                for d in row["devices"] if is_op_target(d) for name in names) for row in rows),
+        }
     backend = source.get("backend", "shared_structure_jepa_v2")
     timings = source.get("timings", {"pretrain_seconds": 0., "supervised_seconds": 0.})
     provenance = {
         "mode": mode, "backend": backend, "seed": source["options"]["training"]["seed"],
+        "requires_op_at_inference": uses_op_input, "op_information": op_information,
+        "input_contract_version": prep.get("input_contract_version", 1),
+        "op_input_transform_digest": _json_digest({"op_names": prep["feature_spec"]["op_names"], "op": prep["op"]}),
         "partition_fingerprint": source["partition_fingerprint"],
         "input_op_fingerprint": source["input_op_fingerprint"],
         "performance_fingerprint": performance_digest, "target_scaler_digest": target_digest,
         "preprocessing_digest": _json_digest(prep),
         "input_transform_digest": _json_digest({"parameters": prep["parameters"],
             "device_vocab": prep["device_vocab"],
+            "device_category_vocab": prep.get("device_category_vocab", {}),
+            "input_contract_version": prep.get("input_contract_version", 1),
             "parameter_names": prep["feature_spec"]["parameter_names"],
             "terminal_names": prep["feature_spec"]["terminal_names"]}),
         "labeled_train_ids": manifest["labeled_train"],
@@ -396,6 +440,7 @@ def report_provenance(source, dataset, rows):
         "training_cost": source.get("training_cost", {}),
     }
     return {"mode": mode, "backend": backend, "seed": provenance["seed"],
+            "requires_op_at_inference": uses_op_input, "op_information": op_information,
             "data_fingerprint": manifest["dataset_fingerprint"],
             "partition_fingerprint": source["partition_fingerprint"],
             "metric_preprocessing_fingerprint": target_digest,

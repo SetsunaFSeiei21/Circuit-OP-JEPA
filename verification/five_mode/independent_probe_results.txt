@@ -1,0 +1,12 @@
+test_heldout_does_not_fit_numeric_or_vocab_metadata (__main__.IndependentReview.test_heldout_does_not_fit_numeric_or_vocab_metadata) ... ok
+test_legacy_checkpoint_architecture_reconstructs (__main__.IndependentReview.test_legacy_checkpoint_architecture_reconstructs) ... ok
+test_masked_payload_and_padding_do_not_change_predictions (__main__.IndependentReview.test_masked_payload_and_padding_do_not_change_predictions) ... ok
+test_no_op_model_invariance_to_raw_op_and_states (__main__.IndependentReview.test_no_op_model_invariance_to_raw_op_and_states) ... ok
+test_op_model_reads_signed_continuous_values_and_not_states (__main__.IndependentReview.test_op_model_reads_signed_continuous_values_and_not_states) ... ok
+test_three_parameter_states_are_distinct (__main__.IndependentReview.test_three_parameter_states_are_distinct) ... ok
+test_unknown_subtype_stays_unknown_not_padding (__main__.IndependentReview.test_unknown_subtype_stays_unknown_not_padding) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.797s
+
+OK

@@ -1,4 +1,4 @@
-# 代码说明与建议审查顺序（v2）
+# 五模式代码说明与独立审查顺序
 
 按数据如何流动审查，比先逐行看 Transformer 更容易发现泄漏和错误。
 
@@ -32,7 +32,7 @@
 
 ## 4. 张量化是否保持了语义
 
-读 `tensors.py`：设计参数、OP、状态、性能分别有 mask；非 MOS 还在图中但不是 OP target；OP 类别不经过数值 normalization。端子连接用于边特征，原始 OP 和状态不能进入结构编码器。
+读 `data.py` 的 `device_category`、`parameter_applicability` 及 `tensors.py`、`baselines.py`：具体 NMOS/PMOS/R/C/源类型和实际命名参数保留，粗分类补充而不替代具体类型。参数 observation/applicability 区分不适用、适用但缺失、真实零，三者实际进入模型的 token/mask 应不同。pin 复制父器件参数、类别及 OP，不跨器件或污染 port。当前 collector 无 passive/source OP，不伪造值。设计参数、OP、状态、性能各自 mask；工作检查类别不做数值归一化，也不进入直接 OP 基线。
 
 ## 5. 共享到底共享了什么
 
@@ -54,18 +54,24 @@
 - PyTorch >=2.6 才允许反序列化；状态启用时必须验证编码和来源/配置一致。多来源检查记录按 source_id+circuit_id+run_id 隔离。
 - v2 checkpoint 保存字段变换、状态配置、manifest、选择依据、时耗和参数量。
 
-## 7. 三个模式的差别是否只有被声明的差别
+## 7. 五个模式的差别是否只有被声明的差别
 
-读 `baselines.py` / `test_baselines.py`：pin baseline 有独立 pin/port vocabulary；device baseline 与 JEPA 使用器件节点。两种监督 baseline 都端到端更新 encoder+decoder，且不消费 OP/state 张量。三模式共用同一 labeled_train 和目标归一化，但 JEPA 有额外 OP 预训练，必须单独计成本。
+读 `baselines.py`、`model.py`、`test_baselines.py` 与 `test_op_inputs.py`：pin baseline 有独立 pin/port vocabulary；device baseline 与 JEPA 使用器件节点。原两种监督 baseline 不读 OP/state；新 `zerosim_pin_op` 与 `zerosim_device_op` 训练和推理都读连续 OP/mask，不读 collector 状态类别，端到端更新 encoder+decoder，不做 JEPA 预训练。
+
+独立反例应验证 OP direct 确实消费 OP、缺少输入通道明确失败、masked payload 不污染预测；原 no-OP 和冻结 JEPA 对任意 OP/state 改动不变。共享结构仍不读 OP。五模式共用 labeled_train 和目标变换，OP/no-OP 按相同图粒度配对；标签预算相同不等于同等参数量、总计算或推理信息。
+
+新输入契约为 2；旧 v2 元数据无该字段时按 legacy 1 重建。检查 stage1→stage2、checkpoint load 与报告中的版本一致，不把旧/新输入空间混入公平汇总。
 
 ## 8. 结果能不能直接比较
 
 先看 `test_evaluation_precision.py`：物理标签直接读取原始 float64，稳定 asinh 反变换和缩放 RMSE/R² 避免极端尺度丢失。
 
-读 `comparison.py` / 对应测试：检查原数据、OP/性能指纹、划分、训练标签 IDs、目标 scaler 与逐样本目标一致。同时检查参数变换指纹及跨模式架构一致性（pin 的节点上限、端子 bias 是明确例外）。逐指标看原单位 MAE/RMSE/R²，再看归一化误差；不能跨不同物理单位直接平均 raw RMSE。缺失目标不参与分母。
+读 `comparison.py` / 对应测试：检查原数据、OP/性能指纹、划分、训练标签 IDs、目标 scaler 与逐样本目标一致。同时检查参数变换指纹及跨模式架构一致性（pin 的节点上限、端子 bias 是明确例外）。逐指标看原单位 MAE/RMSE/R²，再看归一化误差；不能跨不同物理单位直接平均 raw RMSE。缺失目标不参与分母。`paired_per_seed` 先算同 seed 的 OP-minus-noOP 差值，`paired_summary` 再聚合；MAE/RMSE 负差值、R² 正差值为改善，null 不补零、单 seed 无 SD。OP 采集成本必须保持未测，不得用模型耗时替代；costs 中同 mode/seed 多 split 成本不可重复求和。
 
 ## 9. 最后审查入口和运行脚本
 
 读 `cli.py`、`configs/`、`scripts/README.md` 及 `scripts/run/`。先运行全量 unit tests 和小 smoke，再检查正式 run 的电路集合、OOD、label fraction、随机种子、epoch、输出目录与设备。
 
 特别注意：收到的 Opamp2 数据只有一个电路，短流程通过只能证明代码贯通，不能支持任何跨电路 OOD 或方法优劣结论。
+
+完整复审交接、历史与本轮证据边界、P0/P1/P2 验收标准和可直接交给更强模型的提示词见 `docs/REVIEW_HANDOFF_ZH.md`。不要把现有测试数量当作独立审查的结论。

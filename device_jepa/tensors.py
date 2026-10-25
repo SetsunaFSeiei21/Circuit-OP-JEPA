@@ -1,10 +1,12 @@
 """Mask-aware batches: design inputs, OP targets and labels stay separated."""
 import torch
 
-from .data import is_op_target, transform_value, inverse_transform_value
+from .data import (device_category, is_op_target, parameter_applicability,
+                   transform_value, inverse_transform_value)
 
 
-def collate_samples(samples, preprocessing, include_op=True, include_performance=False):
+def collate_samples(samples, preprocessing, include_op=True, include_performance=False,
+                    include_op_states=True):
     if not samples:
         raise ValueError("Cannot collate an empty batch")
     spec = preprocessing["feature_spec"]
@@ -13,9 +15,11 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
     p, o, m, t = len(pn), len(on), len(mn), len(tn)
     batch = {
         "device_types": torch.zeros(b, n, dtype=torch.long),
+        "device_categories": torch.zeros(b, n, dtype=torch.long),
         "device_mask": torch.zeros(b, n, dtype=torch.bool),
         "parameters": torch.zeros(b, n, p),
         "parameter_mask": torch.zeros(b, n, p, dtype=torch.bool),
+        "parameter_applicability": torch.zeros(b, n, p, dtype=torch.bool),
         "adjacency": torch.zeros(b, n, n, dtype=torch.bool),
         "edge_roles": torch.zeros(b, n, n, t * t),
         "port_roles": torch.zeros(b, n, t),
@@ -25,7 +29,7 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
     if include_op:
         batch.update(op=torch.zeros(b, n, o), op_mask=torch.zeros(b, n, o, dtype=torch.bool),
                      op_target_mask=torch.zeros(b, n, dtype=torch.bool))
-        states = preprocessing.get("op_state_features", [])
+        states = preprocessing.get("op_state_features", []) if include_op_states else []
         if states:
             batch.update(op_state=torch.zeros(b, n, len(states)),
                          op_state_mask=torch.zeros(b, n, len(states), dtype=torch.bool))
@@ -44,13 +48,16 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
         external_nets = set(sample.get("ports", {}).values())
         for ni, device in enumerate(devices):
             batch["device_types"][bi, ni] = vocab.get(device["device_type"], vocab["<UNK>"])
+            batch["device_categories"][bi, ni] = preprocessing.get("device_category_vocab", {}).get(device_category(device), 0)
+            batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(device, pn))
             _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
                   device.get("parameters", {}), pn, preprocessing["parameters"])
             if include_op:
                 batch["op_target_mask"][bi, ni] = is_op_target(device)
-                _fill(batch["op"][bi, ni], batch["op_mask"][bi, ni],
-                      device.get("op", {}), on, preprocessing["op"])
-                for si, name in enumerate(preprocessing.get("op_state_features", [])):
+                if is_op_target(device):
+                    _fill(batch["op"][bi, ni], batch["op_mask"][bi, ni],
+                          device.get("op", {}), on, preprocessing["op"])
+                for si, name in enumerate(states if is_op_target(device) else []):
                     value = device.get("op_state", {}).get(name)
                     if value is not None:
                         if value not in (0, 1):

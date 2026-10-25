@@ -23,6 +23,46 @@ SPLITS = ("train", "val", "test", "ood")
 MANIFEST_VERSION = 2
 PREPROCESSING_VERSION = 2
 OP_GEOMETRY_FIELDS = frozenset({"w_um", "l_um", "multiplicity"})
+INPUT_CONTRACT_VERSION = 2
+# Semantic schema, not statistics learned from validation/test device types.
+DEVICE_CATEGORY_VOCAB = {"<PAD>": 0, "unknown": 1, "active": 2, "passive": 3,
+                         "source": 4, "port": 5}
+_TYPE_PARAMETERS = {
+    "nmos": {"W", "L", "M", "W_m", "L_m", "m"},
+    "pmos": {"W", "L", "M", "W_m", "L_m", "m"},
+    "resistor": {"R", "R_ohm"}, "capacitor": {"C", "C_F"},
+    "independent_current_source": {"dc_current_A"},
+    "independent_voltage_source": {"dc_voltage_V"},
+}
+
+
+def device_category(device):
+    """Coarse hierarchy supplements, never replaces, the concrete subtype."""
+    kind = device["device_type"].lower()
+    if kind in {"nmos", "pmos"}:
+        return "active"
+    if kind in {"resistor", "capacitor", "inductor"}:
+        return "passive"
+    if kind in {"independent_current_source", "independent_voltage_source"}:
+        return "source"
+    return "unknown"
+
+
+def parameter_applicability(device, names):
+    """Separate physical applicability from observation and numeric zero.
+
+    Known primitive schemas identify missing W/L/M, R, C and source fields even
+    when omitted. Extra explicitly supplied parameters remain supported. Legacy
+    null padding in unrelated known fields is not evidence of applicability.
+    Unknown/custom types can supply an explicit parameter_applicability map;
+    otherwise declared keys (including null) are their only available schema.
+    """
+    mapping = device.get("parameters", {})
+    known = _TYPE_PARAMETERS.get(device["device_type"].lower())
+    explicit = device.get("parameter_applicability", {})
+    inferred = [(name in known or mapping.get(name) is not None) if known is not None
+                else name in mapping for name in names]
+    return [explicit.get(name, applicable) for name, applicable in zip(names, inferred)]
 
 
 def _nonempty_string(value: Any, location: str) -> None:
@@ -146,6 +186,13 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"duplicate device_id in {loc}: {device['device_id']}")
             seen_devices.add(device["device_id"])
             _features(device.get("parameters"), spec["parameter_names"], f"{dloc}.parameters")
+            applicability = device.get("parameter_applicability", {})
+            if (not isinstance(applicability, dict) or set(applicability) - set(spec["parameter_names"])
+                    or any(type(value) is not bool for value in applicability.values())):
+                raise ValueError(f"{dloc}.parameter_applicability must map declared parameters to booleans")
+            if any(not applicable and device["parameters"].get(name) is not None
+                   for name, applicable in applicability.items()):
+                raise ValueError(f"{dloc}: observed parameter cannot be marked not applicable")
             _features(device.get("op"), spec["op_names"], f"{dloc}.op")
             terminals = device.get("terminals")
             if not isinstance(terminals, dict) or not terminals:
@@ -742,6 +789,8 @@ def fit_preprocessor(
     weighting = normalized_config["weighting"]
     result: dict[str, Any] = {
         "preprocessing_version": PREPROCESSING_VERSION,
+        "input_contract_version": INPUT_CONTRACT_VERSION,
+        "device_category_vocab": copy.deepcopy(DEVICE_CATEGORY_VOCAB),
         "device_vocab": {"<PAD>": 0, "<UNK>": 1, **{name: index + 2 for index, name in enumerate(types)}},
         "feature_spec": spec, "raw_feature_spec": copy.deepcopy(raw_spec),
         "transform_config": normalized_config,

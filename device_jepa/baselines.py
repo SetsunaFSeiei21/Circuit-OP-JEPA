@@ -1,10 +1,10 @@
 """Clean-room supervised ZeroSim-style references, not official ZeroSim code.
 
-Both references optimize the input encoder and metric-query decoder end to end.
+All references optimize the input encoder and metric-query decoder end to end.
 They use exactly the canonical experiment manifest and input/label scalers used
 by the JEPA pipeline. No OP value, OP mask, OP state or OP representation enters
-either model. The shared preprocessing helper retains unused OP statistics only
-for consistent metadata; those statistics are never consulted by these models.
+the original two models. The explicit *_op variants add continuous DC OP and
+observation masks at BOTH training and inference; they do not use OP states.
 
 The pin reference expands each *observed terminal* into a token, repeats its
 parent device's named design parameters, and prepends independent external-port
@@ -20,17 +20,19 @@ import time
 import torch
 from torch import nn
 
-from .data import (fit_preprocessor, partition_fingerprint, samples_for_split,
-                   verify_manifest)
-from .model import DeviceEncoder, ModelConfig, make_decoder, masked_mse
+from .data import (device_category, fit_preprocessor, is_op_target, parameter_applicability,
+                   partition_fingerprint, samples_for_split, verify_manifest)
+from .model import DeviceEncoder, OperatingPointDeviceEncoder, ModelConfig, make_decoder, masked_mse
 from .tensors import _fill, collate_samples, denormalize, to_device, evaluation_targets
 from .training import (_batches, _check_dataset_options, _check_options, _metrics,
-                       _provenance, _save_json, encoder_from_metadata,
+                       _provenance, _save_json,
                        load_checkpoint, prediction_records, report_provenance,
                        seed_everything, state_digest)
 
 
-BASELINE_MODES = ("zerosim_device", "zerosim_pin")
+BASELINE_MODES = ("zerosim_device", "zerosim_pin", "zerosim_pin_op", "zerosim_device_op")
+PIN_MODES = ("zerosim_pin", "zerosim_pin_op")
+OP_INPUT_MODES = ("zerosim_pin_op", "zerosim_device_op")
 
 
 def _check_mode(mode):
@@ -62,7 +64,7 @@ def fit_pin_vocabulary(dataset, manifest):
 def _pin_tokens(sample, terminal_names):
     """Return ephemeral tensorization descriptors, without altering raw data."""
     tokens = [{"token_id": f"port:{name}", "key": f"port:{name}", "net": net,
-               "terminal": None, "device_id": None, "parameters": {}}
+               "terminal": None, "device_id": None, "parameters": {}, "device": None}
               for name, net in sorted(sample.get("ports", {}).items())]
     for device in sorted(sample["devices"], key=lambda d: d["device_id"]):
         for terminal in terminal_names:
@@ -71,12 +73,13 @@ def _pin_tokens(sample, terminal_names):
                                "key": _pin_key(device["device_type"], terminal),
                                "net": device["terminals"][terminal], "terminal": terminal,
                                "device_id": device["device_id"],
+                               "device": device,
                                "parameters": device.get("parameters", {})})
     return tokens
 
 
 def collate_pin_samples(samples, preprocessing, pin_vocab,
-                        include_performance=True, max_tokens=None):
+                        include_performance=True, max_tokens=None, include_op=False):
     """Tensorize canonical device samples as ports followed by device/pin tokens.
 
     ``max_tokens`` (the model config's ``max_devices``) includes external ports
@@ -100,14 +103,20 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
     if max_tokens is not None and n > max_tokens:
         raise ValueError(f"{n} pin/port tokens exceed max_tokens={max_tokens} (max_devices); no truncation is allowed")
     batch = {"device_types": torch.zeros(b, n, dtype=torch.long),
+             "device_categories": torch.zeros(b, n, dtype=torch.long),
              "device_mask": torch.zeros(b, n, dtype=torch.bool),
              "parameters": torch.zeros(b, n, p),
              "parameter_mask": torch.zeros(b, n, p, dtype=torch.bool),
+             "parameter_applicability": torch.zeros(b, n, p, dtype=torch.bool),
              "adjacency": torch.zeros(b, n, n, dtype=torch.bool),
              "edge_roles": torch.zeros(b, n, n, t * t),
              "port_roles": torch.zeros(b, n, t),
              "sample_ids": [sample["sample_id"] for sample in samples],
              "device_ids": [[token["token_id"] for token in row] for row in rows]}
+    if include_op:
+        o = len(spec["op_names"])
+        batch.update(op=torch.zeros(b, n, o), op_mask=torch.zeros(b, n, o, dtype=torch.bool),
+                     op_target_mask=torch.zeros(b, n, dtype=torch.bool))
     if include_performance:
         if "performance" not in preprocessing:
             raise ValueError("Performance statistics must be fitted on ID train before using labels")
@@ -117,6 +126,15 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
         batch["device_mask"][bi, :len(tokens)] = True
         for ni, token in enumerate(tokens):
             batch["device_types"][bi, ni] = pin_vocab.get(token["key"], pin_vocab["<UNK>"])
+            parent = token["device"]
+            category = device_category(parent) if parent is not None else "port"
+            batch["device_categories"][bi, ni] = preprocessing.get("device_category_vocab", {}).get(category, 0)
+            if parent is not None:
+                batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(parent, pn))
+            if include_op and parent is not None and is_op_target(parent):
+                batch["op_target_mask"][bi, ni] = True
+                _fill(batch["op"][bi, ni], batch["op_mask"][bi, ni],
+                      parent.get("op", {}), spec["op_names"], preprocessing["op"])
             _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
                   token["parameters"], pn, preprocessing["parameters"])
             for nj, other in enumerate(tokens):
@@ -148,23 +166,29 @@ class SupervisedPerformanceModel(nn.Module):
 
 
 def _make_model(mode, model_config, preprocessing, pin_vocab=None):
-    if mode == "zerosim_pin":
+    _check_mode(mode)
+    spec = preprocessing["feature_spec"]
+    if mode in PIN_MODES:
         if pin_vocab is None:
             raise ValueError("Pin reference requires its saved train-only pin vocabulary")
-        encoder = DeviceEncoder(ModelConfig(**model_config), len(pin_vocab),
-                                len(preprocessing["feature_spec"]["parameter_names"]),
-                                len(preprocessing["feature_spec"]["terminal_names"]))
-    else:
-        encoder = encoder_from_metadata(model_config, preprocessing)
+    num_types = len(pin_vocab) if mode in PIN_MODES else len(preprocessing["device_vocab"])
+    kwargs = {"input_contract_version": preprocessing.get("input_contract_version", 1),
+              "num_categories": len(preprocessing.get("device_category_vocab", {}))}
+    cls = OperatingPointDeviceEncoder if mode in OP_INPUT_MODES else DeviceEncoder
+    if mode in OP_INPUT_MODES:
+        kwargs["num_op_features"] = len(spec["op_names"])
+    encoder = cls(ModelConfig(**model_config), num_types, len(spec["parameter_names"]),
+                  len(spec["terminal_names"]), **kwargs)
     return SupervisedPerformanceModel(encoder, make_decoder(encoder.cfg,
                                       len(preprocessing["feature_spec"]["metric_names"])))
 
 
 def _collate(samples, preprocessing, mode, model_config, pin_vocab):
-    if mode == "zerosim_pin":
+    if mode in PIN_MODES:
         return collate_pin_samples(samples, preprocessing, pin_vocab,
-                                   max_tokens=model_config["max_devices"])
-    return collate_samples(samples, preprocessing, include_op=False, include_performance=True)
+                                   max_tokens=model_config["max_devices"], include_op=mode in OP_INPUT_MODES)
+    return collate_samples(samples, preprocessing, include_op=mode in OP_INPUT_MODES,
+                           include_performance=True, include_op_states=False)
 
 
 def train_baseline(dataset, manifest, options, output, mode="zerosim_device", device="cpu"):
@@ -189,7 +213,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             raise ValueError("Refusing to overwrite a different experiment manifest")
     started = time.perf_counter()
     effective = copy.deepcopy(options)
-    if mode == "zerosim_pin":
+    if mode in PIN_MODES:
         terminal_bias = effective.get("baseline", {}).get("pin_terminal_bias", False)
         if type(terminal_bias) is not bool:
             raise ValueError("baseline.pin_terminal_bias must be a boolean")
@@ -201,9 +225,11 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
     prep = fit_preprocessor(dataset, manifest, include_performance=True,
                             config=effective.get("normalization"))
+    if mode in OP_INPUT_MODES and not any(prep["op"]["count"]):
+        raise ValueError("Direct OP baseline requires some observed eligible ID-train DC OP")
     if not any(prep["performance"]["count"]):
         raise ValueError("No requested metric has an observed labeled-train target")
-    pin_vocab = fit_pin_vocabulary(dataset, manifest) if mode == "zerosim_pin" else None
+    pin_vocab = fit_pin_vocabulary(dataset, manifest) if mode in PIN_MODES else None
     model = _make_model(mode, effective["model"], prep, pin_vocab).to(device)
     initial_encoder_digest, initial_decoder_digest = state_digest(model.encoder), state_digest(model.decoder)
     optimizer = torch.optim.AdamW(model.parameters(), lr=tr["decoder_lr"], weight_decay=tr["weight_decay"])
@@ -213,6 +239,8 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     splits = {"train": samples_for_split(dataset, manifest, "labeled_train"),
               "val": samples_for_split(dataset, manifest, "val")}
     cost = {"labeled_train_count": len(splits["train"]), "input_scaler_train_count": len(manifest["train"]),
+            "requires_op_at_inference": mode in OP_INPUT_MODES,
+            "op_acquisition_cost_seconds": None, "op_acquisition_cost_status": "not_measured",
             "total_parameter_count": sum(p.numel() for p in model.parameters()),
             "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
             "encoder_parameter_count": sum(p.numel() for p in model.encoder.parameters()),
@@ -228,7 +256,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             total, count, steps = 0.0, 0, 0
             for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
                 batch = to_device(_collate(samples, prep, mode, effective["model"], pin_vocab), device)
-                if any(key.startswith("op") for key in batch):
+                if mode not in OP_INPUT_MODES and any(key.startswith("op") for key in batch):
                     raise AssertionError("Supervised reference batches must not contain OP inputs")
                 mask = batch["performance_mask"]
                 if not mask.any():
@@ -257,7 +285,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
         if record["val"]["normalized_mse"] < best:
             best = record["val"]["normalized_mse"]
             checkpoint = {**_provenance(dataset, manifest, effective), "stage": "baseline", "mode": mode, "backend": f"cleanroom_{mode}",
-                          "architecture": "clean-room-supervised-pin-reference" if mode == "zerosim_pin" else "clean-room-supervised-device-reference",
+                          "architecture": "clean-room-supervised-pin-reference" if mode in PIN_MODES else "clean-room-supervised-device-reference",
                           "requested_options": copy.deepcopy(options), "epoch": epoch + 1,
                           "selection": {"split": "val", "objective": "normalized_performance_mse", "value": best},
                           "preprocessing": prep, "pin_vocab": pin_vocab,
@@ -265,7 +293,8 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                           "encoder_state": model.encoder.state_dict(), "decoder_state": model.decoder.state_dict(),
                           "encoder_digest": state_digest(model.encoder), "decoder_digest": state_digest(model.decoder),
                           "initial_encoder_digest": initial_encoder_digest, "initial_decoder_digest": initial_decoder_digest,
-                          "encoder_frozen": False, "freeze_verified": False, "op_inputs_used": False,
+                          "encoder_frozen": False, "freeze_verified": False, "op_inputs_used": mode in OP_INPUT_MODES,
+                          "requires_op_at_inference": mode in OP_INPUT_MODES,
                           "unobserved_training_metrics": [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count],
                           "training_cost": dict(cost),
                           "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."}
@@ -318,7 +347,7 @@ def evaluate_baseline(dataset, checkpoint_path, split="test", batch_size=32, dev
     if prep["performance_fitted_sample_ids"] != sorted(source["manifest"]["labeled_train"]):
         raise ValueError("Baseline label preprocessing differs from labeled training partition")
     pin_vocab = source.get("pin_vocab")
-    if mode == "zerosim_pin" and (source.get("pin_vocab_fitted_sample_ids") != sorted(source["manifest"]["train"]) or
+    if mode in PIN_MODES and (source.get("pin_vocab_fitted_sample_ids") != sorted(source["manifest"]["train"]) or
                                   pin_vocab != fit_pin_vocabulary(dataset, source["manifest"])):
         raise ValueError("Pin vocabulary differs from the ID train-only vocabulary")
     model = _make_model(mode, source["model_config"], prep, pin_vocab).to(device)
@@ -353,7 +382,8 @@ def evaluate_baseline(dataset, checkpoint_path, split="test", batch_size=32, dev
     report = {**report_provenance(source, dataset, rows), "split": split, "synthetic": source["synthetic"], "num_samples": len(rows),
               "status": "evaluated" if rows else "not_configured", "selection_used_ood": False,
               "has_ood_holdout": bool(source["manifest"].get("ood", [])),
-              "encoder_frozen": False, "encoder_frozen_verified": False, "op_inputs_used": False,
+              "encoder_frozen": False, "encoder_frozen_verified": False, "op_inputs_used": mode in OP_INPUT_MODES,
+              "requires_op_at_inference": mode in OP_INPUT_MODES,
               "unobserved_training_metrics": source.get("unobserved_training_metrics", []),
               "metric_units": "original dataset units; see feature_spec and data provider",
               "metrics": _metrics(pred, target, mask, prep, norm_pred, norm_target), "by_circuit": {},

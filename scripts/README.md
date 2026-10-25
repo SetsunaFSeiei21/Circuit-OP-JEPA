@@ -1,4 +1,4 @@
-# Three-mode matched experiments
+# Five-mode matched experiments
 
 This directory follows the reference repository's `analog-agent/scripts/{git,smoke_test,run}` organization:
 https://github.com/SetsunaFSeiei21/Analog-Agent-NN-Memory/tree/main/analog-agent/scripts
@@ -8,6 +8,10 @@ It does **not** run ngspice or resample circuits. Import existing simulation his
 - `zerosim_pin`: independently implemented pin-node ZeroSim-style reference, **not official code or an exact original-paper reproduction**.
 - `zerosim_device`: supervised device-node reference, trained from scratch.
 - `jepa_zerosim`: device/OP alignment pretraining, then frozen structure encoder and supervised decoder.
+- `zerosim_pin_op`: the matched pin-node supervised reference with **continuous DC OP values and missing/applicability masks as additional inputs**.
+- `zerosim_device_op`: the matched device-node supervised reference with the same additional continuous DC OP inputs.
+
+The existing design inputs are preserved, not restricted to W/L/M: configured named MOS, R/C and source parameters remain in the representation with their masks. The new models do not consume discrete OP-state categories. `zerosim_pin_op` and `zerosim_device_op` **require DC OP at inference**; they are information-augmented ablations, not zero-simulation deployment alternatives at equal total cost. The original two baselines do not use OP as model input. JEPA uses OP only during pretraining and not performance inference.
 
 ## Quick CPU mechanics test
 
@@ -17,7 +21,7 @@ From the repository root:
 bash scripts/smoke_test/run_smoke.sh
 ```
 
-This runs unit tests, creates explicitly synthetic data, runs each phase for one epoch, then exports matched comparisons. The old `scripts/run_smoke.sh` remains a JEPA-only compatibility entrypoint.
+This runs unit tests, creates explicitly synthetic data, runs all five modes with each phase capped at one epoch, then exports matched comparisons and within-seed OP/no-OP deltas. The old `scripts/run_smoke.sh` remains a JEPA-only compatibility entrypoint.
 
 ## Actual imported data
 
@@ -33,6 +37,15 @@ bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/m
 ```
 
 Each new experiment requires a new/empty output directory. One immutable `manifest.json` fixes train/validation/test/OOD membership and `labeled_train` for all methods and seeds. `--smoke` caps pretraining, baseline and decoder phases to one epoch. An existing result is never silently overwritten or treated as a successful resumed run. To resume selectively, use individual `device_jepa` commands into separate output directories, then explicitly compare their reports.
+
+All five modes run by default. Original three-mode experiments remain supported, and explicit pairs can be run for a narrower ablation:
+
+```bash
+# Original three-mode experiment (same dataset/config/output requirements):
+bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/legacy_compare --modes zerosim_pin zerosim_device jepa_zerosim
+# Device-node OP/no-OP pair only:
+bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/device_pair --modes zerosim_device zerosim_device_op
+```
 
 ## Slurm
 
@@ -55,9 +68,13 @@ python -m device_jepa.comparison --reports runs/real_compare/*/seed_*/*_report.j
 - `comparison/summary.csv`: grouped by method/backend, split, circuit, metric and scale; mean and sample standard deviation (`ddof=1`) across seeds.
 - `comparison/per_seed.csv`: counts, MAE, RMSE and R² for each seed; `__all__` pools samples across circuits **only within the same metric and split**. Circuit-specific rows prevent a large circuit from hiding smaller-circuit errors.
 - `comparison/costs.csv`: phase timings/parameter counts; the same training cost is repeated for each evaluation split and must not be summed twice.
+- `comparison/paired_per_seed.csv`: matched seed, split, circuit, metric and scale for `zerosim_pin_op − zerosim_pin` and `zerosim_device_op − zerosim_device`; includes both scores and their differences.
+- `comparison/paired_summary.csv`: means and sample SDs of those **within-seed differences**, not subtraction of independently averaged runs. Negative MAE/RMSE deltas or positive R² deltas favor the extra OP input. Undefined R² remains blank/null. Pair files are omitted when no complete pair exists (e.g. legacy three-mode runs).
 - `comparison/comparison.json`: complete machine-readable tables.
 
-Strict comparison rejects incompatible dataset/performance identity, OP/input identity, partition, labeled training IDs, target scaler, metric names, evaluated IDs/targets, or incomplete seed sets across modes. Supervised epoch count, learning rate, batch size, weight decay and gradient clipping must match; the full training configuration must remain constant within a mode across seeds (except the seed itself). This is label/epoch-budget parity, not equal compute: JEPA pretraining cost is reported separately. It does not compare entire feature preprocessing hashes because pin/device input spaces differ. `--allow-partial` permits missing modes/seeds for debugging only and retains identity checks.
+Summary/per-seed rows expose `requires_op_at_inference` and `op_training_use`; cost rows additionally expose `op_inference_use`, the information-availability requirement, OP source/feature names/state configuration/eligibility, actual evaluation coverage, and OP acquisition cost/status/scope. Structured fields in `costs.csv` are JSON-encoded. OP coverage counts original devices, not repeated pin tokens, and records samples without observed OP; missing legacy coverage stays unknown. Imported OP acquisition/simulation cost is **unknown (`null`/blank, `not_measured`)**, never silently zero. Recorded model phase timings do not include an unmeasured DC solve or imply equal end-to-end cost. Parameter counts also may increase when OP projection inputs are added. Any future measured acquisition cost must include its measurement scope and remain separate from model phase timing.
+
+Strict comparison rejects incompatible dataset/performance identity, OP/input identity, partition, labeled training IDs, target scaler, continuous-OP input scaler, metric names, evaluated IDs/targets, or incomplete seed sets across declared modes. Each OP/no-OP pair must have identical model hyperparameters, in addition to the existing device/JEPA architecture check. OP source, continuous feature names, state-feature channels, state configuration (including available mode/thresholds), and eligibility must remain constant within a mode across seeds/splits; this prevents pooling different JEPA target-branch protocols under one method name. Supervised epoch count, learning rate, batch size, weight decay and gradient clipping must match; the full training configuration must remain constant within a mode across seeds (except the seed itself). This is label/epoch-budget parity, not equal compute or equal available information: JEPA pretraining cost is reported separately. It does not compare entire feature preprocessing hashes because pin/device input spaces differ. Standalone comparison accepts legacy three-mode reports without requiring newly added fields; if any OP-input mode is present, it expects all five unless `--modes` explicitly declares another cohort. `--allow-partial` permits missing modes/seeds for debugging only and retains identity checks; paired rows use only the actual seed intersection, with `complete: false` in JSON when the declared cohort is incomplete.
 
 Physical metrics use original dataset units. Normalized metrics use training-only target transforms and scaling, not division by test-set variance. Missing labels are excluded per metric; nonfinite predictions for observed targets fail loudly. R² is null for fewer than two observed targets or zero target variance; JSON null/blank CSV is not zero. Across-seed SD is blank for a single seed. No single grand score averages incompatible physical units. Validation, test and OOD remain separate; OOD is never a checkpoint-selection set.
 

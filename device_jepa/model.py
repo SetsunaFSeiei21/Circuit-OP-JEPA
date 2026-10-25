@@ -66,10 +66,11 @@ class StructureEncoder(nn.Module):
     Consumes only type, position, connectivity/terminal and port metadata.
     Design parameters, OP values, states and labels are deliberately inaccessible.
     """
-    def __init__(self, cfg, num_types, num_terminals):
+    def __init__(self, cfg, num_types, num_terminals, num_categories=0):
         super().__init__()
         self.cfg = cfg
         self.type_embedding = nn.Embedding(num_types, cfg.dim, padding_idx=0)
+        self.category_embedding = nn.Embedding(num_categories, cfg.dim, padding_idx=0) if num_categories else None
         self.position_embedding = nn.Embedding(cfg.max_devices, cfg.dim)
         self.graph_token = nn.Parameter(torch.randn(1, 1, cfg.dim) * 0.02)
         self.port_projection = nn.Linear(num_terminals, cfg.dim, bias=False)
@@ -84,6 +85,8 @@ class StructureEncoder(nn.Module):
             raise ValueError(f"{n} devices exceed max_devices={self.cfg.max_devices}; no truncation is allowed")
         pos = self.position_embedding(torch.arange(n, device=types.device))[None]
         nodes = self.type_embedding(types) * self.cfg.dim ** 0.5 + pos
+        if self.category_embedding is not None:
+            nodes = nodes + self.category_embedding(batch["device_categories"])
         nodes = (nodes + self.port_projection(batch["port_roles"])) * devices.unsqueeze(-1)
         x = torch.cat([self.graph_token.expand(b, -1, -1), nodes], dim=1)
         valid = torch.cat([torch.ones(b, 1, dtype=torch.bool, device=types.device), devices], 1)
@@ -115,12 +118,16 @@ class DeviceEncoder(nn.Module):
     preserving the original first-cross-attention boundary rather than adding
     six new layers. The later parameter-conditioned self-attention is not shared.
     """
-    def __init__(self, cfg, num_types, num_parameters, num_terminals):
+    def __init__(self, cfg, num_types, num_parameters, num_terminals,
+                 input_contract_version=1, num_categories=0):
         super().__init__()
         self.cfg, self.num_parameters = cfg, num_parameters
-        self.structure_encoder = StructureEncoder(cfg, num_types, num_terminals)
+        if input_contract_version not in (1, 2):
+            raise ValueError("Unsupported model input contract version")
+        self.input_contract_version = input_contract_version
+        self.structure_encoder = StructureEncoder(cfg, num_types, num_terminals, num_categories)
         self.parameter_names = nn.Embedding(num_parameters, cfg.dim)
-        self.parameter_value = nn.Linear(1, cfg.dim)
+        self.parameter_value = nn.Linear(2 if input_contract_version == 2 else 1, cfg.dim)
         self.null_parameter = nn.Parameter(torch.zeros(1, 1, cfg.dim))
         self.fusion_blocks = nn.ModuleList([EncoderBlock(cfg, cross=True) for _ in range(cfg.cross_layers)])
         self.output_norm = nn.LayerNorm(cfg.dim)
@@ -133,21 +140,36 @@ class DeviceEncoder(nn.Module):
     def forward(self, batch):
         return self.forward_from_structure(self.structure_encoder(batch), batch)
 
-    def forward_from_structure(self, structure, batch):
+    def input_tokens(self, batch):
+        """Own-node named design tokens; v2 models observe missingness explicitly."""
         params, observed = batch["parameters"], batch["parameter_mask"]
         b, n = batch["device_types"].shape
         if params.shape != (b, n, self.num_parameters):
             raise ValueError("Parameter schema does not match encoder")
         safe_params = torch.where(observed, params, torch.zeros_like(params))
-        p = self.parameter_value(safe_params.unsqueeze(-1)) + self.parameter_names.weight[None, None]
-        p = torch.cat([p.reshape(b, n * self.num_parameters, self.cfg.dim),
+        values = safe_params.unsqueeze(-1)
+        live = observed
+        if self.input_contract_version == 2:
+            applicable = batch["parameter_applicability"]
+            if applicable.shape != observed.shape or (observed & ~applicable).any():
+                raise ValueError("Observed parameters must have matching applicability")
+            # A missing applicable field has a named token with observed=0;
+            # an inapplicable field has no live token. Zero has observed=1.
+            values = torch.cat([values, observed.unsqueeze(-1).to(params.dtype)], -1)
+            live = applicable
+        return (self.parameter_value(values) + self.parameter_names.weight[None, None],
+                live & batch["device_mask"].unsqueeze(-1))
+
+    def forward_from_structure(self, structure, batch):
+        tokens, live = self.input_tokens(batch)
+        b, n, num_features, _ = tokens.shape
+        p = torch.cat([tokens.reshape(b, n * num_features, self.cfg.dim),
                        self.null_parameter.expand(b, -1, -1)], 1)
-        allowed = torch.zeros(b, n + 1, n * self.num_parameters + 1,
-                              dtype=torch.bool, device=params.device)
-        live = observed & batch["device_mask"].unsqueeze(-1)
+        allowed = torch.zeros(b, n + 1, n * num_features + 1,
+                              dtype=torch.bool, device=tokens.device)
         allowed[:, 0, :-1] = live.flatten(1)
         for i in range(n):
-            allowed[:, i + 1, i * self.num_parameters:(i + 1) * self.num_parameters] = live[:, i]
+            allowed[:, i + 1, i * num_features:(i + 1) * num_features] = live[:, i]
         allowed[:, :, -1] = ~allowed[:, :, :-1].any(-1)
         cross_mask = self.structure_encoder.attention_mask(allowed)
         # Do not mutate or detach structure tokens: the other branch consumes
@@ -158,6 +180,40 @@ class DeviceEncoder(nn.Module):
             x = block(x, structure["self_masks"][(offset + i) % 2], p, cross_mask, valid)
         x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
         return x, ~valid
+
+
+class OperatingPointDeviceEncoder(DeviceEncoder):
+    """Supervised +OP ablation: add named continuous OP tokens to own-node fusion.
+
+    Same structure, fusion blocks and decoder as the no-OP baseline. DC OP is
+    required at both training and inference. No categorical state or JEPA OP
+    encoder is used. Missing eligible MOS observations have explicit mask bits;
+    non-MOS devices, ports and padded nodes have no live OP feature tokens.
+    """
+    def __init__(self, cfg, num_types, num_parameters, num_terminals, num_op_features,
+                 input_contract_version=2, num_categories=0):
+        super().__init__(cfg, num_types, num_parameters, num_terminals,
+                         input_contract_version, num_categories)
+        if num_op_features < 1:
+            raise ValueError("Direct OP input requires selected OP fields")
+        self.num_op_features = num_op_features
+        self.op_names = nn.Embedding(num_op_features, cfg.dim)
+        self.op_value = nn.Linear(2, cfg.dim)
+
+    def input_tokens(self, batch):
+        parameters, live = super().input_tokens(batch)
+        if not {"op", "op_mask", "op_target_mask"} <= batch.keys():
+            raise ValueError("This model requires DC OP values, observation masks and eligibility at inference")
+        op, observed = batch["op"], batch["op_mask"]
+        expected = (*batch["device_types"].shape, self.num_op_features)
+        if op.shape != expected or observed.shape != expected:
+            raise ValueError("OP schema does not match encoder")
+        eligible = batch["op_target_mask"] & batch["device_mask"]
+        observed = observed & eligible.unsqueeze(-1)
+        values = torch.stack([torch.where(observed, op, torch.zeros_like(op)), observed.to(op.dtype)], -1)
+        tokens = self.op_value(values) + self.op_names.weight[None, None]
+        op_live = eligible.unsqueeze(-1).expand_as(observed)
+        return torch.cat([parameters, tokens], 2), torch.cat([live, op_live], 2)
 
 
 class SharedOPEncoder(nn.Module):
