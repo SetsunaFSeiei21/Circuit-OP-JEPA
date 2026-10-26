@@ -811,7 +811,7 @@ def inverse_transform_value(value: float, stats: dict[str, Any], feature_index: 
 
 def fit_preprocessor(
     dataset: dict[str, Any], manifest: dict[str, Any], include_performance: bool = False,
-    config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None, *, statistics_device=None,
 ) -> dict[str, Any]:
     """Fit v2 field transforms and vocabulary on ID training observations only.
 
@@ -832,6 +832,11 @@ def fit_preprocessor(
     statistics. Stage two fits label transforms ONLY from ``labeled_train``.
     Neither stage fits anything from validation, test, or OOD observations.
     """
+    statistics = _statistics
+    if statistics_device is not None:
+        from .resident import device_statistics
+        statistics = lambda rows, names, rules, weighting: device_statistics(
+            rows, names, rules, weighting, statistics_device)
     train = samples_for_split(dataset, manifest, "train")
     raw_spec = dataset["feature_spec"]
     normalized_config = _preprocessing_config(config, raw_spec)
@@ -856,8 +861,8 @@ def fit_preprocessor(
         "feature_spec": spec, "raw_feature_spec": copy.deepcopy(raw_spec),
         "transform_config": normalized_config,
         "normalization_config": copy.deepcopy(normalized_config),
-        "parameters": _statistics([(circuit, device["parameters"]) for circuit, device in devices], spec["parameter_names"], normalized_config["parameters"], weighting),
-        "op": _statistics([(circuit, device["op"]) for circuit, device in devices if is_op_target(device)], spec["op_names"], normalized_config["op"], weighting),
+        "parameters": statistics([(circuit, device["parameters"]) for circuit, device in devices], spec["parameter_names"], normalized_config["parameters"], weighting),
+        "op": statistics([(circuit, device["op"]) for circuit, device in devices if is_op_target(device)], spec["op_names"], normalized_config["op"], weighting),
         "fitted_sample_ids": sorted(manifest["train"]),
         "fit_ids": {"parameters": sorted(manifest["train"]), "op": sorted(manifest["train"]),
                     "vocabulary": sorted(manifest["train"]), "model_vocabulary": sorted(manifest["train"]),
@@ -866,7 +871,7 @@ def fit_preprocessor(
     if include_performance:
         lookup = {sample["sample_id"]: sample for sample in train}
         labeled = [lookup[sid] for sid in sorted(manifest["labeled_train"])]
-        result["performance"] = _statistics([(sample["circuit_id"], sample["performance"]) for sample in labeled], spec["metric_names"], normalized_config["performance"], weighting)
+        result["performance"] = statistics([(sample["circuit_id"], sample["performance"]) for sample in labeled], spec["metric_names"], normalized_config["performance"], weighting)
         result["performance_fitted_sample_ids"] = sorted(manifest["labeled_train"])
         result["fit_ids"]["performance"] = sorted(manifest["labeled_train"])
     return result

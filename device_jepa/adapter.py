@@ -517,7 +517,8 @@ def _observation(row: dict, source_sample: dict) -> dict:
 
 def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                        strict: bool = True, *,
-                       max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS) -> dict[str, Any]:
+                       max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS,
+                       progress: bool = False) -> dict[str, Any]:
     """Import every sample, including infeasible and performance-failed samples.
 
     strict=False relaxes only input-geometry vs measured-geometry consistency;
@@ -532,12 +533,14 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
     if not root.is_dir():
         raise AdapterError(f"Input root is not a directory: {root}")
     database = _inside(root / "sampling_history.sqlite3", root)
+    if progress:
+        print(f"Import: opening read-only SQLite source {root.name}", flush=True)
     with _read_database(database, max_table_rows=max_table_rows) as source:
-        return _adapt_source(root, netlist, strict, database, source)
+        return _adapt_source(root, netlist, strict, database, source, progress=progress)
 
 
 def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
-                  database: Path, source: dict[str, Any]) -> dict[str, Any]:
+                  database: Path, source: dict[str, Any], progress=False) -> dict[str, Any]:
     if len(source["dataset_schema"]) != 1:
         raise AdapterError("Expected exactly one dataset_schema row")
     schema = source["dataset_schema"][0]
@@ -657,6 +660,9 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
                         "op_status": "complete" if statuses and all(s == "complete" for s in statuses) else "partial" if any(s != "missing" for s in statuses) else "failed",
                         "source_observation": merged_observation,
                         "source_sampling": {key: row[key] for key in ("run_id", "sample_index", "sample_method", "success", "error_type", "access_level", "is_real_spice_call", "cache_hit_sample_id") if key in row}})
+        if progress and (len(samples) == 1 or len(samples) % 5000 == 0
+                         or len(samples) == source['table_counts']['samples']):
+            print(f"Import {circuit}: {len(samples)}/{source['table_counts']['samples']} samples", flush=True)
     if pending_ops is not None:
         raise AdapterError(f"Orphan OP sample_id: {pending_ops[0]}")
     if pending_observation is not None:
@@ -695,6 +701,8 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
                               "runs": runs, "warnings": warnings,
                               "filtering": "none; infeasible samples and missing metrics retained",
                               "op_semantics": "source numeric columns preserved without abs, normalization, or recomputation; some columns are upstream-derived"}}
+    if progress:
+        print(f"Import {circuit}: validating complete canonical dataset", flush=True)
     return validate_dataset(dataset)
 
 

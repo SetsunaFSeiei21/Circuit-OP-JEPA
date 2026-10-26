@@ -161,6 +161,10 @@ smoke 配置使用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 
 
 独立审查发现的问题、逐项修复和验证范围见 [修复说明](docs/INDEPENDENT_AUDIT_FIXES_ZH.md)。0.4.1 的[边界修复](docs/BOUNDARY_FIXES_ZH.md)使 `smoke` / `smoke_real` 在任何输出写入前拒绝非空目录；训练和验证选模在标签归一化前就排除训练中没有观测的指标。正式评估仍保留全部指标。直接训练命令也会拒绝覆盖已有阶段产物；JEPA 第二阶段保留真实预训练协议与种子。导入大型 SQLite 时可显式提高 `--max-table-rows`，或用 `none` 取消行数限制；canonical 数据仍需放入内存。
 
+0.4.2 将五模式的训练与验证改为设备常驻数据路径。指定 `--device cuda` 时，数值归一化、训练集统计拟合、图关系构建、pin 特征展开、batch 选择及模型计算在 GPU 上执行；同拓扑的图只缓存一份。JEPA 第二阶段提前计算并缓存冻结 encoder 的输出，各轮只训练 decoder。数据文件解析、字符串身份校验、checkpoint/JSON 写入和最终报表统计仍由 CPU 处理。CUDA 不可用或显存不足时会报错，训练不会静默转到 CPU。
+
+`training.progress_every` 控制 batch 进度间隔，默认 100；日志显示阶段、epoch、batch 比例、loss、耗时和 ETA，准备数据时也显示已解析样本数及常驻显存数据大小。完整实验应使用统一代码版本和新输出目录；旧任务需停止后重新提交，比较器会拒绝混合旧标量数据路径与新常驻路径的报告。总训练预算仍为 JEPA 30＋50、各基线 80 轮。实现和验证边界见 [GPU 数据路径说明](docs/GPU_PIPELINE_ZH.md)。
+
 ## 代码说明与建议审查顺序
 
 见 [docs/review_order.md](docs/review_order.md)。重点顺序：adapter → states → data/split/normalization → tensors → shared model → 两阶段冻结 → baselines → comparison → scripts。

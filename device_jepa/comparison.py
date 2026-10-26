@@ -289,11 +289,18 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     mode_seed_runs, pretraining_protocols, provenance_gaps = {}, {}, set()
     mode_seeds = defaultdict(set)
     backends, mode_configs, architectures, mode_op_protocols = {}, {}, {}, {}
+    tensor_pipeline = None
     optimizer_budget, total_epoch_budget, op_transform, selection_metrics = None, None, None, None
     for report in reports:
         if _identity(report) != identity:
             raise ValueError('Incompatible data, split, labels, metric names or target preprocessing')
         p = report['provenance']
+        pipeline = p.get('tensor_pipeline', 'legacy_scalar')
+        if not isinstance(pipeline, str) or not pipeline:
+            raise ValueError('Invalid tensor pipeline provenance')
+        if tensor_pipeline is not None and pipeline != tensor_pipeline:
+            raise ValueError('Tensor pipeline differs across reports; rerun the complete experiment with one implementation')
+        tensor_pipeline = pipeline
         mode, seed, split = p['mode'], p['seed'], report['split']
         if split not in ('test', 'ood', 'val', 'train'):
             raise ValueError('Unknown evaluation split')
@@ -508,6 +515,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     for cost in (*run_costs.values(), *acquisition_costs.values()):
         cost['evaluation_splits'].sort()
     return dict(schema_version=4, synthetic=reports[0]['synthetic'],
+                tensor_pipeline=tensor_pipeline,
                 epoch_budget_policy='equal_total', total_epoch_budget=total_epoch_budget,
                 expected_modes=list(expected_modes), compared_modes=[m for m in MODES if m in supplied_modes],
                 complete=cohort_complete and not provenance_gaps, cohort_complete=cohort_complete,

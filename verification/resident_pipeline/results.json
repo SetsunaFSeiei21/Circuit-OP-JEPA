@@ -1,0 +1,236 @@
+{
+  "package_version": "0.4.2",
+  "tensor_pipeline": "device_resident_v1",
+  "tests": {
+    "command": "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "tests_run": 375,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 3,
+    "successful": true,
+    "cuda_tests_skipped": [
+      "resident CUDA tensor parity",
+      "CUDA statistics and inversion",
+      "five-mode CUDA training/evaluation"
+    ],
+    "reason": "Execution host has PyTorch 2.14.1+cpu and no CUDA hardware"
+  },
+  "real_smoke": {
+    "command": "python scripts/run/run_raw_comparison.py --input RAW/Opamp2 --config configs/opamp2_smoke.json --output NEW_OUTPUT --seeds 17 29 43 --device cpu --smoke",
+    "circuit": "Opamp2",
+    "samples": 32,
+    "strict_complete": true,
+    "comparison_schema_version": 4,
+    "seeds": [
+      17,
+      29,
+      43
+    ],
+    "runs": [
+      {
+        "mode": "zerosim_pin",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 678653
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 17,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393,
+        "frozen_encoder_cache_bytes": 63104,
+        "encoder_frozen_verified": true
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 774237
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 148977
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 678653
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 29,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393,
+        "frozen_encoder_cache_bytes": 63104,
+        "encoder_frozen_verified": true
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 774237
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 148977
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 678653
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 43,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 53393,
+        "frozen_encoder_cache_bytes": 63104,
+        "encoder_frozen_verified": true
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 774237
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "resident_device": "cpu",
+        "resident_bytes": 148977
+      }
+    ],
+    "canonical_import_fingerprint_unchanged": true
+  },
+  "batch_preparation_benchmark": {
+    "device": "cpu",
+    "torch": "2.14.1+cpu",
+    "scope": "Batch preparation only; NOT end-to-end training or a CUDA measurement",
+    "results": [
+      {
+        "mode": "zerosim_device",
+        "reference_cpu_collate_seconds": 0.1210650689972681,
+        "resident_cpu_batch_seconds": 0.00015792300109751523,
+        "one_time_prepare_seconds": 0.003973122002207674,
+        "samples": 32,
+        "numeric_tensors_match": true,
+        "unique_topologies": 1,
+        "resident_bytes": 54704
+      },
+      {
+        "mode": "zerosim_pin",
+        "reference_cpu_collate_seconds": 0.28059561099507846,
+        "resident_cpu_batch_seconds": 0.0009566550033923704,
+        "one_time_prepare_seconds": 0.005206066001846921,
+        "samples": 32,
+        "numeric_tensors_match": true,
+        "unique_topologies": 1,
+        "resident_bytes": 679964
+      },
+      {
+        "mode": "zerosim_device_op",
+        "reference_cpu_collate_seconds": 0.34889550599473296,
+        "resident_cpu_batch_seconds": 0.0003145299997413531,
+        "one_time_prepare_seconds": 0.007197286999144126,
+        "samples": 32,
+        "numeric_tensors_match": true,
+        "unique_topologies": 1,
+        "resident_bytes": 160176
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "reference_cpu_collate_seconds": 1.0831322390004061,
+        "resident_cpu_batch_seconds": 0.0016347599994332995,
+        "one_time_prepare_seconds": 0.008104994994937442,
+        "samples": 32,
+        "numeric_tensors_match": true,
+        "unique_topologies": 1,
+        "resident_bytes": 785436
+      }
+    ]
+  },
+  "wheel": {
+    "filename": "device_jepa_demo-0.4.2-py3-none-any.whl",
+    "source_files_verified": 16,
+    "sha256": "19d5b6dfc3a501bf9d37e14d814b896eb3cb33cb7c2bcba0355e75819cdd3e22"
+  },
+  "source_sha256": {
+    "raw_zip": "54e16b0e3bb6ffc33e19efc5b01428e83bd672d2faa925e152223e31a6141edc",
+    "opamp2_sqlite": "f7b262d93d46f154fcc14848612eabd36cb97112892bb575eeea2f4d53b89b86"
+  },
+  "limitations": [
+    "CUDA execution, GPU utilization and GPU end-to-end speed were not measured on this CPU-only host.",
+    "Full 60000-sample import/training memory capacity and OOD generalization remain unverified.",
+    "Batch preparation timings exclude model training and do not establish an end-to-end speedup.",
+    "CPU still handles file/string parsing, identity hashes, control flow, checkpoint I/O and final report statistics."
+  ]
+}

@@ -187,8 +187,8 @@ class DeviceEncoder(nn.Module):
         allowed = torch.zeros(b, n + 1, n * num_features + 1,
                               dtype=torch.bool, device=tokens.device)
         allowed[:, 0, :-1] = live.flatten(1)
-        for i in range(n):
-            allowed[:, i + 1, i * num_features:(i + 1) * num_features] = live[:, i]
+        own_node = torch.eye(n, dtype=torch.bool, device=tokens.device)[None, :, :, None]
+        allowed[:, 1:, :-1] = (own_node & live[:, None]).reshape(b, n, n * num_features)
         allowed[:, :, -1] = ~allowed[:, :, :-1].any(-1)
         cross_mask = self.structure_encoder.attention_mask(allowed)
         # Do not mutate or detach structure tokens: the other branch consumes

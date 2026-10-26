@@ -13,6 +13,14 @@ It does **not** run ngspice or resample circuits. Import existing simulation his
 
 The existing design inputs are preserved, not restricted to W/L/M: configured named MOS, R/C and source parameters remain in the representation with their masks. The new models do not consume discrete OP-state categories. `zerosim_pin_op` and `zerosim_device_op` **require DC OP at inference**; they are information-augmented ablations, not zero-simulation deployment alternatives at equal total cost. The original two baselines do not use OP as model input. JEPA uses OP only during pretraining and not performance inference.
 
+## Resident CUDA data and progress
+
+With `--device cuda`, all five methods keep numeric data and reusable graph inputs on the selected GPU. Train-only statistics, signed normalization, graph relations, pin feature expansion, minibatch gathering, forward/backward passes and evaluation inversion run on CUDA. Input file/string parsing, provenance hashes, checkpoint writes and final report statistics remain host operations. GPU unavailability or insufficient resident-cache memory fails explicitly without CPU fallback.
+
+The JEPA decoder uses cached features from its frozen eval encoder; later epochs execute the decoder only. Input/OP hashes are computed once per training stage instead of on every best-checkpoint save. `training.progress_every` (default `100`) emits first/interval/last batch progress, loss, elapsed time and ETA in Slurm-friendly lines. Data preparation reports decoded samples, unique topology count and resident bytes. See [GPU pipeline details](../docs/GPU_PIPELINE_ZH.md).
+
+Stop the old tasks before updating and relaunch into new output directories. New reports record `tensor_pipeline=device_resident_v1`; comparison rejects mixed old/new pipelines. Epoch budgets and label/split contracts are unchanged. CUDA hardware and the full dataset capacity still require validation on the target cluster; CPU mechanics tests do not measure CUDA throughput.
+
 ## Quick CPU mechanics test
 
 From the repository root:

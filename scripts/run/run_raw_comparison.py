@@ -81,6 +81,8 @@ def main(argv=None):
     ModelConfig(**config['model'])
     _check_options(config)
     comparison_epoch_budget(config, args.modes)
+    from device_jepa.resident import require_device
+    require_device(args.device)
 
     output.mkdir(parents=True, exist_ok=True)
     config_path, data_path = output / 'config.json', output / 'data.json'

@@ -40,6 +40,8 @@ def main():
     from device_jepa.training import _check_options
     _check_options(config)
     budgets = comparison_epoch_budget(config, args.modes)
+    from device_jepa.resident import require_device
+    require_device(args.device)
     print('Epoch budgets (equal total): ' + json.dumps(budgets, sort_keys=True), flush=True)
     out.mkdir(parents=True, exist_ok=True)
     def run(*parts):

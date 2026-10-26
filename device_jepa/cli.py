@@ -97,11 +97,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "import_analog_agent":
         from .adapter import adapt_analog_agent, combine_datasets
-        datasets = [adapt_analog_agent(path, max_table_rows=args.max_table_rows) for path in args.input]
+        datasets = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True) for path in args.input]
         dataset = datasets[0] if len(datasets) == 1 else combine_datasets(datasets)
         del datasets
         from .states import apply_op_states
         dataset = apply_op_states(dataset, _read(args.config).get("op_state") if args.config else None)
+        print(f"Import: writing {len(dataset['samples'])} samples to canonical JSON", flush=True)
         _write(args.output, dataset)
         print(json.dumps({"samples": len(dataset["samples"]), "circuits": sorted({s["circuit_id"] for s in dataset["samples"]}),
                           "raw_op_fields": len(dataset["feature_spec"]["op_names"]), "metrics": dataset["feature_spec"]["metric_names"],
@@ -149,7 +150,7 @@ def main(argv=None):
             label = "SYNTHETIC"
         else:
             from .adapter import adapt_analog_agent, combine_datasets
-            sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows) for path in args.input]
+            sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True) for path in args.input]
             dataset = sources[0] if len(sources) == 1 else combine_datasets(sources)
             del sources
             # Never turn a smoke request into a long experiment via custom config.
@@ -170,6 +171,7 @@ def main(argv=None):
             print("NO OOD HOLDOUT: this dataset/config cannot establish cross-circuit OOD generalization.")
         print("Smoke complete: mechanics only. No real performance claim.")
         return
+    print(f"Loading canonical dataset for {args.command}: {args.data}", flush=True)
     dataset = load_dataset(args.data)
     if args.command == "pretrain":
         print(pretrain(dataset, _read(args.manifest), _read(args.config), args.output, args.device))

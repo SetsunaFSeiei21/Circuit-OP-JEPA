@@ -15,19 +15,19 @@ from pathlib import Path
 import torch
 
 from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
-                   partition_fingerprint, samples_for_split, verify_manifest, is_op_target)
+                   partition_fingerprint, samples_for_split, verify_manifest, is_op_target,
+                   _preprocessing_config, _statistics)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
 from .budgets import positive_epochs
+from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device, deterministic_workspace
 
 
 def seed_everything(seed, threads=1):
     # Must precede CUDA initialization; never weaken deterministic algorithms.
     # CPU runs are unaffected. An explicit incompatible setting is not silently
     # overwritten, because that would misrepresent the caller's execution setup.
-    workspace = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    if workspace not in {":4096:8", ":16:8"}:
-        raise ValueError("Deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG=:4096:8 or :16:8 before CUDA initialization")
+    deterministic_workspace()
     random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
@@ -73,6 +73,8 @@ def _check_options(options):
         positive_epochs(tr, key)
     if 'baseline_epochs' in tr:
         positive_epochs(tr, 'baseline_epochs')
+    if 'progress_every' in tr:
+        positive_epochs(tr, 'progress_every')
     for k in ("pretrain_lr", "decoder_lr", "grad_clip"):
         if tr[k] <= 0:
             raise ValueError(f"{k} must be positive")
@@ -146,6 +148,13 @@ def _effective_alignment_loss(config):
             if key not in {"predicted", "target", "valid"}}
 
 
+def _fit_stage_preprocessor(dataset, manifest, device, include_performance=False, config=None):
+    device = require_device(device)
+    print(f"Fitting ID-train-only transforms on {device} | labels={include_performance}", flush=True)
+    return fit_preprocessor(dataset, manifest, include_performance, config,
+                            statistics_device=device if device.type == 'cuda' else None)
+
+
 def _pretraining_provenance(source):
     """Capture executed stage-1 facts instead of stage-2 configuration wishes."""
     options, prep = source["options"], source["preprocessing"]
@@ -163,6 +172,7 @@ def _pretraining_provenance(source):
         "op_state": copy.deepcopy(options.get("op_state", {"features": []})),
         "feature_spec": copy.deepcopy(prep["feature_spec"]),
         "normalization": copy.deepcopy(prep["transform_config"]),
+        "tensor_pipeline": source.get("tensor_pipeline", "legacy_scalar"),
     }
     return {"version": 1, "protocol": protocol, "protocol_digest": _json_digest(protocol),
             "seed": tr["seed"], "source_options": copy.deepcopy(options),
@@ -174,16 +184,18 @@ def _pretraining_provenance(source):
             "checkpoint_run_id": source.get("checkpoint_run_id")}
 
 
-def _provenance(dataset, manifest, options):
+def _provenance(dataset, manifest, options, input_fingerprint=None):
+    print('Preparing verified checkpoint provenance (once per training stage)', flush=True)
     return {"checkpoint_version": 2, "model_config": options["model"],
             "input_contract_version": INPUT_CONTRACT_VERSION,
             "checkpoint_run_id": uuid.uuid4().hex,
             "requires_op_at_inference": False,
             "options": copy.deepcopy(options), "manifest": copy.deepcopy(manifest),
-            "input_op_fingerprint": input_op_fingerprint(dataset),
+            "input_op_fingerprint": input_fingerprint if input_fingerprint is not None else input_op_fingerprint(dataset),
             "partition_fingerprint": partition_fingerprint(manifest),
             "synthetic": bool(dataset.get("metadata", {}).get("synthetic", dataset.get("synthetic", False))),
             "environment": {"python": platform.python_version(), "torch": str(torch.__version__)},
+            "tensor_pipeline": PIPELINE,
             "architecture": "shared-structure-prefix_direct-device-op-alignment_v2",
             "shared_structure_layers": options["model"]["encoder_layers"] - options["model"]["cross_layers"]}
 
@@ -192,6 +204,8 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     """Only ID train design inputs/OP are used; validation sees OP, never labels."""
     started = time.perf_counter()
     optimizer_steps = 0
+    device = require_device(device)
+    print(f"JEPA pretrain setup on {device}: validating dataset/manifest", flush=True)
     verify_manifest(dataset, manifest)
     _check_options(options)
     effective_loss = _effective_alignment_loss(options["loss"])
@@ -204,7 +218,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
     output = _prepare_stage_output(output, "pretrain", dataset, manifest)
     manifest_path = output / "manifest.json"
-    preprocessing = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
+    preprocessing = _fit_stage_preprocessor(dataset, manifest, device, include_performance=False, config=options.get("normalization"))
     if "performance" in preprocessing:
         raise AssertionError("Stage 1 must not fit performance normalization")
     encoder = encoder_from_metadata(options["model"], preprocessing)
@@ -221,17 +235,27 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     train_usable, val_usable = [s for s in train if observed(s)], [s for s in val if observed(s)]
     if not train_usable or not val_usable:
         raise ValueError("Both ID train and validation require some observed OP")
+    provenance = _provenance(dataset, manifest, options)
+    cached = ResidentDataset(train_usable + val_usable, preprocessing, device,
+                             include_op=True, include_op_states=True,
+                             max_tokens=options['model']['max_devices'], label='JEPA pretrain data')
+    phase_indices = {'train': range(len(train_usable)),
+                     'val': range(len(train_usable), len(train_usable)+len(val_usable))}
     best, history = math.inf, []
     for epoch in range(tr["pretrain_epochs"]):
         records = {}
         for phase, rows in (("train", train_usable), ("val", val_usable)):
             model.train(phase == "train")
-            totals, count = {}, 0
-            for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
-                batch = to_device(collate_samples(samples, preprocessing, include_op=True, include_performance=False), device)
+            totals = torch.zeros(4, dtype=torch.float64, device=device)
+            count = torch.zeros((), dtype=torch.long, device=device)
+            progress = BatchProgress(f"pretrain epoch {epoch+1}/{tr['pretrain_epochs']} {phase}",
+                                     math.ceil(len(rows)/tr['batch_size']), tr.get('progress_every', 100))
+            for step, (_, batch) in enumerate(cached.batches(tr['batch_size'], indices=phase_indices[phase],
+                    seed=tr['seed']+epoch if phase == 'train' else None), 1):
                 with torch.set_grad_enabled(phase == "train"):
                     a, b, valid = model(batch)
                     if int(valid.sum()) < 2:
+                        progress.update(step)
                         continue
                     loss, detail = alignment_loss(a, b, valid, **effective_loss)
                     if not torch.isfinite(loss):
@@ -242,20 +266,22 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                         torch.nn.utils.clip_grad_norm_(model.parameters(), tr["grad_clip"], error_if_nonfinite=True)
                         optimizer.step()
                         optimizer_steps += 1
-                weight = int(valid.sum())
+                weight = valid.sum()
                 count += weight
-                for key, value in {"loss": loss.detach(), **detail}.items():
-                    if key != "observed_devices":
-                        totals[key] = totals.get(key, 0.0) + float(value) * weight
-            if not count:
+                values = torch.stack([loss.detach(), detail['alignment_mse'], detail['variance'], detail['covariance']]).double()
+                totals += values * weight
+                progress.update(step, loss.detach())
+            observed_count = int(count)
+            if not observed_count:
                 raise ValueError(f"Stage-1 {phase} has no batch with >=2 observed device OP vectors")
-            records[phase] = {k: v / count for k, v in totals.items()}
-            records[phase]["observed_device_tokens"] = count
+            records[phase] = dict(zip(('loss', 'alignment_mse', 'variance', 'covariance'),
+                                       (totals / count).tolist()))
+            records[phase]["observed_device_tokens"] = observed_count
         history.append({"epoch": epoch + 1, **records})
         print(f"pretrain {epoch+1}/{tr['pretrain_epochs']} train={records['train']['loss']:.6f} val={records['val']['loss']:.6f}", flush=True)
         if records["val"]["loss"] < best:
             best = records["val"]["loss"]
-            checkpoint = {**_provenance(dataset, manifest, options), "stage": "pretrain",
+            checkpoint = {**provenance, "stage": "pretrain",
                           "effective_loss_config": copy.deepcopy(effective_loss),
                           "epoch": epoch + 1, "selection": {"split": "val", "objective": "op_alignment_regularized", "value": best},
                           "preprocessing": preprocessing, "model_state": model.state_dict(),
@@ -266,7 +292,10 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     selected = load_checkpoint(output / "pretrain_best.pt")
     selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
                     timings={"pretrain_seconds": time.perf_counter()-started, "supervised_seconds": 0.},
-                    training_cost={"pretrain_optimizer_steps": optimizer_steps, "pretrain_examples": len(train_usable)},
+                    training_cost={"pretrain_optimizer_steps": optimizer_steps, "pretrain_examples": len(train_usable),
+                                   "pretrain_device": str(device),
+                                   "tensor_pipeline": PIPELINE, "resident_device": str(device),
+                                   "resident_data_bytes": cached.nbytes},
                     parameter_count={"pretrain_total": sum(p.numel() for p in model.parameters()),
                                      "encoder": sum(p.numel() for p in model.encoder.parameters())})
     torch.save(selected, output / "pretrain_best.pt")
@@ -330,12 +359,15 @@ def load_checkpoint(path):
 def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     started = time.perf_counter()
     optimizer_steps = 0
+    device = require_device(device)
+    print(f"JEPA decoder setup on {device}: validating source checkpoint", flush=True)
     source = load_checkpoint(pretrain_checkpoint)
     if source["stage"] != "pretrain":
         raise ValueError("train_decoder requires a stage-1 checkpoint")
     # Labels may be attached after OP pretraining, but no design/OP record,
     # feature schema, or partition may silently change between the stages.
-    if input_op_fingerprint(dataset) != source["input_op_fingerprint"]:
+    input_fingerprint = input_op_fingerprint(dataset)
+    if input_fingerprint != source["input_op_fingerprint"]:
         raise ValueError("Stage-2 dataset changed immutable design/input/OP provenance; only performance values may change")
     if partition_fingerprint(source["manifest"]) != source["partition_fingerprint"]:
         raise ValueError("Stage-1 checkpoint partition fingerprint mismatch")
@@ -351,15 +383,22 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     tr = options["training"]
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
     prep = copy.deepcopy(source["preprocessing"])
-    proposed = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
-    if proposed["transform_config"] != prep["transform_config"]:
+    proposed = _preprocessing_config(options.get('normalization'), dataset['feature_spec'])
+    if proposed != prep["transform_config"]:
         raise ValueError("Normalization config differs from pretraining checkpoint; frozen input/OP transforms cannot change")
     if options.get("op_state", {}) != source["options"].get("op_state", {}):
         raise ValueError("OP-state config differs from pretraining checkpoint")
-    supervised_stats = fit_preprocessor(dataset, manifest, include_performance=True, config=source["preprocessing"]["transform_config"])
-    prep["performance"] = supervised_stats["performance"]
-    prep["performance_fitted_sample_ids"] = supervised_stats["performance_fitted_sample_ids"]
-    prep["fit_ids"]["performance"] = supervised_stats["fit_ids"]["performance"]
+    print(f'Fitting labeled-train-only performance transforms on {device}; reusing frozen input/OP scales', flush=True)
+    labeled = sorted(samples_for_split(dataset, manifest, 'labeled_train'), key=lambda row: row['sample_id'])
+    arguments = ([(row['circuit_id'], row['performance']) for row in labeled],
+                 prep['feature_spec']['metric_names'], proposed['performance'], proposed['weighting'])
+    if device.type == 'cuda':
+        from .resident import device_statistics
+        prep['performance'] = device_statistics(*arguments, device)
+    else:
+        prep['performance'] = _statistics(*arguments)
+    prep['performance_fitted_sample_ids'] = sorted(manifest['labeled_train'])
+    prep['fit_ids']['performance'] = sorted(manifest['labeled_train'])
     if not any(c > 0 for c in prep["performance"]["count"]):
         raise ValueError("No requested metric has an observed labeled-train target")
     unobserved_metrics = [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count]
@@ -380,21 +419,34 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         raise AssertionError("Encoder parameters entered the stage-2 optimizer")
     split_rows = {"train": samples_for_split(dataset, manifest, "labeled_train"),
                   "val": samples_for_split(dataset, manifest, "val")}
+    provenance = _provenance(dataset, manifest, options, input_fingerprint)
+    cached = ResidentDataset(split_rows['train'] + split_rows['val'], prep, device,
+                             include_performance=True, performance_metric_mask=selected_metric_mask,
+                             max_tokens=options['model']['max_devices'], label='JEPA decoder data')
+    phase_indices = {'train': range(len(split_rows['train'])),
+                     'val': range(len(split_rows['train']), len(cached.rows))}
+    # Evaluation-mode frozen features are invariant across all decoder epochs.
+    # Retain them on the same device; decoder dropout and gradients stay live.
+    cached.cache_encoder(model.encoder, tr['batch_size'], tr.get('progress_every', 100))
+    frozen_bytes = torch.cat([v.detach().contiguous().reshape(-1).view(torch.uint8)
+                              for v in model.encoder.state_dict().values()]).clone()
     history, best = [], math.inf
     for epoch in range(tr["decoder_epochs"]):
         record = {"epoch": epoch + 1}
         for phase, rows in split_rows.items():
             model.train(phase == "train")
-            total, count = 0.0, 0
-            for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
-                # OP is not even loaded into stage-2 tensors.
-                batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True,
-                                                 performance_metric_mask=selected_metric_mask), device)
-                mask = _supervised_metric_mask(batch["performance_mask"], prep)
+            total = torch.zeros((), dtype=torch.float64, device=device)
+            count = torch.zeros((), dtype=torch.long, device=device)
+            progress = BatchProgress(f"decoder epoch {epoch+1}/{tr['decoder_epochs']} {phase}",
+                                     math.ceil(len(rows)/tr['batch_size']), tr.get('progress_every', 100))
+            for step, (_, batch) in enumerate(cached.batches(tr['batch_size'], indices=phase_indices[phase],
+                    seed=tr['seed']+epoch if phase == 'train' else None), 1):
+                mask = batch['performance_mask']
                 if not mask.any():
+                    progress.update(step)
                     continue
                 with torch.set_grad_enabled(phase == "train"):
-                    prediction = model(batch)
+                    prediction = model.decoder(batch['encoder_memory'], batch['encoder_padding'])
                     loss = masked_mse(prediction, batch["performance"], mask)
                     if not torch.isfinite(loss):
                         raise FloatingPointError("Non-finite stage-2 objective")
@@ -404,14 +456,18 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                         torch.nn.utils.clip_grad_norm_(model.decoder.parameters(), tr["grad_clip"], error_if_nonfinite=True)
                         optimizer.step()
                         optimizer_steps += 1
-                k = int(mask.sum())
-                total += float(loss.detach()) * k
+                k = mask.sum()
+                total += loss.detach().double() * k
                 count += k
-            if not count:
+                progress.update(step, loss.detach())
+            observed_count = int(count)
+            if not observed_count:
                 raise ValueError(f"No observed trained-metric performance targets in {phase}")
-            record[phase] = {"normalized_mse": total / count, "observed_targets": count}
+            record[phase] = {"normalized_mse": float(total / count), "observed_targets": observed_count}
         # Includes all parameters AND registered buffers, not just requires_grad.
-        if state_digest(model.encoder) != frozen_digest:
+        current_bytes = torch.cat([v.detach().contiguous().reshape(-1).view(torch.uint8)
+                                   for v in model.encoder.state_dict().values()])
+        if not torch.equal(current_bytes, frozen_bytes):
             raise AssertionError("Frozen encoder state changed during decoder training")
         if any(p.grad is not None for p in model.encoder.parameters()):
             raise AssertionError("Frozen encoder unexpectedly received gradients")
@@ -419,7 +475,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         print(f"decoder {epoch+1}/{tr['decoder_epochs']} train={record['train']['normalized_mse']:.6f} val={record['val']['normalized_mse']:.6f}", flush=True)
         if record["val"]["normalized_mse"] < best:
             best = record["val"]["normalized_mse"]
-            checkpoint = {**_provenance(dataset, manifest, options), "stage": "decoder",
+            checkpoint = {**provenance, "stage": "decoder",
                           "input_contract_version": prep.get("input_contract_version", 1),
                           "epoch": epoch+1, "selection": {"split": "val", "objective": "normalized_performance_mse", "value": best},
                           "preprocessing": prep, "encoder_state": model.encoder.state_dict(),
@@ -439,6 +495,10 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                     timings={"pretrain_seconds": source["timings"]["pretrain_seconds"],
                              "supervised_seconds": time.perf_counter()-started},
                     training_cost={**source["training_cost"], "supervised_optimizer_steps": optimizer_steps,
+                                   "supervised_device": str(device),
+                                   "tensor_pipeline": PIPELINE, "resident_device": str(device),
+                                   "resident_data_bytes": cached.nbytes,
+                                   "frozen_encoder_cache_bytes": cached.encoded.numel()*cached.encoded.element_size(),
                                    "pretrain_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"],
                                    "supervised_epochs": tr["decoder_epochs"],
                                    "total_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"] + tr["decoder_epochs"],
@@ -454,6 +514,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
 
 
 def evaluate(dataset, checkpoint_path, split="test", batch_size=32, device="cpu", output=None):
+    device = require_device(device)
     source = load_checkpoint(checkpoint_path)
     if source["stage"] != "decoder":
         raise ValueError("Evaluation needs a stage-2 checkpoint")
@@ -471,23 +532,29 @@ def evaluate(dataset, checkpoint_path, split="test", batch_size=32, device="cpu"
     if source.get("decoder_digest") and state_digest(model.decoder) != source["decoder_digest"]:
         raise AssertionError("Decoder integrity mismatch")
     rows = samples_for_split(dataset, source["manifest"], split)
-    predictions, truths, masks, circuits = [], [], [], []
+    predictions, truths, masks = [], [], []
+    circuits = [s['circuit_id'] for s in rows]
     normalized_predictions, normalized_targets = [], []
+    cached = ResidentDataset(rows, prep, device, include_performance=True,
+                             performance_dtype=torch.float64,
+                             max_tokens=source['model_config']['max_devices'], label=f'JEPA evaluate {split}')
+    progress = BatchProgress(f'JEPA evaluate {split}', math.ceil(len(rows)/batch_size),
+                             source['options']['training'].get('progress_every', 100), device)
     with torch.no_grad():
-        for samples in _batches(rows, batch_size):
-            batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True), device)
+        for step, (_, batch) in enumerate(cached.batches(batch_size), 1):
             normalized = model(batch)
-            normalized_predictions.append(normalized.cpu())
-            truth, normalized_truth = evaluation_targets(samples, prep)
-            normalized_targets.append(normalized_truth)
-            raw = denormalize(normalized, prep["performance"]).cpu()
+            normalized_predictions.append(normalized)
+            normalized_targets.append(batch['performance'])
+            raw = denormalize(normalized, prep["performance"])
             predictions.append(raw)
-            truths.append(truth)
-            masks.append(batch["performance_mask"].cpu())
-            circuits.extend(s["circuit_id"] for s in samples)
+            truths.append(batch['physical_performance'])
+            masks.append(batch["performance_mask"])
+            progress.update(step)
     if not predictions:
         raise ValueError(f"No examples in {split}")
-    pred, target, mask = map(torch.cat, (predictions, truths, masks))
+    pred, target, mask = [torch.cat(values).cpu() for values in (predictions, truths, masks)]
+    normalized_predictions = [torch.cat(normalized_predictions).cpu()]
+    normalized_targets = [torch.cat(normalized_targets).cpu()]
     report = {"split": split, "synthetic": source["synthetic"], "num_samples": len(rows),
               "selection_used_ood": False, "has_ood_holdout": bool(source["manifest"].get("ood", [])), "encoder_frozen_verified": source["freeze_verified"],
               "unobserved_training_metrics": source.get("unobserved_training_metrics", []),
@@ -548,6 +615,7 @@ def report_provenance(source, dataset, rows):
         "mode": mode, "backend": backend, "seed": source["options"]["training"]["seed"],
         "requires_op_at_inference": uses_op_input, "op_information": op_information,
         "input_contract_version": prep.get("input_contract_version", 1),
+        "tensor_pipeline": source.get('tensor_pipeline', 'legacy_scalar'),
         "op_input_transform_digest": _json_digest({"op_names": prep["feature_spec"]["op_names"], "op": prep["op"]}),
         "partition_fingerprint": source["partition_fingerprint"],
         "input_op_fingerprint": source["input_op_fingerprint"],

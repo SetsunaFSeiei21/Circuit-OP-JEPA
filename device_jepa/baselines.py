@@ -29,8 +29,10 @@ from .tensors import (_fill, _performance_metric_mask, collate_samples, denormal
 from .training import (_batches, _check_dataset_options, _check_options, _metrics,
                        _provenance, _save_json, _prepare_stage_output,
                        _selection_metric_names, _supervised_metric_mask,
+                       _fit_stage_preprocessor,
                        load_checkpoint, prediction_records, report_provenance,
                        seed_everything, state_digest)
+from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device
 
 
 BASELINE_MODES = ("zerosim_device", "zerosim_pin", "zerosim_pin_op", "zerosim_device_op")
@@ -227,6 +229,8 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     opt into the explicitly recorded implementation enhancement.
     """
     _check_mode(mode)
+    device = require_device(device)
+    print(f"{mode} setup on {device}: validating dataset/manifest", flush=True)
     verify_manifest(dataset, manifest)
     _check_options(options)
     _check_dataset_options(options, manifest)
@@ -240,8 +244,8 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     tr = effective["training"]
     epochs = positive_epochs(tr, "baseline_epochs")
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
-    prep = fit_preprocessor(dataset, manifest, include_performance=True,
-                            config=effective.get("normalization"))
+    prep = _fit_stage_preprocessor(dataset, manifest, device, include_performance=True,
+                                   config=effective.get("normalization"))
     if mode in OP_INPUT_MODES and not any(prep["op"]["count"]):
         raise ValueError("Direct OP baseline requires some observed eligible ID-train DC OP")
     if not any(prep["performance"]["count"]):
@@ -259,6 +263,13 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
         raise AssertionError("Supervised optimizer must contain all encoder and decoder parameters")
     splits = {"train": samples_for_split(dataset, manifest, "labeled_train"),
               "val": samples_for_split(dataset, manifest, "val")}
+    provenance = _provenance(dataset, manifest, effective)
+    cached = ResidentDataset(splits['train'] + splits['val'], prep, device,
+                             include_op=mode in OP_INPUT_MODES, include_performance=True,
+                             pin_vocab=pin_vocab, max_tokens=effective['model']['max_devices'],
+                             performance_metric_mask=selected_metric_mask, label=f'{mode} data')
+    phase_indices = {'train': range(len(splits['train'])),
+                     'val': range(len(splits['train']), len(cached.rows))}
     cost = {"labeled_train_count": len(splits["train"]), "input_scaler_train_count": len(manifest["train"]),
             "requires_op_at_inference": mode in OP_INPUT_MODES,
             "op_acquisition_cost_seconds": None, "op_acquisition_cost_status": "not_measured",
@@ -268,6 +279,9 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             "decoder_parameter_count": sum(p.numel() for p in model.decoder.parameters()),
             "optimizer_steps": 0, "epochs": epochs, "pretrain_epochs": 0,
             "supervised_epochs": epochs, "total_epochs": epochs,
+            "tensor_pipeline": PIPELINE, "resident_device": str(device),
+            "supervised_device": str(device),
+            "resident_data_bytes": cached.nbytes,
             "learning_rate": tr["decoder_lr"], "batch_size": tr["batch_size"], "seed": tr["seed"]}
     checkpoint_path = output / f"{mode}_best.pt"
     history, best = [], math.inf
@@ -275,14 +289,18 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
         record = {"epoch": epoch + 1}
         for phase, rows in splits.items():
             model.train(phase == "train")
-            total, count, steps = 0.0, 0, 0
-            for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
-                batch = to_device(_collate(samples, prep, mode, effective["model"], pin_vocab,
-                                          performance_metric_mask=selected_metric_mask), device)
+            total = torch.zeros((), dtype=torch.float64, device=device)
+            count = torch.zeros((), dtype=torch.long, device=device)
+            steps = 0
+            progress = BatchProgress(f"{mode} epoch {epoch+1}/{epochs} {phase}",
+                                     math.ceil(len(rows)/tr['batch_size']), tr.get('progress_every', 100))
+            for step, (_, batch) in enumerate(cached.batches(tr['batch_size'], indices=phase_indices[phase],
+                    seed=tr['seed']+epoch if phase == 'train' else None), 1):
                 if mode not in OP_INPUT_MODES and any(key.startswith("op") for key in batch):
                     raise AssertionError("Supervised reference batches must not contain OP inputs")
-                mask = _supervised_metric_mask(batch["performance_mask"], prep)
+                mask = batch["performance_mask"]
                 if not mask.any():
+                    progress.update(step)
                     continue
                 with torch.set_grad_enabled(phase == "train"):
                     prediction = model(batch)
@@ -296,18 +314,20 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                         optimizer.step()
                         cost["optimizer_steps"] += 1
                         steps += 1
-                k = int(mask.sum())
-                total += float(loss.detach()) * k
+                k = mask.sum()
+                total += loss.detach().double() * k
                 count += k
-            if not count:
+                progress.update(step, loss.detach())
+            observed_count = int(count)
+            if not observed_count:
                 raise ValueError(f"No observed trained-metric performance targets in {phase}")
-            record[phase] = {"normalized_mse": total / count, "observed_targets": count,
+            record[phase] = {"normalized_mse": float(total / count), "observed_targets": observed_count,
                              "optimizer_steps": steps}
         history.append(record)
         print(f"{mode} {epoch+1}/{epochs} train={record['train']['normalized_mse']:.6f} val={record['val']['normalized_mse']:.6f}", flush=True)
         if record["val"]["normalized_mse"] < best:
             best = record["val"]["normalized_mse"]
-            checkpoint = {**_provenance(dataset, manifest, effective), "stage": "baseline", "mode": mode, "backend": f"cleanroom_{mode}",
+            checkpoint = {**provenance, "stage": "baseline", "mode": mode, "backend": f"cleanroom_{mode}",
                           "architecture": "clean-room-supervised-pin-reference" if mode in PIN_MODES else "clean-room-supervised-device-reference",
                           "requested_options": copy.deepcopy(options), "epoch": epoch + 1,
                           "selection": {"split": "val", "objective": "normalized_performance_mse", "value": best},
@@ -353,6 +373,7 @@ def evaluate_baseline(dataset, checkpoint_path, split="test", batch_size=32, dev
     An explicitly absent OOD holdout returns a zero-sample, not-configured report;
     it does not manufacture OOD results or silently substitute the ID test split.
     """
+    device = require_device(device)
     source = load_checkpoint(checkpoint_path)
     if source.get("stage") != "baseline":
         raise ValueError("Baseline evaluation requires a supervised baseline checkpoint")
@@ -381,22 +402,29 @@ def evaluate_baseline(dataset, checkpoint_path, split="test", batch_size=32, dev
     if state_digest(model.encoder) != source["encoder_digest"] or state_digest(model.decoder) != source["decoder_digest"]:
         raise AssertionError("Baseline checkpoint model integrity mismatch")
     rows = samples_for_split(dataset, source["manifest"], split)
-    predictions, truths, masks, circuits = [], [], [], []
+    predictions, truths, masks = [], [], []
+    circuits = [sample['circuit_id'] for sample in rows]
     normalized_predictions, normalized_targets = [], []
+    cached = None
+    if rows:
+        cached = ResidentDataset(rows, prep, device, include_op=mode in OP_INPUT_MODES,
+                                 include_performance=True, performance_dtype=torch.float64,
+                                 pin_vocab=pin_vocab, max_tokens=source['model_config']['max_devices'],
+                                 label=f'{mode} evaluate {split}')
+    progress = BatchProgress(f'{mode} evaluate {split}', math.ceil(len(rows)/batch_size),
+                             source['options']['training'].get('progress_every', 100), device)
     with torch.no_grad():
-        for samples in _batches(rows, batch_size):
-            batch = to_device(_collate(samples, prep, mode, source["model_config"], pin_vocab), device)
+        for step, (_, batch) in enumerate(cached.batches(batch_size) if cached is not None else [], 1):
             normalized = model(batch)
-            normalized_predictions.append(normalized.cpu())
-            raw_truth, normalized_truth = evaluation_targets(samples, prep)
-            normalized_targets.append(normalized_truth)
-            predictions.append(denormalize(normalized, prep["performance"]).cpu())
-            truths.append(raw_truth)
-            masks.append(batch["performance_mask"].cpu())
-            circuits.extend(sample["circuit_id"] for sample in samples)
+            normalized_predictions.append(normalized)
+            normalized_targets.append(batch['performance'])
+            predictions.append(denormalize(normalized, prep["performance"]))
+            truths.append(batch['physical_performance'])
+            masks.append(batch["performance_mask"])
+            progress.update(step)
     if predictions:
-        pred, target, mask = map(torch.cat, (predictions, truths, masks))
-        norm_pred, norm_target = map(torch.cat, (normalized_predictions, normalized_targets))
+        pred, target, mask = [torch.cat(values).cpu() for values in (predictions, truths, masks)]
+        norm_pred, norm_target = [torch.cat(values).cpu() for values in (normalized_predictions, normalized_targets)]
     elif split == "ood" and not source["manifest"].get("ood", []):
         shape = (0, len(prep["feature_spec"]["metric_names"]))
         pred, target, mask = torch.empty(shape), torch.empty(shape), torch.zeros(shape, dtype=torch.bool)

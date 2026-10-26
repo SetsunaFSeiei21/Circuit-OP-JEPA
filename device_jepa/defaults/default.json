@@ -27,7 +27,8 @@
     "decoder_lr": 0.0001,
     "weight_decay": 0.0001,
     "grad_clip": 1.0,
-    "torch_threads": 1
+    "torch_threads": 1,
+    "progress_every": 100
   },
   "dataset": {
     "train_circuits": [

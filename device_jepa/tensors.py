@@ -169,6 +169,26 @@ def to_device(batch, device):
             for key, value in batch.items()}
 
 
+def _device_denormalize(prediction, statistics):
+    # Keep physical inversion on the GPU, including extreme finite scales.
+    values = prediction.detach().to(dtype=torch.float64)
+    kwargs = dict(dtype=torch.float64, device=prediction.device)
+    mean, std = (torch.tensor(statistics[k], **kwargs) for k in ('mean', 'std'))
+    transformed = values * std + mean
+    magnitude = torch.maximum(std.abs(), mean.abs())
+    alternate = (values * (std / magnitude) + mean / magnitude) * magnitude
+    transformed = torch.where(torch.isfinite(transformed), transformed, alternate)
+    scale = torch.tensor(statistics.get('asinh_scale', [1.]*len(statistics['mean'])), **kwargs)
+    kinds = torch.tensor([kind == 'asinh' for kind in statistics.get('kind', ['linear']*len(statistics['mean']))],
+                         device=prediction.device)
+    large = torch.copysign((transformed.abs() + scale.log() - 0.6931471805599453).exp(), transformed)
+    sinh = torch.sinh(transformed.clamp(-709.999, 709.999)) * scale
+    physical = torch.where(kinds, torch.where(transformed.abs() < 710., sinh, large), transformed)
+    if not bool(torch.isfinite(physical).all()):
+        raise ValueError('inverse transform exceeds finite physical range')
+    return physical
+
+
 def denormalize(prediction, statistics):
     """Evaluation-only inverse in float64, using the stable scalar transform.
 
@@ -179,6 +199,8 @@ def denormalize(prediction, statistics):
     """
     if prediction.ndim < 1 or prediction.shape[-1] != len(statistics["mean"]):
         raise ValueError("Prediction shape does not match target statistics")
+    if prediction.device.type == 'cuda':
+        return _device_denormalize(prediction, statistics)
     flat = prediction.detach().to(device="cpu", dtype=torch.float64).reshape(-1, prediction.shape[-1])
     values = [[inverse_transform_value(value, statistics, j) for j, value in enumerate(row)]
               for row in flat.tolist()]
