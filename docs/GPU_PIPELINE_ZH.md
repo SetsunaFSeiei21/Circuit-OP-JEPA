@@ -52,4 +52,4 @@ for circuit in 5t_ota Opamp0; do
 done
 ```
 
-默认 batch size、模型结构、学习率、划分和 epoch 预算保持现有配置。这里优化数据路径和冻结计算，不通过减少轮数或样本数来缩短实验。
+GPU 数据路径保持配置中的 batch size、模型结构、学习率、划分和最大 epoch 预算。0.4.3 另行加入可配置的验证集早停；启用后，每个模型或 JEPA 阶段可能在上限前停止，并记录实际执行成本，详见 [早停说明](EARLY_STOPPING_ZH.md)。

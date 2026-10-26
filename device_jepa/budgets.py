@@ -1,4 +1,5 @@
 """Explicit, independent stage budgets for matched training runs."""
+from .early_stopping import early_stopping_config
 
 
 def positive_epochs(training, key):
@@ -15,6 +16,7 @@ def smoke_epochs(options):
 def comparison_epoch_budget(options, modes):
     """Fail before running any stage; do not silently rewrite a user's budget."""
     tr = options['training']
+    early_stopping_config(tr)
     pretrain = positive_epochs(tr, 'pretrain_epochs')
     decoder = positive_epochs(tr, 'decoder_epochs')
     baseline = positive_epochs(tr, 'baseline_epochs')

@@ -155,7 +155,9 @@ python -m device_jepa evaluate --data DATA --checkpoint CHECKPOINT --split test 
 | `training.decoder_epochs` | 50 | JEPA 冻结 encoder 后的 decoder 训练 |
 | `training.baseline_epochs` | 80 | 四种非 JEPA 模型各自的端到端监督训练 |
 
-五模式比较按**总训练轮数**对齐：`pretrain_epochs + decoder_epochs == baseline_epochs`，默认是 JEPA 30＋50 对其他模型各 80 轮。非 JEPA 训练不再借用 `decoder_epochs`；已有自定义配置需要显式添加 `baseline_epochs`。修改 JEPA 两阶段轮数后，应同时调整基线总轮数，比较入口会在输出写入和训练前拒绝不匹配的预算。`--smoke` 将 JEPA 设为 1＋1 轮，其他模型各 2 轮。总轮数相等不代表 FLOPs、参数量、实际耗时或 OP 信息条件相同；报告继续分别记录阶段成本。
+五模式比较按**最大总训练轮数**对齐：`pretrain_epochs + decoder_epochs == baseline_epochs`，默认是 JEPA 最多 30＋50、其他模型各最多 80 轮。非 JEPA 训练不再借用 `decoder_epochs`；已有自定义配置需要显式添加 `baseline_epochs`。修改 JEPA 两阶段轮数后，应同时调整基线总上限，比较入口会在输出写入和训练前拒绝不匹配的预算。`--smoke` 将 JEPA 设为 1＋1 轮，其他模型各 2 轮。相同轮数上限不代表 FLOPs、参数量、实际耗时或 OP 信息条件相同；报告继续分别记录阶段成本。
+
+0.4.3 默认配置为所有模型加入独立早停：`training.early_stopping` 默认 `enabled=true, patience=10, min_delta=0.0, min_epochs=1`。监督阶段监控 val 归一化性能 MSE，JEPA 预训练监控 val OP 对齐损失；test/OOD 只在选好 checkpoint 后评估。报告包含 R²、MAE、RMSE，R² 不作为当前选模或早停目标。早停后实际轮数可能不同，报告分别记录上限、执行轮数、最佳轮数和停止原因。关闭早停才能要求实际总轮数相同；旧自定义配置缺少该对象时保持固定轮数。配置与报告字段见 [早停说明](docs/EARLY_STOPPING_ZH.md)。
 
 smoke 配置使用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 容器保持 v2，输入契约升级为 `input_contract_version=3`：加入仅从训练集拟合的器件模型名和命名端口关联。新 manifest 要求 `design_fingerprint_version=2`，修复模型身份与正负零分组；旧 manifest 必须从原始 canonical 数据新建实验。旧输入架构仍可重建，旧容器 v1 仍不兼容；不同输入契约不能混作一组公平比较。
 

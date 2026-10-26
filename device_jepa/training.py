@@ -20,6 +20,8 @@ from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_finger
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
 from .budgets import positive_epochs
+from .early_stopping import (EarlyStopping, PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
+                             early_stopping_config, executed_epochs)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device, deterministic_workspace
 
 
@@ -69,6 +71,7 @@ def _save_json(path, value):
 
 def _check_options(options):
     tr = options["training"]
+    early_stopping_config(tr)
     for key in ('batch_size', 'pretrain_epochs', 'decoder_epochs'):
         positive_epochs(tr, key)
     if 'baseline_epochs' in tr:
@@ -174,9 +177,12 @@ def _pretraining_provenance(source):
         "normalization": copy.deepcopy(prep["transform_config"]),
         "tensor_pipeline": source.get("tensor_pipeline", "legacy_scalar"),
     }
+    if 'early_stopping' in source:
+        protocol['early_stopping'] = early_stopping_config(tr)
     return {"version": 1, "protocol": protocol, "protocol_digest": _json_digest(protocol),
             "seed": tr["seed"], "source_options": copy.deepcopy(options),
             "selected_epoch": source["epoch"], "selection": copy.deepcopy(source["selection"]),
+            "execution": copy.deepcopy(source.get('early_stopping')),
             "encoder_digest": source["encoder_digest"],
             "input_op_fingerprint": source["input_op_fingerprint"],
             "partition_fingerprint": source["partition_fingerprint"],
@@ -242,6 +248,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     phase_indices = {'train': range(len(train_usable)),
                      'val': range(len(train_usable), len(train_usable)+len(val_usable))}
     best, history = math.inf, []
+    stopping = EarlyStopping(tr, tr['pretrain_epochs'], PRETRAIN_OBJECTIVE)
     for epoch in range(tr["pretrain_epochs"]):
         records = {}
         for phase, rows in (("train", train_usable), ("val", val_usable)):
@@ -279,7 +286,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
             records[phase]["observed_device_tokens"] = observed_count
         history.append({"epoch": epoch + 1, **records})
         print(f"pretrain {epoch+1}/{tr['pretrain_epochs']} train={records['train']['loss']:.6f} val={records['val']['loss']:.6f}", flush=True)
-        if records["val"]["loss"] < best:
+        if stopping.update(records['val']['loss'], epoch + 1):
             best = records["val"]["loss"]
             checkpoint = {**provenance, "stage": "pretrain",
                           "effective_loss_config": copy.deepcopy(effective_loss),
@@ -289,10 +296,17 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                           "encoder_digest": state_digest(model.encoder),
                           "skipped_all_op_missing": {"train": len(train)-len(train_usable), "val": len(val)-len(val_usable)}}
             torch.save(checkpoint, output / "pretrain_best.pt")
+        if stopping.should_stop:
+            stopping.announce('JEPA pretrain')
+            break
     selected = load_checkpoint(output / "pretrain_best.pt")
     selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+                    early_stopping=stopping.summary(),
                     timings={"pretrain_seconds": time.perf_counter()-started, "supervised_seconds": 0.},
                     training_cost={"pretrain_optimizer_steps": optimizer_steps, "pretrain_examples": len(train_usable),
+                                   "pretrain_epochs": len(history), "supervised_epochs": 0,
+                                   "total_epochs": len(history), "planned_pretrain_epochs": tr['pretrain_epochs'],
+                                   "planned_supervised_epochs": 0, "planned_total_epochs": tr['pretrain_epochs'],
                                    "pretrain_device": str(device),
                                    "tensor_pipeline": PIPELINE, "resident_device": str(device),
                                    "resident_data_bytes": cached.nbytes},
@@ -406,6 +420,10 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     selected_metric_mask = [count > 0 for count in prep["performance"]["count"]]
     output = _prepare_stage_output(output, "decoder", dataset, manifest, source=source)
     pretrain_provenance = _pretraining_provenance(source)
+    pretrain_epochs = executed_epochs(pretrain_provenance['execution'], source['options']['training'],
+                                     pretrain_provenance['protocol']['training']['pretrain_epochs'], PRETRAIN_OBJECTIVE)
+    if source.get('training_cost', {}).get('pretrain_epochs', pretrain_epochs) != pretrain_epochs:
+        raise ValueError('Pretraining epoch cost contradicts its executed stopping provenance')
     encoder = encoder_from_metadata(source["model_config"], prep)
     encoder.load_state_dict(source["encoder_state"], strict=True)
     decoder = make_decoder(encoder.cfg, len(prep["feature_spec"]["metric_names"]))
@@ -431,6 +449,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     frozen_bytes = torch.cat([v.detach().contiguous().reshape(-1).view(torch.uint8)
                               for v in model.encoder.state_dict().values()]).clone()
     history, best = [], math.inf
+    stopping = EarlyStopping(tr, tr['decoder_epochs'], SUPERVISED_OBJECTIVE)
     for epoch in range(tr["decoder_epochs"]):
         record = {"epoch": epoch + 1}
         for phase, rows in split_rows.items():
@@ -473,7 +492,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
             raise AssertionError("Frozen encoder unexpectedly received gradients")
         history.append(record)
         print(f"decoder {epoch+1}/{tr['decoder_epochs']} train={record['train']['normalized_mse']:.6f} val={record['val']['normalized_mse']:.6f}", flush=True)
-        if record["val"]["normalized_mse"] < best:
+        if stopping.update(record['val']['normalized_mse'], epoch + 1):
             best = record["val"]["normalized_mse"]
             checkpoint = {**provenance, "stage": "decoder",
                           "input_contract_version": prep.get("input_contract_version", 1),
@@ -490,8 +509,12 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                           "decoder_digest": state_digest(model.decoder),
                           "freeze_verified": True}
             torch.save(checkpoint, output / "decoder_best.pt")
+        if stopping.should_stop:
+            stopping.announce('JEPA decoder')
+            break
     selected = load_checkpoint(output / "decoder_best.pt")
     selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+                    early_stopping=stopping.summary(),
                     timings={"pretrain_seconds": source["timings"]["pretrain_seconds"],
                              "supervised_seconds": time.perf_counter()-started},
                     training_cost={**source["training_cost"], "supervised_optimizer_steps": optimizer_steps,
@@ -499,9 +522,12 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                                    "tensor_pipeline": PIPELINE, "resident_device": str(device),
                                    "resident_data_bytes": cached.nbytes,
                                    "frozen_encoder_cache_bytes": cached.encoded.numel()*cached.encoded.element_size(),
-                                   "pretrain_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"],
-                                   "supervised_epochs": tr["decoder_epochs"],
-                                   "total_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"] + tr["decoder_epochs"],
+                                   "pretrain_epochs": pretrain_epochs,
+                                   "supervised_epochs": len(history),
+                                   "total_epochs": pretrain_epochs + len(history),
+                                   "planned_pretrain_epochs": pretrain_provenance['protocol']['training']['pretrain_epochs'],
+                                   "planned_supervised_epochs": tr['decoder_epochs'],
+                                   "planned_total_epochs": pretrain_provenance['protocol']['training']['pretrain_epochs'] + tr['decoder_epochs'],
                                    "labeled_train_examples": len(split_rows["train"])},
                     parameter_count={"total": sum(p.numel() for p in model.parameters()),
                                      "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -634,6 +660,7 @@ def report_provenance(source, dataset, rows):
         "model_config": source["model_config"],
         "parameter_count": source.get("parameter_count", {}), "timing": timings,
         "training_cost": source.get("training_cost", {}),
+        "early_stopping": copy.deepcopy(source.get('early_stopping')),
         "selection_metric_names": source.get("selection_metric_names"),
         "pretraining_protocol_digest": source.get("pretrain_provenance", {}).get("protocol_digest"),
         "pretrain_provenance": copy.deepcopy(source.get("pretrain_provenance")),

@@ -33,6 +33,7 @@ from .training import (_batches, _check_dataset_options, _check_options, _metric
                        load_checkpoint, prediction_records, report_provenance,
                        seed_everything, state_digest)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device
+from .early_stopping import EarlyStopping, SUPERVISED_OBJECTIVE
 
 
 BASELINE_MODES = ("zerosim_device", "zerosim_pin", "zerosim_pin_op", "zerosim_device_op")
@@ -222,7 +223,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     """Train encoder+decoder only on labeled ID train; select using ID validation.
 
     Epoch count uses an explicit baseline_epochs, independent of JEPA decoder
-    epochs. Matched runners require it to equal JEPA pretraining + decoder epochs.
+    epochs. Matched runners require its maximum to equal JEPA's two-stage maximum.
     Equal epochs and label sets do not imply equal FLOPs or parameter count.
     No OP pretraining is run. Pin mode defaults to no learned
     terminal edge bias; set ``options['baseline']['pin_terminal_bias']=True`` to
@@ -285,6 +286,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             "learning_rate": tr["decoder_lr"], "batch_size": tr["batch_size"], "seed": tr["seed"]}
     checkpoint_path = output / f"{mode}_best.pt"
     history, best = [], math.inf
+    stopping = EarlyStopping(tr, epochs, SUPERVISED_OBJECTIVE)
     for epoch in range(epochs):
         record = {"epoch": epoch + 1}
         for phase, rows in splits.items():
@@ -325,7 +327,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                              "optimizer_steps": steps}
         history.append(record)
         print(f"{mode} {epoch+1}/{epochs} train={record['train']['normalized_mse']:.6f} val={record['val']['normalized_mse']:.6f}", flush=True)
-        if record["val"]["normalized_mse"] < best:
+        if stopping.update(record['val']['normalized_mse'], epoch + 1):
             best = record["val"]["normalized_mse"]
             checkpoint = {**provenance, "stage": "baseline", "mode": mode, "backend": f"cleanroom_{mode}",
                           "architecture": "clean-room-supervised-pin-reference" if mode in PIN_MODES else "clean-room-supervised-device-reference",
@@ -343,6 +345,9 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                           "training_cost": dict(cost),
                           "reference_note": "Clean-room ZeroSim-style reference; no upstream source copied; not an untouched official reproduction."}
             torch.save(checkpoint, checkpoint_path)
+        if stopping.should_stop:
+            stopping.announce(mode)
+            break
     # Retain the best validation weights but record the cost of the complete run,
     # including later epochs that did not improve validation performance.
     selected = load_checkpoint(checkpoint_path)
@@ -350,8 +355,11 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     cost["selected_epoch"] = selected["epoch"]
     cost["supervised_optimizer_steps"] = cost["optimizer_steps"]
     cost["pretrain_optimizer_steps"] = 0
+    cost.update(epochs=len(history), supervised_epochs=len(history), total_epochs=len(history),
+                planned_pretrain_epochs=0, planned_supervised_epochs=epochs, planned_total_epochs=epochs)
     cost["labeled_train_examples"] = cost["labeled_train_count"]
     selected["training_cost"] = cost
+    selected['early_stopping'] = stopping.summary()
     selected["timings"] = {"pretrain_seconds": 0., "supervised_seconds": cost["wall_time_seconds"]}
     selected["parameter_count"] = {"total": cost["total_parameter_count"],
                                    "trainable": cost["trainable_parameter_count"],

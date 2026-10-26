@@ -1,0 +1,220 @@
+{
+  "feature": "validation early stopping",
+  "package_version": "0.4.3",
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.14.1+cpu",
+    "cuda_available": false
+  },
+  "unit_tests": {
+    "total": 386,
+    "passed": 382,
+    "skipped": 4,
+    "failures": 0,
+    "errors": 0,
+    "command": "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "skipped_tests": [
+      "test_cuda_all_five_modes_stop_restore_and_report_actual_cost (test_early_stopping.EarlyStoppingTrainingTests.test_cuda_all_five_modes_stop_restore_and_report_actual_cost)",
+      "test_cuda_inverse_and_train_only_statistics (test_resident.DeviceNormalizationTests.test_cuda_inverse_and_train_only_statistics)",
+      "test_all_numeric_cache_and_batches_stay_on_cuda (test_resident.ResidentParityTests.test_all_numeric_cache_and_batches_stay_on_cuda)",
+      "test_five_mode_cuda_training_evaluation_and_frozen_cache (test_resident.ResidentParityTests.test_five_mode_cuda_training_evaluation_and_frozen_cache)"
+    ]
+  },
+  "integration": {
+    "source": "existing read-only canonical Analog-Agent Opamp2 data",
+    "samples": 32,
+    "seeds": [
+      17,
+      29,
+      43
+    ],
+    "modes": 5,
+    "training_runs": 15,
+    "device": "cpu",
+    "split_counts": {
+      "train": 26,
+      "val": 3,
+      "test": 3,
+      "ood": 0
+    },
+    "early_stopping": {
+      "enabled": true,
+      "patience": 1,
+      "min_delta": 1000000.0,
+      "min_epochs": 1
+    },
+    "policy_note": "Large min_delta intentionally forces patience exhaustion for mechanics validation; not a convergence or accuracy experiment.",
+    "comparison_schema": 5,
+    "comparison_complete": true,
+    "strict_provenance": true,
+    "epoch_budget_policy": "equal_maximum_with_early_stopping",
+    "max_total_epochs": 8,
+    "runs": [
+      {
+        "mode": "jepa_zerosim",
+        "seed": 17,
+        "selected_epoch": 1,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 2,
+        "total_epochs": 4,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted",
+        "frozen_encoder_verified": true
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 29,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 2,
+        "total_epochs": 4,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted",
+        "frozen_encoder_verified": true
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 43,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 2,
+        "total_epochs": 4,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted",
+        "frozen_encoder_verified": true
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 17,
+        "selected_epoch": 1,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 29,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 43,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 17,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 29,
+        "selected_epoch": 1,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 43,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 17,
+        "selected_epoch": 1,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 29,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 43,
+        "selected_epoch": 1,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 17,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 29,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 43,
+        "selected_epoch": 2,
+        "supervised_epochs": 2,
+        "pretrain_epochs": 0,
+        "total_epochs": 2,
+        "max_total_epochs": 8,
+        "stop_reason": "patience_exhausted"
+      }
+    ]
+  },
+  "wheel": {
+    "name": "device_jepa_demo-0.4.3-py3-none-any.whl",
+    "sha256": "e7d2e80dd40f99cfb8ba5f79d1c3aca9689100db260d56fe36c44e38c45d0352",
+    "bytes": 88241,
+    "source_matched_files": 17,
+    "isolated_import_and_packaged_defaults_verified": true
+  },
+  "limitations": [
+    "No local CUDA hardware; four CUDA tests skipped.",
+    "32-point CPU CLI run does not establish predictive quality or full 60000-point GPU capacity.",
+    "Independent early stopping matches maximum total epochs, not actual epoch counts or FLOPs."
+  ]
+}

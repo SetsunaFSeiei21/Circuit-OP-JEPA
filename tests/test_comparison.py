@@ -270,7 +270,7 @@ class ComparisonTests(unittest.TestCase):
             output = root/'comparison'
             main(['--reports', *paths, '--output', str(output)])
             result = json.loads((output/'comparison.json').read_text())
-            self.assertEqual(result['schema_version'], 4)
+            self.assertEqual(result['schema_version'], 5)
             with (output/'evaluation_costs.csv').open() as handle:
                 costs = list(csv.DictReader(handle))
             self.assertTrue(all(row['op_acquisition_cost_seconds'] == '' for row in costs))

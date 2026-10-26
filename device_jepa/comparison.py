@@ -12,6 +12,8 @@ import math
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
+from .early_stopping import (PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
+                             early_stopping_config, executed_epochs)
 
 LEGACY_MODES = ('zerosim_pin', 'zerosim_device', 'jepa_zerosim')
 OP_MODES = ('zerosim_pin_op', 'zerosim_device_op')
@@ -213,6 +215,12 @@ def _executed_protocol_gaps(source):
             raise ValueError(f'Executed pretraining source options {name} must be a dictionary')
     if isinstance(options.get('training'), dict):
         original = options['training']
+        if 'early_stopping' in protocol:
+            policy = early_stopping_config({'early_stopping': protocol['early_stopping']})
+            if policy != early_stopping_config(original):
+                raise ValueError('Executed pretraining stopping protocol differs from source options')
+        elif early_stopping_config(original)['enabled']:
+            gaps.append('missing executed pretraining stopping protocol')
         actual_training = protocol.get('training', {})
         for name in training_rules:
             if name not in original and name != 'torch_threads':
@@ -237,7 +245,7 @@ def _executed_protocol_gaps(source):
 
 
 def _epoch_budget(provenance, gaps):
-    """Use completed-run budgets, never the selected checkpoint's epoch index."""
+    """Separate planned maxima from executed epochs and selected weights."""
     mode, config = provenance['mode'], provenance['training_config']
     if mode == 'jepa_zerosim':
         supervised = config.get('decoder_epochs')
@@ -258,8 +266,21 @@ def _epoch_budget(provenance, gaps):
             raise ValueError(f'Invalid {mode} training budget: {key}')
     if mode == 'jepa_zerosim' and supervised is None:
         raise ValueError('Incomplete JEPA decoder training budget')
+    planned_pretrain, planned_supervised = pretrain, supervised
+    planned_total = pretrain + supervised if pretrain is not None and supervised is not None else None
+    if mode == 'jepa_zerosim' and pretrain is not None:
+        original = source.get('source_options', {}).get('training')
+        if original is None:
+            original = dict(source.get('protocol', {}).get('training', {}))
+            if 'early_stopping' in source.get('protocol', {}):
+                original['early_stopping'] = source['protocol']['early_stopping']
+        pretrain = executed_epochs(source.get('execution'), original, pretrain, PRETRAIN_OBJECTIVE)
+    if supervised is not None:
+        supervised = executed_epochs(provenance.get('early_stopping'), config, supervised, SUPERVISED_OBJECTIVE)
     total = pretrain + supervised if pretrain is not None and supervised is not None else None
-    budget = dict(pretrain_epochs=pretrain, supervised_epochs=supervised, total_epochs=total)
+    budget = dict(pretrain_epochs=pretrain, supervised_epochs=supervised, total_epochs=total,
+                  planned_pretrain_epochs=planned_pretrain, planned_supervised_epochs=planned_supervised,
+                  planned_total_epochs=planned_total)
     cost = provenance.get('training_cost', {})
     if not isinstance(cost, dict):
         raise ValueError('training_cost must be a dictionary')
@@ -290,6 +311,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     mode_seeds = defaultdict(set)
     backends, mode_configs, architectures, mode_op_protocols = {}, {}, {}, {}
     tensor_pipeline = None
+    stopping_policy, has_early_stopping = None, False
     optimizer_budget, total_epoch_budget, op_transform, selection_metrics = None, None, None, None
     for report in reports:
         if _identity(report) != identity:
@@ -385,6 +407,11 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
         config = p.get('training_config')
         if not isinstance(config, dict):
             raise ValueError('Missing training_config provenance')
+        policy = early_stopping_config(config)
+        if stopping_policy is not None and stopping_policy != policy:
+            raise ValueError('Incompatible supervised early-stopping policies across models')
+        stopping_policy = policy
+        has_early_stopping |= policy['enabled']
         keys = ('decoder_lr', 'batch_size', 'weight_decay', 'grad_clip')
         if any(k not in config for k in keys):
             raise ValueError('Incomplete supervised training budget')
@@ -393,11 +420,14 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
             raise ValueError('Incompatible supervised training budget')
         optimizer_budget = budget
         epochs = _epoch_budget(p, provenance_gaps)
-        if epochs['total_epochs'] is not None:
-            if total_epoch_budget is not None and total_epoch_budget != epochs['total_epochs']:
+        execution = (p.get('pretrain_provenance') or {}).get('execution')
+        if execution is not None:
+            has_early_stopping |= execution['config']['enabled']
+        if epochs['planned_total_epochs'] is not None:
+            if total_epoch_budget is not None and total_epoch_budget != epochs['planned_total_epochs']:
                 raise ValueError('Incompatible total training budget: JEPA pretraining + decoder epochs '
                                  'must equal baseline_epochs')
-            total_epoch_budget = epochs['total_epochs']
+            total_epoch_budget = epochs['planned_total_epochs']
         mode_config = {k: v for k, v in config.items() if k != 'seed'}
         if mode in mode_configs and mode_configs[mode] != mode_config:
             raise ValueError('Training configuration differs across seeds within a mode')
@@ -448,6 +478,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                     pretraining_protocol_digest=p.get('pretraining_protocol_digest'),
                     timing=p.get('timing', {}), parameter_count=p.get('parameter_count'),
                     training_cost=training_cost,
+                    early_stopping=p.get('early_stopping'), pretraining_execution=execution,
                     pretrain_optimizer_steps=training_cost.get('pretrain_optimizer_steps'),
                     supervised_optimizer_steps=training_cost.get('supervised_optimizer_steps'),
                     **epochs,
@@ -514,16 +545,18 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                    for split in cohorts)
     for cost in (*run_costs.values(), *acquisition_costs.values()):
         cost['evaluation_splits'].sort()
-    return dict(schema_version=4, synthetic=reports[0]['synthetic'],
+    return dict(schema_version=5, synthetic=reports[0]['synthetic'],
                 tensor_pipeline=tensor_pipeline,
-                epoch_budget_policy='equal_total', total_epoch_budget=total_epoch_budget,
+                epoch_budget_policy='equal_maximum_with_early_stopping' if has_early_stopping else 'equal_total',
+                total_epoch_budget=total_epoch_budget, max_total_epochs=total_epoch_budget,
+                supervised_early_stopping=stopping_policy,
                 expected_modes=list(expected_modes), compared_modes=[m for m in MODES if m in supplied_modes],
                 complete=cohort_complete and not provenance_gaps, cohort_complete=cohort_complete,
                 strict_provenance=not provenance_gaps, provenance_gaps=sorted(provenance_gaps),
                 per_seed=per_seed, summary=summary, run_costs=list(run_costs.values()),
                 evaluation_costs=evaluation_costs, op_acquisition_costs=list(acquisition_costs.values()),
                 paired_per_seed=paired_per_seed, paired_summary=paired_summary,
-                warning='Smoke/toy results validate mechanics only, not generalization. R2 undefined for fewer than two observations or constant targets. Physical units are dataset units. Normalized metrics use training-only target transforms. scope distinguishes pooled results from individual circuits, even a circuit named __all__. Training costs are deduplicated by verified run identity; legacy unverified rows remain separate and prevent strict completeness. Evaluation coverage is split-specific. Measured OP acquisition costs are deduplicated only within the same run and explicit acquisition scope; scopes may overlap and are not assumed additive. OP-input baselines require extra DC OP information at inference, unlike no-OP baselines and JEPA (training-only OP). OP acquisition/simulation cost is unknown unless explicitly measured, never assumed zero or included in model phase timing. Total-epoch parity counts JEPA pretraining plus decoder epochs against each baseline; it does not imply equal sample exposure, information, parameters or total compute. Paired deltas are OP minus no-OP: negative MAE/RMSE and positive R2 favor OP; these are descriptive, not significance tests.')
+                warning='Smoke/toy results validate mechanics only, not generalization. R2 undefined for fewer than two observations or constant targets. Physical units are dataset units. Normalized metrics use training-only target transforms. scope distinguishes pooled results from individual circuits, even a circuit named __all__. Training costs are deduplicated by verified run identity; legacy unverified rows remain separate and prevent strict completeness. Evaluation coverage is split-specific. Measured OP acquisition costs are deduplicated only within the same run and explicit acquisition scope; scopes may overlap and are not assumed additive. OP-input baselines require extra DC OP information at inference, unlike no-OP baselines and JEPA (training-only OP). OP acquisition/simulation cost is unknown unless explicitly measured, never assumed zero or included in model phase timing. Maximum total-epoch parity counts JEPA pretraining plus decoder maxima against each baseline. Independent validation early stopping may produce different actual totals, recorded separately with best epochs and stopping reasons; it does not imply equal sample exposure, information, parameters or total compute. Paired deltas are OP minus no-OP: negative MAE/RMSE and positive R2 favor OP; these are descriptive, not significance tests.')
 
 
 def _paired_deltas(per_seed):

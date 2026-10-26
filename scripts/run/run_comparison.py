@@ -42,7 +42,9 @@ def main():
     budgets = comparison_epoch_budget(config, args.modes)
     from device_jepa.resident import require_device
     require_device(args.device)
-    print('Epoch budgets (equal total): ' + json.dumps(budgets, sort_keys=True), flush=True)
+    from device_jepa.early_stopping import early_stopping_config
+    print('Maximum epoch budgets (equal total): ' + json.dumps(budgets, sort_keys=True), flush=True)
+    print('Validation early stopping: ' + json.dumps(early_stopping_config(config['training']), sort_keys=True), flush=True)
     out.mkdir(parents=True, exist_ok=True)
     def run(*parts):
         command = [sys.executable, '-m', 'device_jepa', *map(str, parts)]
