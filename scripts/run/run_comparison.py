@@ -75,7 +75,7 @@ def main():
                 reports.append(str(report))
     from device_jepa.comparison import main as compare
     compare(['--reports', *reports, '--output', str(out/'comparison'), '--modes', *args.modes])
-    print(f"Comparison files: {out/'comparison/summary.csv'} | {out/'comparison/per_seed.csv'} | {out/'comparison/costs.csv'} | {out/'comparison/comparison.json'}", flush=True)
+    print(f"Comparison files: {out/'comparison/summary.csv'} | {out/'comparison/per_seed.csv'} | {out/'comparison/costs.csv'} | {out/'comparison/evaluation_costs.csv'} | {out/'comparison/comparison.json'}", flush=True)
     if (out/'comparison/paired_summary.csv').exists():
         print(f"OP/no-OP paired deltas: {out/'comparison/paired_summary.csv'} | {out/'comparison/paired_per_seed.csv'}", flush=True)
     print(f'Completed {len(args.modes)}-mode smoke: mechanics only.' if args.smoke else f'Completed matched {len(args.modes)}-mode experiment.')

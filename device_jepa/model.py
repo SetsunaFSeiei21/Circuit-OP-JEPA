@@ -63,14 +63,18 @@ class EncoderBlock(nn.Module):
 class StructureEncoder(nn.Module):
     """Entire pure-structure prefix before the first parameter-fusion layer.
 
-    Consumes only type, position, connectivity/terminal and port metadata.
+    Consumes only type, physical-model identity, position, connectivity/terminal
+    and port metadata. Contract 3 preserves each named external port role.
     Design parameters, OP values, states and labels are deliberately inaccessible.
     """
-    def __init__(self, cfg, num_types, num_terminals, num_categories=0):
+    def __init__(self, cfg, num_types, num_terminals, num_categories=0,
+                 num_models=0, num_port_roles=0):
         super().__init__()
         self.cfg = cfg
         self.type_embedding = nn.Embedding(num_types, cfg.dim, padding_idx=0)
         self.category_embedding = nn.Embedding(num_categories, cfg.dim, padding_idx=0) if num_categories else None
+        self.model_embedding = nn.Embedding(num_models, cfg.dim, padding_idx=0) if num_models else None
+        self.named_port_projection = nn.Linear(num_terminals * num_port_roles, cfg.dim, bias=False) if num_port_roles else None
         self.position_embedding = nn.Embedding(cfg.max_devices, cfg.dim)
         self.graph_token = nn.Parameter(torch.randn(1, 1, cfg.dim) * 0.02)
         self.port_projection = nn.Linear(num_terminals, cfg.dim, bias=False)
@@ -87,6 +91,16 @@ class StructureEncoder(nn.Module):
         nodes = self.type_embedding(types) * self.cfg.dim ** 0.5 + pos
         if self.category_embedding is not None:
             nodes = nodes + self.category_embedding(batch["device_categories"])
+        if self.model_embedding is not None:
+            if "device_models" not in batch or batch["device_models"].shape != types.shape:
+                raise ValueError("Input contract 3 requires per-device model identities")
+            nodes = nodes + self.model_embedding(batch["device_models"])
+        if self.named_port_projection is not None:
+            ports = batch.get("named_port_roles")
+            expected = (b, n, self.named_port_projection.in_features)
+            if ports is None or ports.shape != expected:
+                raise ValueError("Input contract 3 requires named terminal-port roles")
+            nodes = nodes + self.named_port_projection(torch.where(devices.unsqueeze(-1), ports, 0.))
         nodes = (nodes + self.port_projection(batch["port_roles"])) * devices.unsqueeze(-1)
         x = torch.cat([self.graph_token.expand(b, -1, -1), nodes], dim=1)
         valid = torch.cat([torch.ones(b, 1, dtype=torch.bool, device=types.device), devices], 1)
@@ -119,15 +133,20 @@ class DeviceEncoder(nn.Module):
     six new layers. The later parameter-conditioned self-attention is not shared.
     """
     def __init__(self, cfg, num_types, num_parameters, num_terminals,
-                 input_contract_version=1, num_categories=0):
+                 input_contract_version=1, num_categories=0, num_models=0, num_port_roles=0):
         super().__init__()
         self.cfg, self.num_parameters = cfg, num_parameters
-        if input_contract_version not in (1, 2):
+        if input_contract_version not in (1, 2, 3):
             raise ValueError("Unsupported model input contract version")
+        if input_contract_version == 3 and (num_models < 3 or num_port_roles < 2):
+            raise ValueError("Input contract 3 requires model and port-role vocabularies")
+        if input_contract_version < 3 and (num_models or num_port_roles):
+            raise ValueError("Legacy input contracts do not contain model or named-port embeddings")
         self.input_contract_version = input_contract_version
-        self.structure_encoder = StructureEncoder(cfg, num_types, num_terminals, num_categories)
+        self.structure_encoder = StructureEncoder(cfg, num_types, num_terminals, num_categories,
+                                                   num_models, num_port_roles)
         self.parameter_names = nn.Embedding(num_parameters, cfg.dim)
-        self.parameter_value = nn.Linear(2 if input_contract_version == 2 else 1, cfg.dim)
+        self.parameter_value = nn.Linear(2 if input_contract_version >= 2 else 1, cfg.dim)
         self.null_parameter = nn.Parameter(torch.zeros(1, 1, cfg.dim))
         self.fusion_blocks = nn.ModuleList([EncoderBlock(cfg, cross=True) for _ in range(cfg.cross_layers)])
         self.output_norm = nn.LayerNorm(cfg.dim)
@@ -141,7 +160,7 @@ class DeviceEncoder(nn.Module):
         return self.forward_from_structure(self.structure_encoder(batch), batch)
 
     def input_tokens(self, batch):
-        """Own-node named design tokens; v2 models observe missingness explicitly."""
+        """Own-node named design tokens; contracts 2 and 3 observe missingness."""
         params, observed = batch["parameters"], batch["parameter_mask"]
         b, n = batch["device_types"].shape
         if params.shape != (b, n, self.num_parameters):
@@ -149,7 +168,7 @@ class DeviceEncoder(nn.Module):
         safe_params = torch.where(observed, params, torch.zeros_like(params))
         values = safe_params.unsqueeze(-1)
         live = observed
-        if self.input_contract_version == 2:
+        if self.input_contract_version >= 2:
             applicable = batch["parameter_applicability"]
             if applicable.shape != observed.shape or (observed & ~applicable).any():
                 raise ValueError("Observed parameters must have matching applicability")
@@ -191,9 +210,9 @@ class OperatingPointDeviceEncoder(DeviceEncoder):
     non-MOS devices, ports and padded nodes have no live OP feature tokens.
     """
     def __init__(self, cfg, num_types, num_parameters, num_terminals, num_op_features,
-                 input_contract_version=2, num_categories=0):
+                 input_contract_version=2, num_categories=0, num_models=0, num_port_roles=0):
         super().__init__(cfg, num_types, num_parameters, num_terminals,
-                         input_contract_version, num_categories)
+                         input_contract_version, num_categories, num_models, num_port_roles)
         if num_op_features < 1:
             raise ValueError("Direct OP input requires selected OP fields")
         self.num_op_features = num_op_features

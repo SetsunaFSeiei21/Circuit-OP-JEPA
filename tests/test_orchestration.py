@@ -44,10 +44,15 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual({r['node_granularity'] for r in result['paired_summary']}, {'pin', 'device'})
             self.assertEqual({r['split'] for r in result['paired_summary']}, {'test', 'ood'})
             self.assertTrue(result['complete'])
+            self.assertEqual(len(result['run_costs']), 5)
+            self.assertEqual(len(result['evaluation_costs']), 10)
             for cost in result['run_costs']:
                 self.assertEqual(cost['requires_op_at_inference'], cost['mode'] in OP_MODES)
+                self.assertEqual(set(cost['evaluation_splits']), {'test', 'ood'})
+                self.assertGreater(cost['supervised_optimizer_steps'], 0)
+            for cost in result['evaluation_costs']:
                 self.assertIsNone(cost['op_acquisition_cost_seconds'])
-            for filename in ['summary.csv', 'per_seed.csv', 'costs.csv', 'paired_per_seed.csv', 'paired_summary.csv', 'README.txt']:
+            for filename in ['summary.csv', 'per_seed.csv', 'costs.csv', 'evaluation_costs.csv', 'paired_per_seed.csv', 'paired_summary.csv', 'README.txt']:
                 self.assertTrue((output/'comparison'/filename).is_file())
             with patch.object(sys, 'argv', argv), self.assertRaises(SystemExit):
                 runner.main()

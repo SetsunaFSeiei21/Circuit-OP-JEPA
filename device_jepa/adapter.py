@@ -13,6 +13,8 @@ import json
 import math
 import re
 import sqlite3
+from contextlib import contextmanager
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -27,6 +29,7 @@ PARAMETER_UNITS = {
     "W_m": "m", "L_m": "m", "m": "dimensionless", "dc_current_A": "A",
     "dc_voltage_V": "V", "R_ohm": "ohm", "C_F": "F",
 }
+DEFAULT_MAX_TABLE_ROWS = 1_000_000
 _SUFFIXES = {"t": 1e12, "g": 1e9, "meg": 1e6, "k": 1e3, "m": 1e-3,
              "u": 1e-6, "n": 1e-9, "p": 1e-12, "f": 1e-15, "a": 1e-18,
              "mil": 25.4e-6}
@@ -225,7 +228,7 @@ def parse_spice_netlist(path: str | Path, *, root: str | Path | None = None,
         raise AdapterError("Parameter file must be inside the input root")
     params, devices, ports, includes, source_files = {}, [], {}, [], [path]
     models = dict(_KNOWN_MOS_MODELS)
-    scale, in_dut, found, closed = 1.0, False, False, False
+    scale, in_dut, found, closed, ended = 1.0, False, False, False, False
     seen_devices, seen_nets = set(), {}
     def net(name):
         return seen_nets.setdefault(name.lower(), name)
@@ -236,6 +239,8 @@ def parse_spice_netlist(path: str | Path, *, root: str | Path | None = None,
             params[key] = value
     for line_number, line in _lines(path):
         location = f"{path.name}:{line_number}"
+        if ended:
+            raise AdapterError(f"{location}: content after .end is unsupported")
         head, _, rest = line.partition(" ")
         # partition must also support tabs between the directive and operands.
         pieces = line.split(None, 1)
@@ -298,6 +303,9 @@ def parse_spice_netlist(path: str | Path, *, root: str | Path | None = None,
         if head == ".end" and not in_dut:
             if rest:
                 raise AdapterError(f"{location}: unexpected .end operands")
+            if not found or not closed:
+                raise AdapterError(f"{location}: .end requires a completed DUT")
+            ended = True
             continue
         if head.startswith("."):
             raise AdapterError(f"{location}: unsupported directive {head}")
@@ -403,8 +411,18 @@ def _vector(raw: str | None, names: list[str], location: str, *, missing: bool) 
     return {key: _number(value, f"{location}.{key}", missing=missing) for key, value in zip(names, values)}
 
 
-def _read_database(path: Path) -> dict[str, Any]:
-    """Fixed SELECTs only, with query-only connection and ordinary-table checks."""
+@contextmanager
+def _read_database(path: Path, *, max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS):
+    """Preflight counts, then stream fixed SELECTs in one read-only snapshot.
+
+    The safety bound is per table, not per sample. Raising it or passing None
+    explicitly permits larger imports. Iterators are valid only inside this
+    context. Raw OP/sample tables are never materialized as complete lists;
+    callers still decide whether to retain their resulting canonical dataset.
+    SQLite may need temporary space for ORDER BY when source indexes are absent.
+    """
+    if max_table_rows is not None and (type(max_table_rows) is not int or max_table_rows < 1):
+        raise AdapterError("max_table_rows must be a positive integer or None")
     connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -431,18 +449,25 @@ def _read_database(path: Path) -> dict[str, Any]:
                 raise AdapterError(f"Unexpected nonnumeric OP column: {column['name']}")
         statements = {
             "dataset_schema": "SELECT * FROM dataset_schema ORDER BY id LIMIT 2",
-            "samples": "SELECT * FROM samples ORDER BY sample_id LIMIT 1000001",
-            "dc_device_operating_points": "SELECT * FROM dc_device_operating_points ORDER BY sample_id,device_name LIMIT 1000001",
-            "dc_operating_points": "SELECT * FROM dc_operating_points ORDER BY sample_id LIMIT 1000001",
-            "sampling_runs": "SELECT * FROM sampling_runs ORDER BY run_id LIMIT 1000001",
+            "samples": "SELECT * FROM samples ORDER BY sample_id",
+            "dc_device_operating_points": "SELECT * FROM dc_device_operating_points ORDER BY sample_id,device_name",
+            "dc_operating_points": "SELECT * FROM dc_operating_points ORDER BY sample_id",
+            "sampling_runs": "SELECT * FROM sampling_runs ORDER BY run_id",
         }
-        output = {"op_names": numeric}
+        # Table names come only from this fixed allowlist, never from source SQL.
+        counts = {name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                  if name in tables else 0 for name in statements}
+        for name, count in counts.items():
+            if max_table_rows is not None and count > max_table_rows:
+                raise AdapterError(
+                    f"Source table {name} has {count} rows, exceeding max_table_rows={max_table_rows}; "
+                    "set an explicit larger limit or None (--max-table-rows none) after checking memory/disk capacity"
+                )
+        output = {"op_names": numeric, "table_counts": counts}
         for name, statement in statements.items():
-            rows = [dict(row) for row in connection.execute(statement)] if name in tables else []
-            if len(rows) > 1_000_000:
-                raise AdapterError(f"Source table exceeds one-million-row import bound: {name}")
-            output[name] = rows
-        return output
+            rows = map(dict, connection.execute(statement)) if name in tables else iter(())
+            output[name] = list(rows) if name == "dataset_schema" else rows
+        yield output
     except sqlite3.Error as exc:
         raise AdapterError(f"Cannot read Analog-Agent SQLite schema: {exc}") from exc
     finally:
@@ -458,32 +483,61 @@ def _observation(row: dict, source_sample: dict) -> dict:
               ("schema_version", "status", "converged", "feasible", "reasons", "missing_fields",
                "bias_topology", "checked_devices", "signal_devices", "thresholds", "constraints",
                "node_voltages_v", "follower_error_v", "vout_v") if key in original}
+    def comparable(key, value):
+        # SQLite boolean columns use 0/1; JSON uses false/true. These are the
+        # same evidence, unlike a missing value or an explicit empty list.
+        if key in {"converged", "feasible"} and value is not None:
+            if type(value) not in (bool, int) or value not in (0, 1):
+                raise AdapterError(f"observation {key}: expected boolean, 0/1, or null")
+            return bool(value)
+        if key == "reasons" and isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return sorted(value)
+        return value
+    def merge(key, value):
+        old = result.get(key)
+        normalized_old, normalized_new = comparable(key, old), comparable(key, value)
+        if old is not None and value is not None and normalized_old != normalized_new:
+            raise AdapterError(
+                f"sample {source_sample.get('sample_id')}: conflicting observation {key} "
+                "between samples.observation_json and dc_operating_points"
+            )
+        if value is not None or key not in result:
+            result[key] = value
     for key in ("schema_version", "status", "converged", "feasible", "bias_topology", "follower_error_v", "vout_v"):
         if key in row:
             value = row[key]
-            result[key] = _number(value, key) if key in ("follower_error_v", "vout_v") else value
+            merge(key, _number(value, key) if key in ("follower_error_v", "vout_v") else value)
     for column, key in (("reasons_json", "reasons"), ("missing_fields_json", "missing_fields"),
                         ("node_voltages_json", "node_voltages_v")):
         if column in row:
-            result[key] = _json(row[column], column)
+            merge(key, _json(row[column], column))
     result["target_only"] = True
     return result
 
 
 def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
-                       strict: bool = True) -> dict[str, Any]:
+                       strict: bool = True, *,
+                       max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS) -> dict[str, Any]:
     """Import every sample, including infeasible and performance-failed samples.
 
     strict=False relaxes only input-geometry vs measured-geometry consistency;
     unsupported syntax, unknown models, ambiguous identities, and malformed
     vectors always fail. Missing OP rows/features and metrics remain explicit
     null values, never zero-imputed. Source status labels are not model inputs.
+    The default per-table safety bound can be raised explicitly or disabled with
+    max_table_rows=None. Source rows are streamed, but the returned canonical
+    object remains in memory; this is not an out-of-core training data format.
     """
     root = Path(root).resolve()
     if not root.is_dir():
         raise AdapterError(f"Input root is not a directory: {root}")
     database = _inside(root / "sampling_history.sqlite3", root)
-    source = _read_database(database)
+    with _read_database(database, max_table_rows=max_table_rows) as source:
+        return _adapt_source(root, netlist, strict, database, source)
+
+
+def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
+                  database: Path, source: dict[str, Any]) -> dict[str, Any]:
     if len(source["dataset_schema"]) != 1:
         raise AdapterError("Expected exactly one dataset_schema row")
     schema = source["dataset_schema"][0]
@@ -501,34 +555,41 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
     design_names = _names(_json(schema["parameter_names_json"], "parameter_names_json"), "parameter names")
     metric_names = _names(_json(schema["metric_names_json"], "metric_names_json"), "metric names")
     op_names = source["op_names"]
-    sample_ids = {row["sample_id"] for row in source["samples"]}
-    if len(sample_ids) != len(source["samples"]) or not sample_ids:
+    if not source["table_counts"]["samples"]:
         raise AdapterError("Samples must be nonempty and have unique sample_id values")
     inventory = {device["device_id"].lower(): device for device in parsed["devices"]}
-    op_rows = {}
-    for row in source["dc_device_operating_points"]:
-        name = row["device_name"]
-        if not isinstance(name, str) or name.lower() not in inventory:
-            raise AdapterError(f"OP device is absent from DUT: {name}")
-        device = inventory[name.lower()]
-        if not device["op_target"]:
-            raise AdapterError(f"Unexpected OP row for unsupported target device: {name}")
-        if row["sample_id"] not in sample_ids:
-            raise AdapterError(f"Orphan OP sample_id: {row['sample_id']}")
-        if str(row["device_type"]).upper() != device["device_type"] or str(row["model_name"]).lower() != device["model_name"].lower():
-            raise AdapterError(f"OP model/type mismatch for {name}")
-        key = (row["sample_id"], name.lower())
-        if key in op_rows:
-            raise AdapterError(f"Duplicate OP identity: {key}")
-        op_rows[key] = row
-    observations = {}
-    for row in source["dc_operating_points"]:
-        if row["sample_id"] not in sample_ids or row["sample_id"] in observations:
-            raise AdapterError("Duplicate or orphan dc_operating_points sample_id")
-        observations[row["sample_id"]] = row
+    op_groups = iter(groupby(source["dc_device_operating_points"], key=lambda row: row["sample_id"]))
+    observation_groups = iter(groupby(source["dc_operating_points"], key=lambda row: row["sample_id"]))
+    pending_ops, pending_observation = next(op_groups, None), next(observation_groups, None)
+    sample_ids = set()
     samples, parameter_names, warnings = [], [], []
     for row in source["samples"]:
         sample_id = row["sample_id"]
+        if sample_id in sample_ids:
+            raise AdapterError("Samples must be nonempty and have unique sample_id values")
+        sample_ids.add(sample_id)
+        # Keep only this sample's raw OP rows while building its canonical form.
+        op_rows = {}
+        if pending_ops is not None and pending_ops[0] == sample_id:
+            for op_row in pending_ops[1]:
+                name = op_row["device_name"]
+                if not isinstance(name, str) or name.lower() not in inventory:
+                    raise AdapterError(f"OP device is absent from DUT: {name}")
+                device = inventory[name.lower()]
+                if not device["op_target"]:
+                    raise AdapterError(f"Unexpected OP row for unsupported target device: {name}")
+                if str(op_row["device_type"]).upper() != device["device_type"] or str(op_row["model_name"]).lower() != device["model_name"].lower():
+                    raise AdapterError(f"OP model/type mismatch for {name}")
+                if name.lower() in op_rows:
+                    raise AdapterError(f"Duplicate OP identity: {(sample_id, name.lower())}")
+                op_rows[name.lower()] = op_row
+            pending_ops = next(op_groups, None)
+        observation = {}
+        if pending_observation is not None and pending_observation[0] == sample_id:
+            observation = next(pending_observation[1])
+            if next(pending_observation[1], None) is not None:
+                raise AdapterError("Duplicate or orphan dc_operating_points sample_id")
+            pending_observation = next(observation_groups, None)
         design = _vector(row["design_values_json"], design_names, f"sample {sample_id} design", missing=False)
         environment = _resolve_parameters(parsed["parameter_defaults"], design)
         devices = []
@@ -549,7 +610,7 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                 if key not in parameter_names:
                     parameter_names.append(key)
             device["parameters"] = parameters
-            op = op_rows.get((sample_id, device["device_id"].lower()))
+            op = op_rows.get(device["device_id"].lower())
             if not device["op_target"]:
                 device["op"], device["op_status"] = {}, "not_supported"
             else:
@@ -567,14 +628,21 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                             raise AdapterError(message)
                         warnings.append(message)
             devices.append(device)
-        observation = observations.get(sample_id, {})
+        merged_observation = _observation(observation, row)
         observation_json = _json(row.get("observation_json"), "observation_json", {}) or {}
-        condition = _json(observation.get("condition_json"), "condition_json", observation_json.get("condition", {})) or {}
-        if not isinstance(condition, dict):
-            raise AdapterError("OP condition must be an object")
-        # Host paths are not operating conditions and are not propagated.
-        context = {key: value for key, value in condition.items() if not key.upper().endswith("PATH")}
-        bias = observation.get("bias_topology", observation_json.get("bias_topology"))
+        def condition_context(value):
+            if value is None:
+                return None
+            if not isinstance(value, dict):
+                raise AdapterError("OP condition must be an object")
+            # Host paths are not operating conditions and are not propagated.
+            return {key: item for key, item in value.items() if not key.upper().endswith("PATH")}
+        original_context = condition_context(observation_json.get("condition"))
+        table_context = condition_context(_json(observation.get("condition_json"), "condition_json"))
+        if original_context is not None and table_context is not None and original_context != table_context:
+            raise AdapterError(f"sample {sample_id}: conflicting observation condition between samples.observation_json and dc_operating_points")
+        context = table_context if table_context is not None else original_context or {}
+        bias = merged_observation.get("bias_topology")
         if bias is not None:
             context["bias_topology"] = bias
         design_key = row["design_key"]
@@ -587,8 +655,12 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                         "performance": _vector(row.get("metric_values_json"), metric_names, f"sample {sample_id} metrics", missing=True),
                         "ports": copy.deepcopy(parsed["ports"]), "context": context,
                         "op_status": "complete" if statuses and all(s == "complete" for s in statuses) else "partial" if any(s != "missing" for s in statuses) else "failed",
-                        "source_observation": _observation(observation, row),
+                        "source_observation": merged_observation,
                         "source_sampling": {key: row[key] for key in ("run_id", "sample_index", "sample_method", "success", "error_type", "access_level", "is_real_spice_call", "cache_hit_sample_id") if key in row}})
+    if pending_ops is not None:
+        raise AdapterError(f"Orphan OP sample_id: {pending_ops[0]}")
+    if pending_observation is not None:
+        raise AdapterError("Duplicate or orphan dc_operating_points sample_id")
     files = [database] + [Path(p) for p in parsed["source_files"]]
     if metadata_path.exists():
         files.append(_inside(metadata_path, root))
@@ -613,10 +685,10 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                "provenance": {"source_format": "Analog-Agent", "sqlite_open_mode": "read-only",
                               "join_key": ["sample_id", "device_name (SPICE case-insensitive, exact full name)"],
                               "source_hashes_sha256": {str(p.relative_to(root)): _sha256(p) for p in files},
-                              "source_counts": {"samples": len(source["samples"]), "design_parameters": len(design_names),
+                              "source_counts": {"samples": len(samples), "design_parameters": len(design_names),
                                                 "devices_per_sample": len(parsed["devices"]),
                                                 "mos_devices_per_sample": sum(d["op_target"] for d in parsed["devices"]),
-                                                "device_op_rows": len(op_rows), "op_fields": len(op_names), "metrics": len(metric_names)},
+                                                "device_op_rows": source["table_counts"]["dc_device_operating_points"], "op_fields": len(op_names), "metrics": len(metric_names)},
                               "raw_design_parameter_order": design_names,
                               "geometry_scale_to_m": parsed["geometry_scale_to_m"],
                               "parameter_defaults": parsed["parameter_defaults"], "includes": parsed["includes"],
@@ -733,9 +805,10 @@ def combine_datasets(datasets: list[dict[str, Any]]) -> dict[str, Any]:
     return validate_dataset(combined)
 
 
-def inspect_analog_agent(root: str | Path, netlist: str | Path | None = None) -> dict[str, Any]:
+def inspect_analog_agent(root: str | Path, netlist: str | Path | None = None, *,
+                         max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS) -> dict[str, Any]:
     """Validated import summary suitable for a CLI inspection command."""
-    dataset = adapt_analog_agent(root, netlist)
+    dataset = adapt_analog_agent(root, netlist, max_table_rows=max_table_rows)
     return {"circuit_ids": sorted({s["circuit_id"] for s in dataset["samples"]}),
             **dataset["provenance"]["source_counts"], "feature_spec": dataset["feature_spec"],
             "missing_metric_values": sum(value is None for s in dataset["samples"] for value in s["performance"].values()),

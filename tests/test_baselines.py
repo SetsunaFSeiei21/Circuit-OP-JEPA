@@ -183,7 +183,7 @@ class BaselinePipelineTests(unittest.TestCase):
         cls.initial_fingerprint = dataset_fingerprint(cls.data)
         cls.original_manifest = copy.deepcopy(cls.manifest)
         cls.original_options = copy.deepcopy(cls.options)
-        cls.paths = {mode: train_baseline(cls.data, cls.manifest, cls.options, cls.temp.name, mode)
+        cls.paths = {mode: train_baseline(cls.data, cls.manifest, cls.options, Path(cls.temp.name) / mode, mode)
                      for mode in ("zerosim_device", "zerosim_pin")}
 
     @classmethod
@@ -254,7 +254,7 @@ class BaselinePipelineTests(unittest.TestCase):
             self.assertGreater(report["timings"]["supervised_seconds"], 0.)
             self.assertEqual(report["provenance"]["parameter_count"]["total"],
                              report["provenance"]["parameter_count"]["trainable"])
-            history = json.loads((Path(self.temp.name) / f"{mode}_history.json").read_text())
+            history = json.loads((Path(self.temp.name) / mode / f"{mode}_history.json").read_text())
             selected = min(history, key=lambda row: row["val"]["normalized_mse"])
             self.assertEqual(report["selected_epoch"], selected["epoch"])
             self.assertEqual(report["selection"]["value"], selected["val"]["normalized_mse"])
@@ -311,7 +311,7 @@ class BaselinePipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for mode in self.paths:
                 source = load_checkpoint(self.paths[mode])
-                path = train_baseline(changed, manifest, self.options, folder, mode)
+                path = train_baseline(changed, manifest, self.options, Path(folder) / mode, mode)
                 modified = load_checkpoint(path)
                 self.assertEqual(source["encoder_digest"], modified["encoder_digest"])
                 self.assertEqual(source["decoder_digest"], modified["decoder_digest"])

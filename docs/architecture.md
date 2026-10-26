@@ -16,15 +16,15 @@ All five modes use the same canonical samples, grouped manifest, labeled_train s
 
 For default encoder_layers=6 and cross_layers=4, the first two blocks precede the first design-parameter fusion. `StructureEncoder` owns this entire pure-structure prefix:
 
-1. Concrete device-type and coarse-category embeddings, learned absolute-position embedding and graph token.
-2. Structural terminal-pair attention bias and external-port terminal-role indicators.
+1. Concrete device-type, coarse-category and model-name embeddings, learned absolute-position embedding and graph token.
+2. Structural terminal-pair attention bias and named external-port terminal associations.
 3. Alternating local/global self-attention plus feed-forward blocks in the prefix.
 
 The remaining four input-side blocks retain self-attention and own-parameter cross-attention. They are parameter-conditioned, design-specific and **not** shared with the OP branch. This boundary keeps the reference's six-layer layout rather than silently adding six new structure layers. It is deliberately not described as “all attention is shared.”
 
 `DeviceEncoder` registers the shared module once. `SharedOPEncoder.structure_encoder` references that exact module object without a second registration. `JEPAModel.forward` calls the structure module exactly once and passes the same non-detached tensor to both branches. Thus both branches see the same structural dropout realization and both gradient paths update the shared parameters. There is no teacher copy, EMA, stop-gradient, or synchronization procedure.
 
-The shared module reads only concrete type, coarse category, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
+The shared module reads only concrete type, coarse category, model identity, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
 
 ## Alignment objective and limitations
 
@@ -42,7 +42,7 @@ Differences from an exact upstream reproduction include strict missing/padding m
 
 ## Heterogeneous input contract
 
-Newly fitted preprocessing records `input_contract_version=2`. Concrete NMOS, PMOS, resistor, capacitor and independent-source identity is retained. Fixed coarse categories supplement it: active/passive/source/unknown, plus PAD and pin-mode port. The fixed physical category map is not a vocabulary learned from held-out samples; subtype and pin vocabularies are train-only.
+Newly fitted preprocessing records `input_contract_version=3`. Concrete NMOS, PMOS, resistor, capacitor and independent-source identity is retained. Fixed coarse categories supplement it: active/passive/source/unknown, plus PAD and pin-mode port. Model names and named external-port roles now have separate train-only vocabularies, alongside the train-only subtype and pin vocabularies. Model names use case-insensitive identity with distinct PAD, UNK and missing entries. Terminal-to-port features are multi-hot, preserving multiple named aliases on the same net; swapping VINP/VOUT wiring therefore changes device inputs. Unseen held-out model/port names use UNK without expanding fitted vocabularies.
 
 Physical design fields remain named and unit-specific: W_m/L_m/m, R_ohm, C_F, dc_current_A and dc_voltage_V for imported data. A field has independent observation and applicability masks. An applicable missing field retains a named token with observed=0, an observed zero has observed=1, and an inapplicable field has no live input token. Contradictory observed-but-inapplicable data are rejected. Unknown/custom types may supply explicit applicability metadata.
 
@@ -50,7 +50,7 @@ Physical design fields remain named and unit-specific: W_m/L_m/m, R_ohm, C_F, dc
 
 The current adapter collects MOS OP only. No passive/source OP is fabricated; this is a collector-scope statement, not a claim that passive devices lack DC states. Explicit OP eligibility is part of the canonical contract and must not be silently reinterpreted.
 
-Checkpoint/preprocessing container version remains 2. Older v2 preprocessing without an input-contract field reconstructs the legacy value-only parameter projection and category-less structure. New v2 inputs use observed-bit projections and category embeddings. Legacy loading is not permission to mix old and new input contracts in one matched comparison.
+Checkpoint/preprocessing container version remains 2. Input contract 1 reconstructs the legacy value-only parameter projection and category-less structure; contract 2 adds observed-bit projections and category embeddings; contract 3 additionally includes model identity and named port associations. Older v2 preprocessing without an input-contract field reconstructs contract 1. Legacy architecture loading does not migrate old manifests: grouping now requires `design_fingerprint_version=2`, including model names and canonical signed zero. Rebuild experiments from canonical data when that manifest version is absent. New and old input contracts cannot be mixed in a matched comparison.
 
 ## Decoder and frozen behavior
 
@@ -60,7 +60,7 @@ For JEPA stage two, the entire input encoder is set requires_grad=False, is kept
 
 ## Provenance and evaluation
 
-Version-2 checkpoints store architecture, selected field order, signed transform rules and fitted scales, state config, explicit split/label IDs, dataset/partition/input-OP digests, validation selection, phase timing and counts. Old v1 checkpoints fail with a clear incompatibility message. Adding downstream performance labels is allowed only while immutable input/OP/identity and split provenance remain unchanged. Changed normalization or OP-state configuration is rejected during stage transition rather than mislabeled as the requested new configuration.
+Version-2 checkpoints store architecture, selected field order, signed transform rules and fitted scales, state config, explicit split/label IDs, dataset/partition/input-OP digests, validation selection, phase timing and counts. Stage two preserves the actual source pretraining provenance, including its loss, training options, seed and protocol digest, separately from supervised options and seed. Validation selection uses only metrics observed in labeled training; validation with no supported observed metric fails clearly. Direct training entrypoints reject existing stage artifacts and stale output files; stage two may share a matching stage-one directory. Old v1 checkpoints fail with a clear incompatibility message. Adding downstream performance labels is allowed only while immutable input/OP/identity and split provenance remain unchanged. Changed normalization or OP-state configuration is rejected during stage transition rather than mislabeled as the requested new configuration.
 
 Metrics are computed only on observed targets: original-unit MAE/RMSE/R² plus normalized-space errors under frozen training-target transforms. R² is undefined for fewer than two labels or zero variance and remains null. Target values and both physical/normalized predictions are emitted per sample. Comparison rejects unmatched data, labels, splits, evaluated samples, target scalers, label budgets or supervised training protocol. Pin and device architectures intentionally differ; comparisons require per-mode consistency across seeds, not identical node counts or parameter counts across methods.
 
@@ -70,4 +70,4 @@ The runner defaults to all five modes; `--modes` can explicitly select a legacy-
 
 `paired_per_seed.csv` computes OP-minus-no-OP differences before aggregation. `paired_summary.csv` summarizes the actual matched differences with sample SD; undefined R2 remains null and one-seed SD remains blank. Negative MAE/RMSE deltas and positive R2 deltas favor OP inputs, but smoke deltas do not establish scientific benefit.
 
-Report provenance exposes `requires_op_at_inference`, `op_information`, train/inference use, train-only OP scaler IDs, and original-device OP coverage (not inflated repeated-pin counts). Acquisition cost is null with `not_measured`. `costs.csv` may repeat a run's training cost for test/OOD; deduplicate by mode/seed before summing. It does not measure DC solve, label collection or deployment latency.
+Report provenance exposes `requires_op_at_inference`, `op_information`, train/inference use, train-only OP scaler IDs, and original-device OP coverage (not inflated repeated-pin counts). Acquisition cost is null with `not_measured`. `costs.csv` records training cost once per verified run identity, retaining phase optimizer steps; evaluation coverage is separate from training cost and acquisition records retain their measurement scope. Conflicting costs for the same run are rejected. Legacy reports without trustworthy run/pretraining identity remain explicitly incomplete. These reports do not measure DC solve, label collection or deployment latency.

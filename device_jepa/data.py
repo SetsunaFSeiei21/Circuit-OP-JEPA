@@ -22,8 +22,9 @@ TERMINAL_NAMES = ["d", "g", "s", "b", "p", "n"]
 SPLITS = ("train", "val", "test", "ood")
 MANIFEST_VERSION = 2
 PREPROCESSING_VERSION = 2
+DESIGN_FINGERPRINT_VERSION = 2
 OP_GEOMETRY_FIELDS = frozenset({"w_um", "l_um", "multiplicity"})
-INPUT_CONTRACT_VERSION = 2
+INPUT_CONTRACT_VERSION = 3
 # Semantic schema, not statistics learned from validation/test device types.
 DEVICE_CATEGORY_VOCAB = {"<PAD>": 0, "unknown": 1, "active": 2, "passive": 3,
                          "source": 4, "port": 5}
@@ -46,6 +47,29 @@ def device_category(device):
     if kind in {"independent_current_source", "independent_voltage_source"}:
         return "source"
     return "unknown"
+
+
+def canonical_model_name(device):
+    """Case-insensitive SPICE model identity; absent/null is distinct from UNK.
+
+    The original device record is never rewritten. Missing identity maps to a
+    dedicated NONE token at tensorization; a named, unseen model maps to UNK.
+    """
+    name = device.get("model_name")
+    if name is None:
+        return None
+    _nonempty_string(name, "device.model_name")
+    if name.lower() in {"<pad>", "<unk>", "<none>"}:
+        raise ValueError("device.model_name uses a reserved vocabulary token")
+    return name.lower()
+
+
+def canonical_port_name(name):
+    """Normalize a named SPICE external-port role without fitting held-out data."""
+    _nonempty_string(name, "port name")
+    if name.lower() in {"<pad>", "<unk>"}:
+        raise ValueError("port name uses a reserved vocabulary token")
+    return name.lower()
 
 
 def parameter_applicability(device, names):
@@ -163,9 +187,14 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         if "ports" in sample:
             if not isinstance(sample["ports"], dict):
                 raise ValueError(f"{loc}.ports must be an object mapping external port names to nets")
+            seen_port_roles = set()
             for port, net in sample["ports"].items():
                 _nonempty_string(port, f"{loc}.ports name")
                 _nonempty_string(net, f"{loc}.ports net")
+                role = canonical_port_name(port)
+                if role in seen_port_roles:
+                    raise ValueError(f"{loc}.ports has duplicate case-insensitive port names")
+                seen_port_roles.add(role)
         if "op_status" in sample and sample["op_status"] not in ("complete", "partial", "failed"):
             raise ValueError(f"{loc}.op_status must be complete, partial, or failed")
         devices = sample.get("devices")
@@ -178,6 +207,7 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"{dloc} must be an object")
             for key in ("device_id", "device_type"):
                 _nonempty_string(device.get(key), f"{dloc}.{key}")
+            canonical_model_name(device)
             if "op_target" in device and type(device["op_target"]) is not bool:
                 raise ValueError(f"{dloc}.op_target must be a boolean")
             if device["device_type"] in ("<PAD>", "<UNK>"):
@@ -271,28 +301,44 @@ def partition_fingerprint(manifest: dict[str, Any]) -> str:
     content["labeled_train"] = sorted(manifest.get("labeled_train", manifest["train"]))
     content["ood_circuits"] = sorted(manifest.get("ood_circuits", [manifest.get("ood_circuit")]))
     content["train_circuits"] = sorted(manifest.get("train_circuits", manifest["id_circuits"]))
+    # Legacy checkpoints can still validate their original metadata digest;
+    # verify_manifest separately refuses their obsolete grouping semantics.
+    if "design_fingerprint_version" in manifest:
+        content["design_fingerprint_version"] = manifest["design_fingerprint_version"]
     return hashlib.sha256(_canonical(content).encode("utf-8")).hexdigest()
 
 
+def _design_number(value):
+    """Canonical numerical identity only; preserve raw values and OP polarity."""
+    if value is None:
+        return None
+    number = float(value)
+    return 0.0 if number == 0.0 else number
+
+
 def design_fingerprint(sample: dict[str, Any], feature_spec: dict[str, Any]) -> str:
-    """Hash exact parameter/type/connectivity/context content, excluding labels.
+    """Hash parameter/type/model/connectivity/context identity, excluding labels.
 
     Sample/design/group/device IDs and device ordering are ignored. Net names
     remain significant: this is exact duplicate detection, not a graph-
-    isomorphism test. OP/performance values do not influence this fingerprint.
+    isomorphism test. Model and named-port identities follow SPICE case rules;
+    signed parameter zeros are numerically identical. OP/performance values do
+    not influence this fingerprint and the source records are not modified.
     """
     devices = []
     for device in sample["devices"]:
         devices.append({
             "device_type": device["device_type"],
+            "model_name": canonical_model_name(device),
             "parameters": {
-                name: None if device["parameters"].get(name) is None else float(device["parameters"][name])
+                name: _design_number(device["parameters"].get(name))
                 for name in feature_spec["parameter_names"]
             },
             "terminals": device["terminals"],
         })
-    content = {"devices": sorted(devices, key=_canonical), "context": sample.get("context", {}),
-               "ports": sample.get("ports", {})}
+    content = {"design_fingerprint_version": DESIGN_FINGERPRINT_VERSION,
+               "devices": sorted(devices, key=_canonical), "context": sample.get("context", {}),
+               "ports": {canonical_port_name(port): net for port, net in sample.get("ports", {}).items()}}
     return hashlib.sha256(_canonical(content).encode("utf-8")).hexdigest()
 
 
@@ -470,13 +516,14 @@ def build_manifest(
     manifest: dict[str, Any] = {split: [] for split in SPLITS}
     manifest.update({
         "schema_version": MANIFEST_VERSION,
+        "design_fingerprint_version": DESIGN_FINGERPRINT_VERSION,
         "train_circuits": train_circuits, "id_circuits": list(train_circuits),
         "ood_circuits": ood_circuits, "ood_circuit": ood_circuits[0] if len(ood_circuits) == 1 else None,
         "split_ratios": ratios, "split_seed": seed, "seed": seed,
         "val_fraction": ratios[1], "test_fraction": ratios[2],
         "finetune_label_fraction": fraction,
         "dataset_fingerprint": dataset_fingerprint(dataset),
-        "grouping": "circuit-scoped design_key/design_id/group_id plus exact design fingerprint",
+        "grouping": "circuit-scoped design_key/design_id/group_id plus model-aware signed-zero-normalized design fingerprint v2",
     })
     for circuit in train_circuits:
         try:
@@ -506,6 +553,12 @@ def verify_manifest(dataset: dict[str, Any], manifest: dict[str, Any]) -> None:
     if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
             or manifest["schema_version"] != MANIFEST_VERSION):
         raise ValueError("manifest schema_version must be 2; create a new explicit experiment")
+    if (type(manifest.get("design_fingerprint_version")) is not int
+            or manifest["design_fingerprint_version"] != DESIGN_FINGERPRINT_VERSION):
+        raise ValueError(
+            "manifest design_fingerprint_version must be 2 for model-aware, signed-zero-safe grouping; "
+            "create a new explicit experiment; never silently resplit an old manifest"
+        )
     if manifest.get("dataset_fingerprint") != dataset_fingerprint(dataset):
         raise ValueError("manifest dataset_fingerprint does not match dataset; do not silently resplit")
     required = {"train_circuits", "ood_circuits", "split_ratios", "split_seed", "finetune_label_fraction"}
@@ -786,19 +839,29 @@ def fit_preprocessor(
     spec["op_names"] = normalized_config["op_fields"][:]
     devices = [(sample["circuit_id"], device) for sample in train for device in sorted(sample["devices"], key=lambda d: d["device_id"])]
     types = sorted({device["device_type"] for _, device in devices})
+    models = sorted({canonical_model_name(device) for _, device in devices
+                     if canonical_model_name(device) is not None})
+    port_roles = sorted({canonical_port_name(port) for sample in train
+                         for port in sample.get("ports", {})})
     weighting = normalized_config["weighting"]
     result: dict[str, Any] = {
         "preprocessing_version": PREPROCESSING_VERSION,
         "input_contract_version": INPUT_CONTRACT_VERSION,
         "device_category_vocab": copy.deepcopy(DEVICE_CATEGORY_VOCAB),
         "device_vocab": {"<PAD>": 0, "<UNK>": 1, **{name: index + 2 for index, name in enumerate(types)}},
+        "model_vocab": {"<PAD>": 0, "<UNK>": 1, "<NONE>": 2,
+                        **{name: index + 3 for index, name in enumerate(models)}},
+        "port_role_vocab": {"<PAD>": 0, "<UNK>": 1,
+                            **{name: index + 2 for index, name in enumerate(port_roles)}},
         "feature_spec": spec, "raw_feature_spec": copy.deepcopy(raw_spec),
         "transform_config": normalized_config,
         "normalization_config": copy.deepcopy(normalized_config),
         "parameters": _statistics([(circuit, device["parameters"]) for circuit, device in devices], spec["parameter_names"], normalized_config["parameters"], weighting),
         "op": _statistics([(circuit, device["op"]) for circuit, device in devices if is_op_target(device)], spec["op_names"], normalized_config["op"], weighting),
         "fitted_sample_ids": sorted(manifest["train"]),
-        "fit_ids": {"parameters": sorted(manifest["train"]), "op": sorted(manifest["train"]), "vocabulary": sorted(manifest["train"])},
+        "fit_ids": {"parameters": sorted(manifest["train"]), "op": sorted(manifest["train"]),
+                    "vocabulary": sorted(manifest["train"]), "model_vocabulary": sorted(manifest["train"]),
+                    "port_role_vocabulary": sorted(manifest["train"])},
     }
     if include_performance:
         lookup = {sample["sample_id"]: sample for sample in train}

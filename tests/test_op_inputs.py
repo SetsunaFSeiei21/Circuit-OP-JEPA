@@ -234,12 +234,12 @@ class DirectOPInputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             checkpoints = {}
             for mode in ('zerosim_pin_op', 'zerosim_device_op'):
-                path = train_baseline(self.data, self.manifest, self.options, folder, mode)
+                path = train_baseline(self.data, self.manifest, self.options, Path(folder) / mode, mode)
                 cp = load_checkpoint(path)
                 checkpoints[mode] = cp
                 self.assertTrue(cp['requires_op_at_inference'])
                 self.assertTrue(cp['op_inputs_used'])
-                self.assertEqual(cp['input_contract_version'], 2)
+                self.assertEqual(cp['input_contract_version'], 3)
                 self.assertEqual(cp['preprocessing'], self.prep)
                 self.assertEqual(cp['manifest'], self.manifest)
                 self.assertNotEqual(cp['encoder_digest'], cp['initial_encoder_digest'])
@@ -264,6 +264,10 @@ class DirectOPInputsTests(unittest.TestCase):
         prep = copy.deepcopy(self.prep)
         prep.pop('input_contract_version')
         prep.pop('device_category_vocab')
+        prep.pop('model_vocab')
+        prep.pop('port_role_vocab')
+        prep['fit_ids'].pop('model_vocabulary')
+        prep['fit_ids'].pop('port_role_vocabulary')
         old = encoder_from_metadata(self.options['model'], prep)
         self.assertEqual(old.parameter_value.in_features, 1)
         self.assertIsNone(old.structure_encoder.category_embedding)
@@ -280,6 +284,10 @@ class DirectOPInputsTests(unittest.TestCase):
             source.pop('input_contract_version')
             source['preprocessing'].pop('input_contract_version')
             source['preprocessing'].pop('device_category_vocab')
+            source['preprocessing'].pop('model_vocab')
+            source['preprocessing'].pop('port_role_vocab')
+            source['preprocessing']['fit_ids'].pop('model_vocabulary')
+            source['preprocessing']['fit_ids'].pop('port_role_vocabulary')
             legacy_encoder = encoder_from_metadata(options['model'], source['preprocessing'])
             source['encoder_state'] = legacy_encoder.state_dict()
             source['encoder_digest'] = state_digest(legacy_encoder)

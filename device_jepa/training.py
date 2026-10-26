@@ -1,6 +1,7 @@
 """Two disjoint optimization stages with auditable split/checkpoint provenance."""
 import copy
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -8,11 +9,12 @@ import platform
 import random
 import re
 import time
+import uuid
 from pathlib import Path
 
 import torch
 
-from .data import (DEVICE_CATEGORY_VOCAB, dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
+from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_fingerprint, fit_preprocessor, input_op_fingerprint,
                    partition_fingerprint, samples_for_split, verify_manifest, is_op_target)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
@@ -47,7 +49,9 @@ def encoder_from_metadata(config, prep):
     spec = prep["feature_spec"]
     return DeviceEncoder(ModelConfig(**config), len(prep["device_vocab"]),
                          len(spec["parameter_names"]), len(spec["terminal_names"]),
-                         prep.get("input_contract_version", 1), len(prep.get("device_category_vocab", {})))
+                         prep.get("input_contract_version", 1), len(prep.get("device_category_vocab", {})),
+                         num_models=len(prep.get("model_vocab", {})),
+                         num_port_roles=len(prep.get("port_role_vocab", {})))
 
 
 def _batches(samples, batch_size, seed=None):
@@ -85,9 +89,92 @@ def _check_dataset_options(options, manifest):
             raise ValueError(f"Config {key} differs from persisted manifest")
 
 
+def _prepare_stage_output(output, stage, dataset, manifest, source=None):
+    """Reject overwrite and mixed experiments; this is never a resume API."""
+    output = Path(output)
+    if output.exists() and not output.is_dir():
+        raise ValueError("Training output must be a directory")
+    entries = {p.name for p in output.iterdir()} if output.exists() else set()
+    allowed = {"manifest.json", "data.json"}
+    manifest_path = output / "manifest.json"
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text())
+        valid_manifests = [manifest] + ([source["manifest"]] if source is not None else [])
+        if existing not in valid_manifests:
+            raise ValueError("Refusing to overwrite a different experiment manifest")
+    data_path = output / "data.json"
+    if data_path.exists():
+        stored = json.loads(data_path.read_text())
+        if input_op_fingerprint(stored) != input_op_fingerprint(dataset):
+            raise ValueError("Training output contains data from a different experiment")
+    if stage == "decoder" and (output / "pretrain_best.pt").exists():
+        existing = load_checkpoint(output / "pretrain_best.pt")
+        if source is None or any(existing.get(k) != source.get(k) for k in (
+                "stage", "encoder_digest", "input_op_fingerprint", "partition_fingerprint", "checkpoint_run_id")):
+            raise ValueError("Output pretraining checkpoint differs from the requested source")
+        if _pretraining_provenance(existing) != _pretraining_provenance(source):
+            raise ValueError("Output pretraining protocol differs from the requested source")
+        allowed.update({"pretrain_best.pt", "pretrain_history.json", "preprocessing_stage1.json"})
+    unexpected = entries - allowed
+    if unexpected:
+        raise ValueError("Training output is not new for this stage; refusing overwrite or stale artifacts: "
+                         + ", ".join(sorted(unexpected)))
+    output.mkdir(parents=True, exist_ok=True)
+    return output
+
+
+def _selection_metric_names(prep):
+    return [name for name, count in zip(prep["feature_spec"]["metric_names"],
+                                       prep["performance"]["count"]) if count > 0]
+
+
+def _supervised_metric_mask(mask, prep):
+    """Only metrics with training observations can choose the checkpoint."""
+    trained = torch.tensor([count > 0 for count in prep["performance"]["count"]],
+                           dtype=torch.bool, device=mask.device)
+    return mask & trained.unsqueeze(0)
+
+
+def _effective_alignment_loss(config):
+    """Resolve the same defaults that the actual alignment call consumes."""
+    bound = inspect.signature(alignment_loss).bind(None, None, None, **config)
+    bound.apply_defaults()
+    return {key: value for key, value in bound.arguments.items()
+            if key not in {"predicted", "target", "valid"}}
+
+
+def _pretraining_provenance(source):
+    """Capture executed stage-1 facts instead of stage-2 configuration wishes."""
+    options, prep = source["options"], source["preprocessing"]
+    tr = options["training"]
+    training = {key: tr[key] for key in (
+        "pretrain_epochs", "pretrain_lr", "batch_size", "weight_decay", "grad_clip")}
+    training["torch_threads"] = tr.get("torch_threads", 1)
+    protocol = {
+        "protocol_version": 1, "optimizer": "AdamW", "training": training,
+        "model_config": copy.deepcopy(source["model_config"]),
+        "architecture": source["architecture"],
+        "input_contract_version": prep.get("input_contract_version", 1),
+        "loss": copy.deepcopy(source.get("effective_loss_config",
+                                         _effective_alignment_loss(options["loss"]))),
+        "op_state": copy.deepcopy(options.get("op_state", {"features": []})),
+        "feature_spec": copy.deepcopy(prep["feature_spec"]),
+        "normalization": copy.deepcopy(prep["transform_config"]),
+    }
+    return {"version": 1, "protocol": protocol, "protocol_digest": _json_digest(protocol),
+            "seed": tr["seed"], "source_options": copy.deepcopy(options),
+            "selected_epoch": source["epoch"], "selection": copy.deepcopy(source["selection"]),
+            "encoder_digest": source["encoder_digest"],
+            "input_op_fingerprint": source["input_op_fingerprint"],
+            "partition_fingerprint": source["partition_fingerprint"],
+            "source_dataset_fingerprint": source["manifest"]["dataset_fingerprint"],
+            "checkpoint_run_id": source.get("checkpoint_run_id")}
+
+
 def _provenance(dataset, manifest, options):
     return {"checkpoint_version": 2, "model_config": options["model"],
-            "input_contract_version": 2,
+            "input_contract_version": INPUT_CONTRACT_VERSION,
+            "checkpoint_run_id": uuid.uuid4().hex,
             "requires_op_at_inference": False,
             "options": copy.deepcopy(options), "manifest": copy.deepcopy(manifest),
             "input_op_fingerprint": input_op_fingerprint(dataset),
@@ -104,6 +191,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     optimizer_steps = 0
     verify_manifest(dataset, manifest)
     _check_options(options)
+    effective_loss = _effective_alignment_loss(options["loss"])
     _check_dataset_options(options, manifest)
     from .states import STATE_FEATURES, validate_op_states
     state_config = options.get("op_state", {"features": []})
@@ -111,11 +199,8 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     state_features = state_config.get("features", [] if state_config.get("mode") == "preserve_only" else STATE_FEATURES)
     tr = options["training"]
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
+    output = _prepare_stage_output(output, "pretrain", dataset, manifest)
     manifest_path = output / "manifest.json"
-    if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
-        raise ValueError("Refusing to overwrite a different experiment manifest")
     preprocessing = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
     if "performance" in preprocessing:
         raise AssertionError("Stage 1 must not fit performance normalization")
@@ -145,7 +230,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                     a, b, valid = model(batch)
                     if int(valid.sum()) < 2:
                         continue
-                    loss, detail = alignment_loss(a, b, valid, **options["loss"])
+                    loss, detail = alignment_loss(a, b, valid, **effective_loss)
                     if not torch.isfinite(loss):
                         raise FloatingPointError("Non-finite stage-1 objective")
                     if phase == "train":
@@ -168,6 +253,7 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
         if records["val"]["loss"] < best:
             best = records["val"]["loss"]
             checkpoint = {**_provenance(dataset, manifest, options), "stage": "pretrain",
+                          "effective_loss_config": copy.deepcopy(effective_loss),
                           "epoch": epoch + 1, "selection": {"split": "val", "objective": "op_alignment_regularized", "value": best},
                           "preprocessing": preprocessing, "model_state": model.state_dict(),
                           "encoder_state": model.encoder.state_dict(),
@@ -205,13 +291,36 @@ def load_checkpoint(path):
         raise ValueError("Incompatible preprocessing version; do not reuse old scalers")
     prep = checkpoint["preprocessing"]
     contract = prep.get("input_contract_version", 1)
-    if contract not in (1, 2) or checkpoint.get("input_contract_version", contract) != contract:
+    if contract not in (1, 2, 3) or checkpoint.get("input_contract_version", contract) != contract:
         raise ValueError("Checkpoint input contract version mismatch")
-    if contract == 2 and prep.get("device_category_vocab") != DEVICE_CATEGORY_VOCAB:
+    if contract >= 2 and prep.get("device_category_vocab") != DEVICE_CATEGORY_VOCAB:
         raise ValueError("Checkpoint coarse device-category schema mismatch")
+    if contract == 3:
+        train_ids = sorted(checkpoint["manifest"]["train"])
+        for key, fit_key, reserved in (
+            ("model_vocab", "model_vocabulary", {"<PAD>": 0, "<UNK>": 1, "<NONE>": 2}),
+            ("port_role_vocab", "port_role_vocabulary", {"<PAD>": 0, "<UNK>": 1}),
+        ):
+            vocab = prep.get(key)
+            if (not isinstance(vocab, dict) or any(vocab.get(k) != v for k, v in reserved.items())
+                    or any(type(v) is not int for v in vocab.values())
+                    or sorted(vocab.values()) != list(range(len(vocab)))
+                    or any(k not in reserved and (not isinstance(k, str) or k != k.lower()) for k in vocab)):
+                raise ValueError(f"Checkpoint {key} schema mismatch")
+            if prep.get("fit_ids", {}).get(fit_key) != train_ids:
+                raise ValueError(f"Checkpoint {key} was not fitted exclusively on the ID training partition")
     if checkpoint.get("mode") in {"zerosim_pin_op", "zerosim_device_op"}:
         if not checkpoint.get("requires_op_at_inference") or not checkpoint.get("op_inputs_used"):
             raise ValueError("Direct OP checkpoint must declare its training and inference OP requirement")
+    pretraining = checkpoint.get("pretrain_provenance")
+    if pretraining is not None:
+        if (pretraining.get("protocol_digest") != _json_digest(pretraining.get("protocol"))
+                or pretraining.get("encoder_digest") != checkpoint.get("source_pretrain_digest")
+                or pretraining.get("encoder_digest") != checkpoint.get("encoder_digest")
+                or pretraining.get("partition_fingerprint") != checkpoint.get("partition_fingerprint")
+                or pretraining.get("seed") != checkpoint.get("pretrain_seed")
+                or checkpoint.get("decoder_seed") != checkpoint["options"]["training"]["seed"]):
+            raise ValueError("Checkpoint pretraining provenance integrity mismatch")
     return checkpoint
 
 
@@ -238,8 +347,6 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         raise ValueError("Architecture differs from pretraining checkpoint; use the same config")
     tr = options["training"]
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
     prep = copy.deepcopy(source["preprocessing"])
     proposed = fit_preprocessor(dataset, manifest, include_performance=False, config=options.get("normalization"))
     if proposed["transform_config"] != prep["transform_config"]:
@@ -253,6 +360,9 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     if not any(c > 0 for c in prep["performance"]["count"]):
         raise ValueError("No requested metric has an observed labeled-train target")
     unobserved_metrics = [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count]
+    selection_metrics = _selection_metric_names(prep)
+    output = _prepare_stage_output(output, "decoder", dataset, manifest, source=source)
+    pretrain_provenance = _pretraining_provenance(source)
     encoder = encoder_from_metadata(source["model_config"], prep)
     encoder.load_state_dict(source["encoder_state"], strict=True)
     decoder = make_decoder(encoder.cfg, len(prep["feature_spec"]["metric_names"]))
@@ -275,7 +385,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
             for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
                 # OP is not even loaded into stage-2 tensors.
                 batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True), device)
-                mask = batch["performance_mask"]
+                mask = _supervised_metric_mask(batch["performance_mask"], prep)
                 if not mask.any():
                     continue
                 with torch.set_grad_enabled(phase == "train"):
@@ -293,7 +403,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                 total += float(loss.detach()) * k
                 count += k
             if not count:
-                raise ValueError(f"No observed performance targets in {phase}")
+                raise ValueError(f"No observed trained-metric performance targets in {phase}")
             record[phase] = {"normalized_mse": total / count, "observed_targets": count}
         # Includes all parameters AND registered buffers, not just requires_grad.
         if state_digest(model.encoder) != frozen_digest:
@@ -312,6 +422,11 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                           "source_pretrain_digest": source["encoder_digest"],
                           "source_pretrain_dataset_fingerprint": source["manifest"]["dataset_fingerprint"],
                           "unobserved_training_metrics": unobserved_metrics,
+                          "selection_metric_names": selection_metrics,
+                          "pretrain_provenance": copy.deepcopy(pretrain_provenance),
+                          "pretrain_seed": pretrain_provenance["seed"],
+                          "decoder_seed": tr["seed"],
+                          "decoder_digest": state_digest(model.decoder),
                           "freeze_verified": True}
             torch.save(checkpoint, output / "decoder_best.pt")
     selected = load_checkpoint(output / "decoder_best.pt")
@@ -326,6 +441,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     torch.save(selected, output / "decoder_best.pt")
     _save_json(output / "decoder_history.json", history)
     _save_json(output / "preprocessing_stage2.json", prep)
+    _save_json(output / "manifest.json", manifest)
     return str(output / "decoder_best.pt")
 
 
@@ -344,6 +460,8 @@ def evaluate(dataset, checkpoint_path, split="test", batch_size=32, device="cpu"
     model = FrozenPerformanceModel(encoder, decoder).to(device).eval()
     if state_digest(model.encoder) != source["encoder_digest"]:
         raise AssertionError("Encoder integrity mismatch")
+    if source.get("decoder_digest") and state_digest(model.decoder) != source["decoder_digest"]:
+        raise AssertionError("Decoder integrity mismatch")
     rows = samples_for_split(dataset, source["manifest"], split)
     predictions, truths, masks, circuits = [], [], [], []
     normalized_predictions, normalized_targets = [], []
@@ -429,6 +547,8 @@ def report_provenance(source, dataset, rows):
         "preprocessing_digest": _json_digest(prep),
         "input_transform_digest": _json_digest({"parameters": prep["parameters"],
             "device_vocab": prep["device_vocab"],
+            "model_vocab": prep.get("model_vocab", {}),
+            "port_role_vocab": prep.get("port_role_vocab", {}),
             "device_category_vocab": prep.get("device_category_vocab", {}),
             "input_contract_version": prep.get("input_contract_version", 1),
             "parameter_names": prep["feature_spec"]["parameter_names"],
@@ -438,6 +558,19 @@ def report_provenance(source, dataset, rows):
         "model_config": source["model_config"],
         "parameter_count": source.get("parameter_count", {}), "timing": timings,
         "training_cost": source.get("training_cost", {}),
+        "selection_metric_names": source.get("selection_metric_names"),
+        "pretraining_protocol_digest": source.get("pretrain_provenance", {}).get("protocol_digest"),
+        "pretrain_provenance": copy.deepcopy(source.get("pretrain_provenance")),
+        "pretrain_seed": source.get("pretrain_seed"),
+        "decoder_seed": source.get("decoder_seed", source["options"]["training"]["seed"]),
+        "run_identity": _json_digest({"checkpoint_run_id": source.get("checkpoint_run_id"),
+            "stage": source["stage"], "mode": mode, "seed": source["options"]["training"]["seed"],
+            "encoder_digest": source["encoder_digest"],
+            "decoder_digest": source.get("decoder_digest"),
+            "input_op_fingerprint": source["input_op_fingerprint"],
+            "partition_fingerprint": source["partition_fingerprint"],
+            "model_config": source["model_config"],
+            "pretrain_source": source.get("source_pretrain_digest")}) if source.get("checkpoint_run_id") else None,
     }
     return {"mode": mode, "backend": backend, "seed": provenance["seed"],
             "requires_op_at_inference": uses_op_input, "op_information": op_information,

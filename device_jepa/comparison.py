@@ -6,6 +6,7 @@ pooled R². Missing labels are excluded; nonfinite predictions are errors.
 """
 import argparse
 import csv
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -91,14 +92,23 @@ def regression_metrics(target, prediction):
         return scale * math.sqrt(math.fsum((v / scale) ** 2 for v in values) / len(values))
 
     error_rms = rms(errors)
-    center = mean(ys)
-    deviations = [y - center for y in ys]
-    if any(not math.isfinite(v) for v in deviations):
-        raise ValueError('Physical target variation exceeds finite reporting range')
-    target_rms = rms(deviations)
     r2 = None
-    if len(pairs) > 1 and target_rms > 0:
-        ratio = error_rms / target_rms
+    if len(pairs) > 1 and any(y != ys[0] for y in ys[1:]):
+        # Power-of-two scaling is exact for adjacent normal floats. Center
+        # differences from an anchor, not the large absolute observations:
+        # mean([1e16, 1e16+2]) rounds to an endpoint in float64. Also keep the
+        # error/variation ratio in scaled units so subnormal physical RMS
+        # values need not be representable before computing R².
+        exponent = math.frexp(max(abs(y) for y in ys))[1]
+        scaled = [math.ldexp(y, -exponent) for y in ys]
+        offsets = [y - scaled[0] for y in scaled]
+        center = mean(offsets)
+        target_rms = rms([y - center for y in offsets])
+        try:
+            scaled_error_rms = rms([math.ldexp(e, -exponent) for e in errors])
+            ratio = scaled_error_rms / target_rms
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError('R2 exceeds finite reporting range') from exc
         r2 = 1 - ratio * ratio
         if not math.isfinite(r2):
             raise ValueError('R2 exceeds finite reporting range')
@@ -145,6 +155,87 @@ def _records(report):
     return sorted(records, key=lambda r: (r['circuit_id'], r['sample_id']))
 
 
+def _executed_protocol_gaps(source):
+    """Distinguish incomplete legacy facts from contradictory executed facts."""
+    protocol = source['protocol']
+    gaps = []
+    required = {'protocol_version', 'optimizer', 'training', 'model_config',
+                'architecture', 'input_contract_version', 'loss', 'op_state',
+                'feature_spec', 'normalization'}
+    if required - set(protocol):
+        gaps.append('incomplete executed pretraining protocol')
+    for name in ('training', 'loss', 'model_config', 'op_state', 'feature_spec', 'normalization'):
+        if name in protocol and not isinstance(protocol[name], dict):
+            raise ValueError(f'Executed pretraining protocol {name} must be a dictionary')
+    for name in ('optimizer', 'architecture'):
+        if name in protocol and (not isinstance(protocol[name], str) or not protocol[name].strip()):
+            raise ValueError(f'Executed pretraining protocol {name} must be a nonempty string')
+    for name in ('protocol_version', 'input_contract_version'):
+        if name in protocol and (type(protocol[name]) is not int or protocol[name] < 1):
+            raise ValueError(f'Executed pretraining protocol {name} must be a positive integer')
+    if protocol.get('protocol_version', 1) != 1:
+        gaps.append('unsupported executed pretraining protocol version')
+    training_rules = {'pretrain_epochs': 'positive_int', 'batch_size': 'positive_int',
+                      'torch_threads': 'positive_int', 'pretrain_lr': 'positive',
+                      'weight_decay': 'nonnegative', 'grad_clip': 'positive'}
+    loss_rules = {'invariance': 'finite', 'variance': 'positive',
+                  'covariance': 'nonnegative', 'variance_floor': 'finite'}
+    for section, rules in (('training', training_rules), ('loss', loss_rules)):
+        if section not in protocol:
+            continue  # Already marked as a missing top-level contract field.
+        values = protocol[section]
+        if not isinstance(values, dict):
+            raise ValueError(f'Executed pretraining protocol {section} must be a dictionary')
+        if set(rules) - set(values):
+            gaps.append(f'incomplete executed pretraining protocol {section} fields')
+        for name, rule in rules.items():
+            if name not in values:
+                continue
+            value = values[name]
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or (rule == 'positive_int' and (type(value) is not int or value < 1))
+                    or (rule == 'positive' and value <= 0)
+                    or (rule == 'nonnegative' and value < 0)):
+                raise ValueError(f'Invalid executed pretraining protocol {section}.{name}')
+    # These defaults belong to recorded protocol version 1 / alignment_loss.
+    # The producer records effective values; raw source options may legitimately
+    # omit optional kwargs, so compare the effective, not merely raw, loss.
+    options = source.get('source_options')
+    if options is None:
+        gaps.append('missing executed pretraining source options')
+        return gaps
+    if not isinstance(options, dict):
+        raise ValueError('Executed pretraining source_options must be a dictionary')
+    for name in ('training', 'loss', 'model'):
+        if name not in options:
+            gaps.append(f'missing executed pretraining source options {name}')
+        elif not isinstance(options[name], dict):
+            raise ValueError(f'Executed pretraining source options {name} must be a dictionary')
+    if isinstance(options.get('training'), dict):
+        original = options['training']
+        actual_training = protocol.get('training', {})
+        for name in training_rules:
+            if name not in original and name != 'torch_threads':
+                gaps.append(f'missing executed pretraining source options training.{name}')
+            elif name in actual_training and actual_training[name] != original.get(name, 1):
+                raise ValueError('Executed pretraining protocol training differs from source options')
+        if 'seed' not in original:
+            gaps.append('missing executed pretraining source options training.seed')
+        elif original['seed'] != source.get('seed'):
+            raise ValueError('Executed pretraining source options seed differs from source provenance')
+    if isinstance(options.get('loss'), dict) and 'loss' in protocol:
+        effective_loss = dict(invariance=25., variance=25., covariance=1., variance_floor=1.)
+        effective_loss.update(options['loss'])
+        if protocol['loss'] and effective_loss != protocol['loss']:
+            raise ValueError('Executed pretraining protocol loss differs from source options')
+    if isinstance(options.get('model'), dict) and 'model_config' in protocol:
+        if options['model'] != protocol['model_config']:
+            raise ValueError('Executed pretraining protocol architecture differs from source options')
+    if 'op_state' in protocol and protocol['op_state'] != options.get('op_state', {'features': []}):
+        raise ValueError('Executed pretraining protocol OP state differs from source options')
+    return gaps
+
+
 def compare_reports(reports, require_all_modes=True, expected_modes=None):
     if not reports:
         raise ValueError('No reports supplied')
@@ -160,10 +251,12 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     if not supplied_modes <= set(expected_modes):
         raise ValueError('Reports contain modes outside the declared comparison cohort')
     identity = _identity(reports[0])
-    cohorts, seen, per_seed, costs = {}, set(), [], []
+    cohorts, seen, per_seed = {}, set(), []
+    run_costs, evaluation_costs, acquisition_costs = {}, [], {}
+    mode_seed_runs, pretraining_protocols, provenance_gaps = {}, {}, set()
     mode_seeds = defaultdict(set)
     backends, mode_configs, architectures, mode_op_protocols = {}, {}, {}, {}
-    supervised_budget, op_transform = None, None
+    supervised_budget, op_transform, selection_metrics = None, None, None
     for report in reports:
         if _identity(report) != identity:
             raise ValueError('Incompatible data, split, labels, metric names or target preprocessing')
@@ -173,6 +266,61 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
             raise ValueError('Unknown evaluation split')
         if mode not in MODES:
             raise ValueError(f'Unknown mode: {mode}')
+        run_identity = p.get('run_identity')
+        if run_identity is not None and (not isinstance(run_identity, str) or not run_identity.strip()):
+            raise ValueError('run_identity must be a nonempty string')
+        if run_identity is None:
+            provenance_gaps.add(f'{mode}: missing run_identity; legacy costs cannot be deduplicated reliably')
+        else:
+            run_key = mode, seed
+            if run_key in mode_seed_runs and mode_seed_runs[run_key] != run_identity:
+                raise ValueError('Different checkpoint run identities for the same mode/seed across splits')
+            mode_seed_runs[run_key] = run_identity
+        if mode == 'jepa_zerosim':
+            protocol = p.get('pretraining_protocol_digest')
+            source = p.get('pretrain_provenance')
+            if source is None:
+                provenance_gaps.add('jepa_zerosim: missing executed pretraining provenance')
+            elif not isinstance(source, dict) or not isinstance(source.get('protocol'), dict):
+                raise ValueError('Invalid executed pretraining provenance')
+            else:
+                provenance_gaps.update('jepa_zerosim: ' + gap for gap in _executed_protocol_gaps(source))
+                actual_digest = hashlib.sha256(json.dumps(source['protocol'], sort_keys=True,
+                    separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+                if protocol != actual_digest or source.get('protocol_digest') != actual_digest:
+                    raise ValueError('Pretraining protocol digest does not match executed provenance')
+                if source.get('seed') != p.get('pretrain_seed'):
+                    raise ValueError('Pretraining seed differs from executed provenance')
+                for field in ('input_op_fingerprint', 'partition_fingerprint'):
+                    if source.get(field) != p[field]:
+                        raise ValueError('Pretraining data identity differs from evaluation provenance')
+            if protocol is None:
+                provenance_gaps.add('jepa_zerosim: missing verified pretraining protocol')
+            elif not isinstance(protocol, str) or not protocol.strip():
+                raise ValueError('pretraining_protocol_digest must be a nonempty string')
+            else:
+                if mode in pretraining_protocols and pretraining_protocols[mode] != protocol:
+                    raise ValueError('Actual pretraining protocol differs across seeds or splits within a mode')
+                pretraining_protocols[mode] = protocol
+            for field in ('pretrain_seed', 'decoder_seed'):
+                if p.get(field) is None:
+                    provenance_gaps.add(f'jepa_zerosim: missing {field}')
+                elif type(p[field]) is not int:
+                    raise ValueError(f'{field} must be an integer')
+            if p.get('decoder_seed', seed) != seed:
+                raise ValueError('Report seed differs from the recorded decoder seed')
+        selected_metrics = p.get('selection_metric_names')
+        if selected_metrics is None:
+            provenance_gaps.add(f'{mode}: missing checkpoint-selection metric names')
+        else:
+            if (not isinstance(selected_metrics, list) or not selected_metrics
+                    or any(not isinstance(name, str) for name in selected_metrics)
+                    or len(selected_metrics) != len(set(selected_metrics))
+                    or not set(selected_metrics) <= set(report['metric_names'])):
+                raise ValueError('Invalid checkpoint-selection metric names')
+            if selection_metrics is not None and selection_metrics != selected_metrics:
+                raise ValueError('Checkpoint-selection metrics differ across reports')
+            selection_metrics = selected_metrics
         information = _information_contract(report)
         # Continuous OP scaling alone does not identify the JEPA target branch:
         # categorical state channels/configuration may change its input width
@@ -225,8 +373,9 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
         if split in cohorts and cohorts[split] != targets:
             raise ValueError('Evaluation IDs or targets differ within the same split')
         cohorts[split] = targets
-        for circuit in ['__all__'] + sorted({r['circuit_id'] for r in records}):
-            subset = [r for r in records if circuit == '__all__' or r['circuit_id'] == circuit]
+        scopes = [('pooled', '__all__')] + [('circuit', c) for c in sorted({r['circuit_id'] for r in records})]
+        for scope, circuit in scopes:
+            subset = [r for r in records if scope == 'pooled' or r['circuit_id'] == circuit]
             for metric in report['metric_names']:
                 for scale, ykey, pkey in [('physical', 'target', 'prediction'),
                                           ('normalized', 'normalized_target', 'normalized_prediction')]:
@@ -234,11 +383,50 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                         raise ValueError('Normalized prediction/target records are required for comparable metrics')
                     scores = regression_metrics([r[ykey][metric] for r in subset], [r[pkey][metric] for r in subset])
                     per_seed.append(dict(mode=mode, backend=p.get('backend', 'unspecified'), seed=seed,
-                                         split=split, circuit=circuit, metric=metric, scale=scale,
+                                         split=split, scope=scope, circuit=circuit, metric=metric, scale=scale,
                                          requires_op_at_inference=information['requires_op_at_inference'],
                                          op_training_use=information['op_training_use'], **scores))
-        costs.append(dict(mode=mode, seed=seed, split=split, timing=p.get('timing', {}),
-                          parameter_count=p.get('parameter_count'), **information))
+        # Training belongs to a checkpoint run, whereas coverage and OP
+        # acquisition belong to the evaluation or an explicitly stated scope.
+        # A legacy report has no trustworthy run identity: keep its costs
+        # separate and mark the comparison non-strict instead of guessing.
+        cost_key = ('verified', run_identity) if run_identity is not None else ('legacy', mode, seed, split)
+        fixed_information = {k: v for k, v in information.items()
+                             if k not in ('op_evaluation_coverage', 'op_acquisition_cost_seconds',
+                                          'op_acquisition_cost_status', 'op_acquisition_cost_scope')}
+        training_cost = p.get('training_cost', {})
+        if not isinstance(training_cost, dict):
+            raise ValueError('training_cost must be a dictionary')
+        cost = dict(mode=mode, seed=seed, run_identity=run_identity,
+                    identity_status='verified' if run_identity is not None else 'legacy_unverified',
+                    pretrain_seed=p.get('pretrain_seed'), decoder_seed=p.get('decoder_seed', seed),
+                    pretraining_protocol_digest=p.get('pretraining_protocol_digest'),
+                    timing=p.get('timing', {}), parameter_count=p.get('parameter_count'),
+                    training_cost=training_cost,
+                    pretrain_optimizer_steps=training_cost.get('pretrain_optimizer_steps'),
+                    supervised_optimizer_steps=training_cost.get('supervised_optimizer_steps'),
+                    **fixed_information)
+        if cost_key in run_costs:
+            previous = {k: v for k, v in run_costs[cost_key].items() if k != 'evaluation_splits'}
+            if previous != cost:
+                raise ValueError('Conflicting training costs or provenance for the same run identity')
+        else:
+            run_costs[cost_key] = {**cost, 'evaluation_splits': []}
+        run_costs[cost_key]['evaluation_splits'].append(split)
+        evaluation_costs.append(dict(mode=mode, seed=seed, split=split, run_identity=run_identity,
+                                     **information))
+        if information['op_acquisition_cost_status'] == 'measured':
+            acquisition = dict(mode=mode, seed=seed, run_identity=run_identity,
+                               scope=information['op_acquisition_cost_scope'],
+                               seconds=information['op_acquisition_cost_seconds'], status='measured')
+            acquisition_key = cost_key, json.dumps(acquisition['scope'], sort_keys=True)
+            if acquisition_key in acquisition_costs:
+                previous = {k: v for k, v in acquisition_costs[acquisition_key].items() if k != 'evaluation_splits'}
+                if previous != acquisition:
+                    raise ValueError('Conflicting OP acquisition cost for the same run and acquisition scope')
+            else:
+                acquisition_costs[acquisition_key] = {**acquisition, 'evaluation_splits': []}
+            acquisition_costs[acquisition_key]['evaluation_splits'].append(split)
     # Device supervised and JEPA must differ in optimization, not architecture.
     # The pin reproduction may differ only in node-budget and terminal-role bias.
     if 'zerosim_device' in architectures and 'jepa_zerosim' in architectures:
@@ -261,10 +449,10 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                 raise ValueError(f'All declared modes must have matching seed sets for {split}: {dict(zip(expected_modes, sets))}')
     groups = defaultdict(list)
     for row in per_seed:
-        groups[tuple(row[k] for k in ('mode', 'backend', 'split', 'circuit', 'metric', 'scale'))].append(row)
+        groups[tuple(row[k] for k in ('mode', 'backend', 'split', 'scope', 'circuit', 'metric', 'scale'))].append(row)
     summary = []
     for key, rows in sorted(groups.items()):
-        item = dict(zip(('mode', 'backend', 'split', 'circuit', 'metric', 'scale'), key))
+        item = dict(zip(('mode', 'backend', 'split', 'scope', 'circuit', 'metric', 'scale'), key))
         item.update(num_seeds=len(rows), count_per_seed=rows[0]['count'],
                     requires_op_at_inference=rows[0]['requires_op_at_inference'],
                     op_training_use=rows[0]['op_training_use'])
@@ -275,30 +463,35 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
             item[metric+'_std'] = stdev(values) if len(values)>1 else None
         summary.append(item)
     paired_per_seed, paired_summary = _paired_deltas(per_seed)
-    complete = all(mode_seeds[split, expected_modes[0]] and
+    cohort_complete = all(mode_seeds[split, expected_modes[0]] and
                    all(mode_seeds[split, mode] == mode_seeds[split, expected_modes[0]] for mode in expected_modes)
                    for split in cohorts)
-    return dict(schema_version=2, synthetic=reports[0]['synthetic'],
+    for cost in (*run_costs.values(), *acquisition_costs.values()):
+        cost['evaluation_splits'].sort()
+    return dict(schema_version=3, synthetic=reports[0]['synthetic'],
                 expected_modes=list(expected_modes), compared_modes=[m for m in MODES if m in supplied_modes],
-                complete=complete, per_seed=per_seed, summary=summary, run_costs=costs,
+                complete=cohort_complete and not provenance_gaps, cohort_complete=cohort_complete,
+                strict_provenance=not provenance_gaps, provenance_gaps=sorted(provenance_gaps),
+                per_seed=per_seed, summary=summary, run_costs=list(run_costs.values()),
+                evaluation_costs=evaluation_costs, op_acquisition_costs=list(acquisition_costs.values()),
                 paired_per_seed=paired_per_seed, paired_summary=paired_summary,
-                warning='Smoke/toy results validate mechanics only, not generalization. R2 undefined for fewer than two observations or constant targets. Physical units are dataset units. Normalized metrics use training-only target transforms. Costs are per run, repeated by evaluation split; do not sum duplicate split costs. OP-input baselines require extra DC OP information at inference, unlike no-OP baselines and JEPA (training-only OP). OP acquisition/simulation cost is unknown unless explicitly measured, never assumed zero or included in model phase timing. Label/epoch parity does not imply equal information, parameters or total compute. Paired deltas are OP minus no-OP: negative MAE/RMSE and positive R2 favor OP; these are descriptive, not significance tests.')
+                warning='Smoke/toy results validate mechanics only, not generalization. R2 undefined for fewer than two observations or constant targets. Physical units are dataset units. Normalized metrics use training-only target transforms. scope distinguishes pooled results from individual circuits, even a circuit named __all__. Training costs are deduplicated by verified run identity; legacy unverified rows remain separate and prevent strict completeness. Evaluation coverage is split-specific. Measured OP acquisition costs are deduplicated only within the same run and explicit acquisition scope; scopes may overlap and are not assumed additive. OP-input baselines require extra DC OP information at inference, unlike no-OP baselines and JEPA (training-only OP). OP acquisition/simulation cost is unknown unless explicitly measured, never assumed zero or included in model phase timing. Label/epoch parity does not imply equal information, parameters or total compute. Paired deltas are OP minus no-OP: negative MAE/RMSE and positive R2 favor OP; these are descriptive, not significance tests.')
 
 
 def _paired_deltas(per_seed):
     """Within-seed contrasts; never subtract unpaired across-seed means."""
-    index = {(r['mode'], *(r[k] for k in ('seed', 'split', 'circuit', 'metric', 'scale'))): r for r in per_seed}
+    index = {(r['mode'], *(r[k] for k in ('seed', 'split', 'scope', 'circuit', 'metric', 'scale'))): r for r in per_seed}
     paired = []
     for granularity, baseline_mode, op_mode in OP_PAIRS:
         for row in per_seed:
             if row['mode'] != baseline_mode:
                 continue
-            key = tuple(row[k] for k in ('seed', 'split', 'circuit', 'metric', 'scale'))
+            key = tuple(row[k] for k in ('seed', 'split', 'scope', 'circuit', 'metric', 'scale'))
             op = index.get((op_mode, *key))
             if op is None:
                 continue
             item = dict(node_granularity=granularity, baseline_mode=baseline_mode, op_mode=op_mode,
-                        **dict(zip(('seed', 'split', 'circuit', 'metric', 'scale'), key)),
+                        **dict(zip(('seed', 'split', 'scope', 'circuit', 'metric', 'scale'), key)),
                         count=row['count'], baseline_requires_op_at_inference=False, op_requires_op_at_inference=True)
             for metric in ('mae', 'rmse', 'r2'):
                 baseline_value, op_value = row[metric], op[metric]
@@ -309,7 +502,7 @@ def _paired_deltas(per_seed):
                 item[f'{metric}_delta'] = delta
             paired.append(item)
     groups = defaultdict(list)
-    fields = ('node_granularity', 'baseline_mode', 'op_mode', 'split', 'circuit', 'metric', 'scale')
+    fields = ('node_granularity', 'baseline_mode', 'op_mode', 'split', 'scope', 'circuit', 'metric', 'scale')
     for row in paired:
         groups[tuple(row[k] for k in fields)].append(row)
     summary = []
@@ -356,11 +549,11 @@ def main(argv=None):
     _csv(out/'summary.csv', result['summary'])
     _csv(out/'paired_per_seed.csv', result['paired_per_seed'])
     _csv(out/'paired_summary.csv', result['paired_summary'])
-    json_columns = ('timing', 'parameter_count', 'op_feature_names', 'op_state_features',
-                    'op_state_config', 'op_evaluation_coverage')
-    _csv(out/'costs.csv', [{k: json.dumps(v, sort_keys=True) if k in json_columns and v is not None else v
-                          for k, v in r.items()} for r in result['run_costs']])
-    (out/'README.txt').write_text(result['warning']+'\nsummary.csv: one row per mode/backend/split/circuit/metric/scale. Across-seed SD uses ddof=1; blank with one seed. Never compare different units or different splits as one score.\npaired_per_seed.csv and paired_summary.csv: only matched seeds within pin/device OP/no-OP pairs. Deltas are OP minus no-OP. Missing/undefined values are blank, not zero. These files are omitted if no pairs exist.\n')
+    for filename, rows in (('costs.csv', result['run_costs']), ('evaluation_costs.csv', result['evaluation_costs']),
+                           ('op_acquisition_costs.csv', result['op_acquisition_costs'])):
+        _csv(out/filename, [{k: json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
+                            for k, v in r.items()} for r in rows])
+    (out/'README.txt').write_text(result['warning']+'\nsummary.csv: one row per mode/backend/split/scope/circuit/metric/scale. Across-seed SD uses ddof=1; blank with one seed. Never compare different units or different splits as one score.\npaired_per_seed.csv and paired_summary.csv: only matched seeds within pin/device OP/no-OP pairs. Deltas are OP minus no-OP. Missing/undefined values are blank, not zero. These files are omitted if no pairs exist.\ncosts.csv: training costs per verified run, with optimizer steps. evaluation_costs.csv: split coverage and declared OP acquisition metadata. op_acquisition_costs.csv: measured OP costs by run and explicit scope; absent when unmeasured. complete requires both cohort_complete and strict_provenance. Legacy reports remain readable but provenance_gaps identify why they cannot pass strict completeness.\n')
     print(f'Wrote matched comparison to {out}')
 
 

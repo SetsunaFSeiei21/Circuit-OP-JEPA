@@ -16,6 +16,18 @@ def _read(path):
     return json.loads(Path(path).read_text())
 
 
+def _max_table_rows(value):
+    if value.lower() == "none":
+        return None
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'none'") from exc
+    if result < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'none'")
+    return result
+
+
 def _new_manifest(dataset, options, path):
     path = Path(path)
     if path.exists():
@@ -36,6 +48,8 @@ def main(argv=None):
     imp.add_argument("--input", nargs="+", required=True, help="One or more per-circuit dataset directories")
     imp.add_argument("--output", required=True)
     imp.add_argument("--config", help="Optional OP-state configuration; default collector_checked")
+    imp.add_argument("--max-table-rows", type=_max_table_rows, default=1_000_000,
+                     help="Per-source-table safety limit (default: 1000000); raise explicitly or use 'none'. Canonical data is retained in memory.")
     synth = commands.add_parser("make_synthetic", help="Generate toy fixtures, not analog simulation data")
     synth.add_argument("--output", required=True)
     synth.add_argument("--per-circuit", type=int, default=24)
@@ -78,11 +92,14 @@ def main(argv=None):
         command.add_argument("--config", default=None)
         if name == "smoke_real":
             command.add_argument("--input", nargs="+", required=True)
+            command.add_argument("--max-table-rows", type=_max_table_rows, default=1_000_000,
+                                 help="Per-source-table safety limit, or 'none' for no row limit")
     args = parser.parse_args(argv)
     if args.command == "import_analog_agent":
         from .adapter import adapt_analog_agent, combine_datasets
-        datasets = [adapt_analog_agent(path) for path in args.input]
+        datasets = [adapt_analog_agent(path, max_table_rows=args.max_table_rows) for path in args.input]
         dataset = datasets[0] if len(datasets) == 1 else combine_datasets(datasets)
+        del datasets
         from .states import apply_op_states
         dataset = apply_op_states(dataset, _read(args.config).get("op_state") if args.config else None)
         _write(args.output, dataset)
@@ -127,8 +144,9 @@ def main(argv=None):
             label = "SYNTHETIC"
         else:
             from .adapter import adapt_analog_agent, combine_datasets
-            sources = [adapt_analog_agent(path) for path in args.input]
+            sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows) for path in args.input]
             dataset = sources[0] if len(sources) == 1 else combine_datasets(sources)
+            del sources
             # Never turn a smoke request into a long experiment via custom config.
             config["training"]["pretrain_epochs"] = config["training"]["decoder_epochs"] = 1
             label = "REAL-DATA PIPELINE CHECK (NOT ACCURACY EVIDENCE)"

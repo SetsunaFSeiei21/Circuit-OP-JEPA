@@ -2,7 +2,45 @@
 import torch
 
 from .data import (device_category, is_op_target, parameter_applicability,
-                   transform_value, inverse_transform_value)
+                   transform_value, inverse_transform_value, canonical_model_name,
+                   canonical_port_name)
+
+
+def _identity_vocabularies(preprocessing):
+    """Contract 3 adds explicit physical-model and named-port identities.
+
+    Legacy tensorization stays unchanged so old checkpoints retain their actual
+    input semantics. New checkpoints must never silently fall back to that path.
+    """
+    contract = preprocessing.get("input_contract_version", 1)
+    if type(contract) is not int or contract not in (1, 2, 3):
+        raise ValueError("Unsupported tensor input contract version")
+    if contract < 3:
+        if "model_vocab" in preprocessing or "port_role_vocab" in preprocessing:
+            raise ValueError("Legacy input contracts cannot declare contract 3 identity vocabularies")
+        return None, None
+    models, ports = preprocessing.get("model_vocab"), preprocessing.get("port_role_vocab")
+    for name, vocab, reserved in (
+            ("model_vocab", models, {"<PAD>": 0, "<UNK>": 1, "<NONE>": 2}),
+            ("port_role_vocab", ports, {"<PAD>": 0, "<UNK>": 1})):
+        if (not isinstance(vocab, dict) or any(type(v) is not int for v in vocab.values())
+                or any(vocab.get(k) != v for k, v in reserved.items())
+                or sorted(vocab.values()) != list(range(len(vocab)))):
+            raise ValueError(f"Input contract 3 requires a valid {name}")
+    return models, ports
+
+
+def _model_identity(device, model_vocab):
+    name = canonical_model_name(device) if device is not None else None
+    return model_vocab["<NONE>"] if name is None else model_vocab.get(name, model_vocab["<UNK>"])
+
+
+def _named_port_nets(sample, port_vocab):
+    nets = {}
+    for name, net in sample.get("ports", {}).items():
+        index = port_vocab.get(canonical_port_name(name), port_vocab["<UNK>"])
+        nets.setdefault(net, set()).add(index)
+    return nets
 
 
 def collate_samples(samples, preprocessing, include_op=True, include_performance=False,
@@ -26,6 +64,10 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
         "sample_ids": [s["sample_id"] for s in samples],
         "device_ids": [],
     }
+    model_vocab, port_vocab = _identity_vocabularies(preprocessing)
+    if model_vocab is not None:
+        batch.update(device_models=torch.zeros(b, n, dtype=torch.long),
+                     named_port_roles=torch.zeros(b, n, t * len(port_vocab)))
     if include_op:
         batch.update(op=torch.zeros(b, n, o), op_mask=torch.zeros(b, n, o, dtype=torch.bool),
                      op_target_mask=torch.zeros(b, n, dtype=torch.bool))
@@ -46,9 +88,12 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
         batch["device_mask"][bi, :len(devices)] = True
         nets = {}
         external_nets = set(sample.get("ports", {}).values())
+        named_ports = _named_port_nets(sample, port_vocab) if port_vocab is not None else {}
         for ni, device in enumerate(devices):
             batch["device_types"][bi, ni] = vocab.get(device["device_type"], vocab["<UNK>"])
             batch["device_categories"][bi, ni] = preprocessing.get("device_category_vocab", {}).get(device_category(device), 0)
+            if model_vocab is not None:
+                batch["device_models"][bi, ni] = _model_identity(device, model_vocab)
             batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(device, pn))
             _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
                   device.get("parameters", {}), pn, preprocessing["parameters"])
@@ -69,6 +114,9 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
                 nets.setdefault(net, []).append((ni, ti))
                 if net in external_nets:
                     batch["port_roles"][bi, ni, ti] = 1
+                if port_vocab is not None:
+                    for role in named_ports.get(net, ()):
+                        batch["named_port_roles"][bi, ni, ti * len(port_vocab) + role] = 1
         for endpoints in nets.values():
             for ni, ti in endpoints:
                 for nj, tj in endpoints:

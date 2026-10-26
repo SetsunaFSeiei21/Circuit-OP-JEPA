@@ -51,7 +51,12 @@ class IndependentReview(unittest.TestCase):
       self.cfg=ModelConfig(dim=8,heads=2,encoder_layers=2,cross_layers=1,ffn_dim=16,decoder_layers=1,decoder_ffn_dim=16,dropout=0,max_devices=64)
     def model(self, op=True, legacy=False):
       p=self.prep
-      enc=(OperatingPointDeviceEncoder(self.cfg,len(p['device_vocab']),8,6,3,p.get('input_contract_version',1),len(p.get('device_category_vocab',{}))) if op else encoder_from_metadata(self.cfg.to_dict(),p))
+      enc=(OperatingPointDeviceEncoder(self.cfg,len(p['device_vocab']),8,6,3,
+           input_contract_version=p.get('input_contract_version',1),
+           num_categories=len(p.get('device_category_vocab',{})),
+           num_models=len(p.get('model_vocab',{})),
+           num_port_roles=len(p.get('port_role_vocab',{})))
+           if op else encoder_from_metadata(self.cfg.to_dict(),p))
       return SupervisedPerformanceModel(enc,make_decoder(self.cfg,1)).eval()
     def test_three_parameter_states_are_distinct(self):
       b=collate_samples([self.sample],self.prep,include_op=False)
@@ -113,6 +118,7 @@ class IndependentReview(unittest.TestCase):
     def test_legacy_checkpoint_architecture_reconstructs(self):
       legacy=copy.deepcopy(self.prep)
       legacy.pop('input_contract_version'); legacy.pop('device_category_vocab')
+      legacy.pop('model_vocab'); legacy.pop('port_role_vocab')
       old=DeviceEncoder(self.cfg,len(legacy['device_vocab']),8,6).eval()
       new=encoder_from_metadata(self.cfg.to_dict(),legacy).eval()
       new.load_state_dict(old.state_dict(),strict=True)

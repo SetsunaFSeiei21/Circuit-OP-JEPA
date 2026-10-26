@@ -1,0 +1,139 @@
+{
+  "software_version": "0.4.0",
+  "date": "2026-10-26",
+  "base_commit": "6b8595b5491db6f2eb128d1ee8bb739008f24286",
+  "audited_code_commit": "85ca47392ce5a21ff765008fefe634da1c8378ee",
+  "runtime": {
+    "python": "3.12.14",
+    "torch": "2.14.1+cpu",
+    "device": "cpu"
+  },
+  "checks": {
+    "unit_tests": {
+      "passed": 313,
+      "skipped": 0,
+      "includes_opt_in_scale_test": true
+    },
+    "independent_probes": {
+      "passed": 7
+    },
+    "adapter_scale": {
+      "rows": 1020000,
+      "sample_ids": 60000,
+      "devices_per_sample": 17,
+      "op_fields": 1,
+      "default_limit_rejected": true,
+      "explicit_limit_streamed_all_rows": true,
+      "scope": "Synthetic reader only, not full canonical import or model training"
+    },
+    "shell_syntax": {
+      "scripts": 7,
+      "passed": true
+    },
+    "wheel": {
+      "version": "0.4.0",
+      "built": true,
+      "isolated_install_and_cli_passed": true,
+      "source_files_equal_current_repository": true,
+      "sha256": "9249c96db4f5ed305f0d46816c4692351d658664aa1839c0c6bc09c4e515e1d2"
+    }
+  },
+  "source_integrity": {
+    "samples": 32,
+    "op_positions": 21120,
+    "negative_op_values": 5725,
+    "metric_positions": 288,
+    "missing_metrics": 23,
+    "feasible_false": 32,
+    "zip_sha256": "54e16b0e3bb6ffc33e19efc5b01428e83bd672d2faa925e152223e31a6141edc",
+    "sqlite_sha256": "f7b262d93d46f154fcc14848612eabd36cb97112892bb575eeea2f4d53b89b86",
+    "saturation_below": 93
+  },
+  "smoke_runs": {
+    "synthetic_run": {
+      "seeds": [
+        17,
+        29
+      ],
+      "epochs_per_phase": 1,
+      "modes": [
+        "zerosim_pin",
+        "zerosim_device",
+        "jepa_zerosim",
+        "zerosim_pin_op",
+        "zerosim_device_op"
+      ],
+      "samples": 120,
+      "split_counts": {
+        "train": 80,
+        "val": 8,
+        "test": 8,
+        "ood": 24,
+        "labeled_train": 80
+      },
+      "reports": 20,
+      "run_cost_rows": 10,
+      "evaluation_cost_rows": 20,
+      "comparison_schema_version": 3,
+      "strict_provenance": true,
+      "complete": true
+    },
+    "opamp2_run": {
+      "seeds": [
+        17
+      ],
+      "epochs_per_phase": 1,
+      "modes": [
+        "zerosim_pin",
+        "zerosim_device",
+        "jepa_zerosim",
+        "zerosim_pin_op",
+        "zerosim_device_op"
+      ],
+      "samples": 32,
+      "split_counts": {
+        "train": 26,
+        "val": 3,
+        "test": 3,
+        "ood": 0,
+        "labeled_train": 26
+      },
+      "reports": 5,
+      "run_cost_rows": 5,
+      "evaluation_cost_rows": 5,
+      "comparison_schema_version": 3,
+      "strict_provenance": true,
+      "complete": true
+    }
+  },
+  "fixes": [
+    "F01",
+    "F02",
+    "F03",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08",
+    "F09",
+    "F10",
+    "F11",
+    "F12"
+  ],
+  "limits": [
+    "CPU one-epoch mechanics checks are not accuracy evidence.",
+    "Real data contains only Opamp2; no real OOD experiment.",
+    "Canonical objects, OP state encoding and JSON serialization remain in memory.",
+    "OP acquisition cost remains unmeasured.",
+    "No SPICE sampling, CUDA capacity test or cluster job was performed."
+  ],
+  "reproduction_commands": [
+    "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "python verification/five_mode/independent_probe.py",
+    "python -m device_jepa make_synthetic --output /tmp/jepa_fix_check/synthetic.json --per-circuit 24",
+    "python scripts/run/run_comparison.py --data /tmp/jepa_fix_check/synthetic.json --config configs/smoke.json --output /tmp/jepa_fix_check/synthetic_run --seeds 17 29 --smoke",
+    "python -m device_jepa import_analog_agent --input /path/to/tmp_data/Opamp2 --config configs/opamp2_smoke.json --output /tmp/jepa_fix_check/opamp2.json",
+    "python scripts/run/run_comparison.py --data /tmp/jepa_fix_check/opamp2.json --config configs/opamp2_smoke.json --output /tmp/jepa_fix_check/opamp2_run --seeds 17 --smoke",
+    "python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/jepa_fix_check/wheel"
+  ]
+}

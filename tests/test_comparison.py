@@ -1,5 +1,6 @@
 import copy
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -9,7 +10,7 @@ from device_jepa.comparison import compare_reports, regression_metrics, main, MO
 
 
 def report(mode, seed=17, split='test'):
-    return dict(split=split, synthetic=True, num_samples=3, metric_names=['gain'],
+    result = dict(split=split, synthetic=True, num_samples=3, metric_names=['gain'],
                 provenance=dict(mode=mode, backend=mode, seed=seed, model_config={'dim': 32}, partition_fingerprint='partition',
                                 requires_op_at_inference=mode in OP_MODES, op_input_transform_digest='op_transform',
                                 input_op_fingerprint='input', input_transform_digest='transform', performance_fingerprint='perf', target_scaler_digest='scaler',
@@ -18,6 +19,23 @@ def report(mode, seed=17, split='test'):
                 predictions=[dict(sample_id=str(i), circuit_id='circuit', target={'gain': y},
                                   prediction={'gain': 2.0}, normalized_target={'gain': y},
                                   normalized_prediction={'gain': 2.0}) for i, y in enumerate([1.0, 3.0, None])])
+    p = result['provenance']
+    p.update(run_identity=f'{mode}/{seed}', decoder_seed=seed, selection_metric_names=['gain'])
+    if mode == 'jepa_zerosim':
+        protocol = {'protocol_version': 1, 'optimizer': 'AdamW', 'model_config': {'dim': 32},
+                    'architecture': 'shared_structure', 'input_contract_version': 3,
+                    'loss': {'invariance': 25, 'variance': 25, 'covariance': 1, 'variance_floor': 1},
+                    'op_state': {}, 'feature_spec': {}, 'normalization': {},
+                    'training': {'pretrain_epochs': 1, 'pretrain_lr': .001, 'batch_size': 8,
+                                 'weight_decay': .0001, 'grad_clip': 1., 'torch_threads': 1}}
+        digest = hashlib.sha256(json.dumps(protocol, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        p.update(pretraining_protocol_digest=digest, pretrain_seed=seed,
+                 pretrain_provenance={'protocol': protocol, 'protocol_digest': digest, 'seed': seed,
+                                     'source_options': {'loss': copy.deepcopy(protocol['loss']),
+                                         'training': {**protocol['training'], 'seed': seed},
+                                         'model': copy.deepcopy(protocol['model_config']), 'op_state': {}},
+                                     'input_op_fingerprint': 'input', 'partition_fingerprint': 'partition'})
+    return result
 
 
 class ComparisonTests(unittest.TestCase):
@@ -74,9 +92,14 @@ class ComparisonTests(unittest.TestCase):
         for item in reports:
             del item['provenance']['requires_op_at_inference']
             del item['provenance']['op_input_transform_digest']
+            for key in ('run_identity', 'pretraining_protocol_digest', 'pretrain_provenance',
+                        'pretrain_seed', 'decoder_seed', 'selection_metric_names'):
+                item['provenance'].pop(key, None)
         result = compare_reports(reports)
         self.assertEqual(result['expected_modes'], list(LEGACY_MODES))
-        self.assertTrue(result['complete'])
+        self.assertFalse(result['complete'])
+        self.assertTrue(result['cohort_complete'])
+        self.assertFalse(result['strict_provenance'])
         self.assertEqual(result['paired_per_seed'], [])
         self.assertTrue(all(not r['requires_op_at_inference'] for r in result['summary']))
         jepa_cost = next(r for r in result['run_costs'] if r['mode'] == 'jepa_zerosim')
@@ -131,7 +154,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_op_information_and_unknown_cost_are_not_silently_zero(self):
         result = compare_reports([report(m) for m in MODES])
-        for row in result['run_costs']:
+        for row in result['evaluation_costs']:
             self.assertEqual(row['requires_op_at_inference'], row['mode'] in OP_MODES)
             self.assertIsNone(row['op_acquisition_cost_seconds'])
             self.assertEqual(row['op_acquisition_cost_status'], 'not_measured')
@@ -152,7 +175,8 @@ class ComparisonTests(unittest.TestCase):
             compare_reports([item], False)
         info['acquisition_cost_scope'] = 'all test-split DC solves, wall-clock seconds'
         result = compare_reports([item], False)
-        self.assertEqual(result['run_costs'][0]['op_acquisition_cost_seconds'], 2.)
+        self.assertEqual(result['evaluation_costs'][0]['op_acquisition_cost_seconds'], 2.)
+        self.assertEqual(result['op_acquisition_costs'][0]['seconds'], 2.)
         self.assertEqual(result['run_costs'][0]['timing'], {})
         for seconds in (-1, math.nan, math.inf, True):
             info['acquisition_cost_seconds'] = seconds
@@ -207,7 +231,7 @@ class ComparisonTests(unittest.TestCase):
                     'evaluation_coverage': {'counting_unit': 'original devices, not repeated pin tokens',
                                             'samples_without_observed_op': 1 if item['split'] == 'ood' else 0}}
         result = compare_reports(reports)
-        for cost in result['run_costs']:
+        for cost in result['evaluation_costs']:
             if cost['mode'] in OP_MODES:
                 self.assertEqual(cost['op_source'], 'dataset_dc_operating_point')
                 self.assertEqual(cost['op_feature_names'], ['id', 'gm'])
@@ -245,8 +269,8 @@ class ComparisonTests(unittest.TestCase):
             output = root/'comparison'
             main(['--reports', *paths, '--output', str(output)])
             result = json.loads((output/'comparison.json').read_text())
-            self.assertEqual(result['schema_version'], 2)
-            with (output/'costs.csv').open() as handle:
+            self.assertEqual(result['schema_version'], 3)
+            with (output/'evaluation_costs.csv').open() as handle:
                 costs = list(csv.DictReader(handle))
             self.assertTrue(all(row['op_acquisition_cost_seconds'] == '' for row in costs))
             for row in costs:
