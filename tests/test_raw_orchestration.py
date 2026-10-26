@@ -1,5 +1,6 @@
 """Raw circuit jobs keep import on the worker and isolate independent datasets."""
 import contextlib
+from datetime import datetime
 import hashlib
 import importlib.util
 import io
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('raw_runner', ROOT / 'scripts/run/run_raw_comparison.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+from scripts.run import result_paths
 
 
 def snapshot(root):
@@ -83,6 +85,35 @@ class RawOrchestrationTests(unittest.TestCase):
         self.assertEqual(calls[0][-1], 'none')
         self.assertEqual(calls[1][-1], '--smoke')
         self.assertEqual(calls[1][calls[1].index('--seeds') + 1], '29')
+
+    def test_default_output_uses_sqlite_circuit_and_date_under_shared_root(self):
+        shared = self.root / 'original repo/runs/gpu_full'
+        before = snapshot(self.source)
+        with patch.dict(os.environ, {'JEPA_RESULTS_ROOT': str(shared)}), \
+             patch.object(result_paths, 'datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 26, 21, 30)
+            calls = self.invoke(['--input', str(self.source)])
+        output = shared / 'ActualCircuit_20261026_213000'
+        self.assertEqual(calls[0][calls[0].index('--output') + 1], str(output / 'data.json'))
+        self.assertEqual(calls[1][calls[1].index('--output') + 1], str(output / 'results'))
+        config = json.loads((output / 'config.json').read_text())
+        self.assertEqual(config['dataset']['train_circuits'], ['ActualCircuit'])
+        self.assertEqual(snapshot(self.source), before)
+
+    def test_explicit_output_overrides_results_root(self):
+        shared = self.root / 'unused shared root'
+        with patch.dict(os.environ, {'JEPA_RESULTS_ROOT': str(shared)}):
+            self.invoke()
+        self.assertTrue((self.output / 'config.json').is_file())
+        self.assertFalse(shared.exists())
+
+    def test_invalid_run_does_not_allocate_default_output(self):
+        shared = self.root / 'runs/gpu_full'
+        with patch.dict(os.environ, {'JEPA_RESULTS_ROOT': str(shared)}), \
+             patch.object(runner, 'comparison_epoch_budget', side_effect=ValueError('budget')):
+            with self.assertRaisesRegex(ValueError, 'budget'):
+                runner.main(['--input', str(self.source)])
+        self.assertFalse(shared.exists())
 
     def test_existing_empty_output_is_allowed_and_second_run_cannot_modify_it(self):
         self.output.mkdir(parents=True)
@@ -156,6 +187,16 @@ class RawOrchestrationTests(unittest.TestCase):
         self.assertIn('source\\ folder\\ not\\ a\\ circuit\\ name', result.stdout)
         self.assertNotIn('UNEXPECTED', result.stderr)
         self.assertFalse(self.output.exists())
+
+    def test_default_output_preview_does_not_read_source_or_create_directories(self):
+        shared = self.root / 'shared results'
+        env = {**os.environ, 'DRY_RUN': '1', 'JEPA_RESULTS_ROOT': str(shared)}
+        result = subprocess.run(['bash', str(ROOT / 'scripts/run/submit_raw_comparison.sh'),
+                                 '--input', str(self.root / 'not available on login node'),
+                                 '--device', 'cuda'],
+                                env=env, capture_output=True, text=True, check=True)
+        self.assertIn('scripts/run/run_raw_comparison.py', result.stdout)
+        self.assertFalse(shared.exists())
 
 
 if __name__ == '__main__':

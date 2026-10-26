@@ -42,14 +42,20 @@ zerosim_pin epoch 1/80 train: 100/1500 (6.7%) loss=... elapsed=...s ETA=...s
 ```bash
 git -c http.version=HTTP/1.1 pull --ff-only origin main
 source scripts/run/cluster.env.example
-JEPA_RUN_ID=$(date +%Y%m%d_%H%M%S)
 for circuit in 5t_ota Opamp0; do
   DRY_RUN=0 bash scripts/run/submit_raw_comparison.sh \
     --input "runs/raw/full_data/$circuit" \
     --config configs/default.json \
-    --output "runs/gpu_resident_${JEPA_RUN_ID}/$circuit" \
     --max-table-rows none --seeds 17 29 43 --device cuda
 done
 ```
+
+省略 `--output` 时，独立电路实验统一保存在原仓库的
+`runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`，例如 `runs/gpu_full/Opamp1_20261026_213000/`。
+从 Git worktree 提交也使用原仓库的位置；电路名读取 SQLite，日期时间取计算节点启动实验时的本地时间。
+同秒启动的实验自动追加编号，已有结果不会被覆盖。`config.json`、`data.json` 在实验目录内，
+checkpoint 和评估表在其 `results/` 下，汇总在 `results/comparison/`。
+如需指定固定根目录，可设置绝对路径 `JEPA_RESULTS_ROOT`；显式 `--output` 优先。
+已有结果和已提交作业的路径不迁移。
 
 GPU 数据路径保持配置中的 batch size、模型结构、学习率、划分和最大 epoch 预算。0.4.3 另行加入可配置的验证集早停；启用后，每个模型或 JEPA 阶段可能在上限前停止，并记录实际执行成本，详见 [早停说明](EARLY_STOPPING_ZH.md)。

@@ -38,7 +38,7 @@ python -m device_jepa smoke_real \
 
 默认五模式、多个随机种子的自动运行及成对结果处理，见 [scripts/README.md](scripts/README.md)。脚本分为 `scripts/git/`、`scripts/smoke_test/`、`scripts/run/`，与 Analog-Agent 的组织方式对应。先做 smoke，再运行正式实验。
 
-大型原始数据可直接通过 `scripts/run/submit_raw_comparison.sh --input 原始电路目录 --output 新实验目录 --max-table-rows none --device cuda` 提交；导入和五模式训练均在计算节点执行，默认仍为预览，实际提交需设置 `DRY_RUN=0`。该入口自动从 SQLite 读取单电路身份并生成独立实验配置，完整双电路示例及资源要求见 [运行说明](scripts/README.md#slurm)。
+大型原始数据可直接通过 `scripts/run/submit_raw_comparison.sh --input 原始电路目录 --max-table-rows none --device cuda` 提交；导入和五模式训练均在计算节点执行，默认仍为预览，实际提交需设置 `DRY_RUN=0`。省略 `--output` 时，结果统一放在原仓库的 `runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`，从 Git worktree 提交也使用此位置。该入口自动从 SQLite 读取单电路身份并生成独立实验配置，完整双电路示例及资源要求见 [运行说明](scripts/README.md#slurm)。
 
 ## 数据处理流程
 

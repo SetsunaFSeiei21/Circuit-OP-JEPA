@@ -100,12 +100,10 @@ observed geometry before any training starts.
 
 ```bash
 source scripts/run/cluster.env.example
-RUN_ID=$(date +%Y%m%d_%H%M%S)
 for circuit in 5t_ota Opamp0; do
   DRY_RUN=0 bash scripts/run/submit_raw_comparison.sh \
     --input "runs/raw/full_data/$circuit" \
     --config configs/default.json \
-    --output "runs/independent_${RUN_ID}/$circuit" \
     --max-table-rows none \
     --seeds 17 29 43 \
     --device cuda
@@ -113,10 +111,20 @@ done
 ```
 
 This submits two independent jobs (the example cluster preset requests one GPU
-and 80 GB host RAM per job). Use `DRY_RUN=1` to preview instead. Each job writes
+and 80 GB host RAM per job). Use `DRY_RUN=1` to preview instead. Without `--output`,
+both `run_raw_comparison.py` and `submit_raw_comparison.sh` use the **primary
+checkout's** `runs/gpu_full/<circuit>_<YYYYMMDD_HHMMSS>/`, including jobs launched
+from linked worktrees. For example, `runs/gpu_full/Opamp1_20261026_213000/`.
+The circuit name comes from SQLite, not the input directory name; the timestamp
+uses the worker's local time when the run starts. Concurrent runs in the same
+second get suffixes `_2`, `_3`, etc., without reusing existing directories.
+Set `JEPA_RESULTS_ROOT` to an absolute path to override the base directory,
+or pass `--output` for an explicit destination. Output allocation and raw-data
+reads stay on the worker; previews create no result directories.
+Each job writes
 `config.json` and `data.json` at its output root; trained checkpoints, split and
 comparison tables are under `results/`, with tables in `results/comparison/`.
-The output must be new/empty, and raw files are read only. Import failures stop
+An explicit output must be new/empty, and raw files are read only. Import failures stop
 the job before training. Logs are under `hpc_logs/raw_run/` by default. Set
 `JEPA_LOG_DIR` to an absolute directory to share a fixed log location between
 worktrees, for example `export JEPA_LOG_DIR=/path/to/original/Circuit-OP-JEPA/hpc_logs/gpu_full`.

@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from device_jepa.cli import _max_table_rows
 from device_jepa.comparison import MODES
 from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
+from scripts.run.result_paths import create_default_output
 
 
 def source_identity(directory):
@@ -48,7 +49,8 @@ def source_identity(directory):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True, help='One complete per-circuit raw directory')
-    parser.add_argument('--output', required=True, help='New/empty root for data, config and results')
+    parser.add_argument('--output', help='New/empty output root; default: primary checkout '
+                        'runs/gpu_full/<circuit>_<YYYYMMDD_HHMMSS> (or JEPA_RESULTS_ROOT)')
     parser.add_argument('--config', default=str(ROOT / 'configs/default.json'),
                         help='Base model/training config; dataset circuit membership is set from SQLite')
     parser.add_argument('--seeds', nargs='+', type=int, default=[17, 29, 43])
@@ -59,10 +61,10 @@ def main(argv=None):
     parser.add_argument('--smoke', action='store_true', help='JEPA 1+1 epochs, baselines 2; does not subsample data')
     args = parser.parse_args(argv)
 
-    output = Path(args.output).resolve()
+    output = Path(args.output).resolve() if args.output is not None else None
     # This entrypoint owns the entire run, including its imported dataset.
     # Check before metadata, config processing, mkdir or any artifact writes.
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+    if output is not None and output.exists() and (not output.is_dir() or any(output.iterdir())):
         parser.error('Output must be new/empty; refusing overwrite or stale artifacts')
     if len(set(args.seeds)) != len(args.seeds):
         parser.error('Seeds must be unique')
@@ -84,7 +86,10 @@ def main(argv=None):
     from device_jepa.resident import require_device
     require_device(args.device)
 
-    output.mkdir(parents=True, exist_ok=True)
+    if output is None:
+        output = create_default_output(ROOT, circuit)
+    else:
+        output.mkdir(parents=True, exist_ok=True)
     config_path, data_path = output / 'config.json', output / 'data.json'
     with config_path.open('x') as handle:
         handle.write(json.dumps(config, indent=2, allow_nan=False) + '\n')
