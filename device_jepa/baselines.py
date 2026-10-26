@@ -34,11 +34,7 @@ from .training import (_batches, _check_dataset_options, _check_options, _metric
                        seed_everything, state_digest)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device
 from .early_stopping import EarlyStopping, SUPERVISED_OBJECTIVE
-
-
-BASELINE_MODES = ("zerosim_device", "zerosim_pin", "zerosim_pin_op", "zerosim_device_op")
-PIN_MODES = ("zerosim_pin", "zerosim_pin_op")
-OP_INPUT_MODES = ("zerosim_pin_op", "zerosim_device_op")
+from .methods import BASELINE_MODES, PIN_MODES, OP_MODES as OP_INPUT_MODES
 
 
 def _check_mode(mode):

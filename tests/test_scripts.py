@@ -40,6 +40,39 @@ class ScriptTests(unittest.TestCase):
         for command in ['git add -A', 'git reset', 'git push --force', 'git pull']:
             self.assertFalse(any(line.startswith(command) for line in text.splitlines()))
 
+    def test_model_catalog_never_submits_or_creates_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / 'sbatch'
+            fake.write_text('#!/usr/bin/env bash\necho UNEXPECTED >&2\nexit 99\n')
+            fake.chmod(0o755)
+            env = {**os.environ, 'PATH': tmp + os.pathsep + os.environ['PATH'],
+                   'DRY_RUN': '0', 'JEPA_LOG_DIR': str(root / 'logs'),
+                   'JEPA_RESULTS_ROOT': str(root / 'results')}
+            for script in ('run/submit_comparison.sh', 'run/submit_raw_comparison.sh',
+                           'smoke_test/submit_comparison.sh', 'smoke_test/run_smoke.sh', 'run_smoke.sh'):
+                result = subprocess.run(['bash', str(ROOT / 'scripts' / script), '--list-models'],
+                                        env=env, text=True, capture_output=True, check=True)
+                self.assertIn('jepa_zerosim', result.stdout)
+                self.assertIn('zerosim_device_op', result.stdout)
+                self.assertNotIn('sbatch', result.stdout)
+                self.assertNotIn('UNEXPECTED', result.stderr)
+            self.assertEqual({p.name for p in root.iterdir()}, {'sbatch'})
+
+    def test_model_selection_survives_slurm_wrappers(self):
+        env = {**os.environ, 'DRY_RUN': '1'}
+        for script in ('run/submit_comparison.sh', 'run/submit_raw_comparison.sh',
+                       'smoke_test/submit_comparison.sh'):
+            result = subprocess.run(['bash', str(ROOT / 'scripts' / script),
+                                     '--models', 'jepa_zerosim', 'zerosim_device',
+                                     '--output', '/not-created'],
+                                    env=env, text=True, capture_output=True, check=True)
+            args = shlex.split(result.stdout)
+            start = args.index('--models')
+            self.assertEqual(args[start + 1:start + 3], ['jepa_zerosim', 'zerosim_device'])
+            self.assertNotIn('zerosim_pin', args)
+            self.assertNotIn('zerosim_device_op', args)
+
     def test_shared_log_directory_overrides_worktree_and_job_kind(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

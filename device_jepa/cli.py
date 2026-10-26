@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .data import build_manifest, load_dataset, synthetic_dataset, verify_manifest
+from .methods import BASELINE_MODES, add_model_arguments, method_spec, select_models
 
 
 def _write(path, value):
@@ -43,6 +44,7 @@ def _new_manifest(dataset, options, path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Shared-structure device/OP alignment and frozen-encoder metric decoding")
+    add_model_arguments(parser, selection=False)
     commands = parser.add_subparsers(dest="command", required=True)
     imp = commands.add_parser("import_analog_agent", help="Read supplied netlist/SQLite safely; no simulation or feasibility filtering")
     imp.add_argument("--input", nargs="+", required=True, help="One or more per-circuit dataset directories")
@@ -73,7 +75,7 @@ def main(argv=None):
         else:
             command.add_argument("--pretrained", required=True)
     baseline = commands.add_parser("train_baseline", help="Clean-room supervised pin/device ZeroSim-style baseline")
-    baseline.add_argument("--mode", choices=["zerosim_pin", "zerosim_device", "zerosim_pin_op", "zerosim_device_op"], required=True)
+    baseline.add_argument("--mode", "--model", choices=BASELINE_MODES, required=True)
     baseline.add_argument("--data", required=True)
     baseline.add_argument("--manifest", required=True)
     baseline.add_argument("--config", required=True)
@@ -90,6 +92,8 @@ def main(argv=None):
         command = commands.add_parser(name, help="Tiny mechanics-only validation, never an accuracy claim")
         command.add_argument("--output", default=f"runs/{name}")
         command.add_argument("--config", default=None)
+        command.add_argument("--device", default="cpu")
+        add_model_arguments(command)
         if name == "smoke_real":
             command.add_argument("--input", nargs="+", required=True)
             command.add_argument("--max-table-rows", type=_max_table_rows, default=1_000_000,
@@ -142,9 +146,17 @@ def main(argv=None):
         # runs later and cannot undo those earlier writes.
         if output.exists() and (not output.is_dir() or any(output.iterdir())):
             raise ValueError("Smoke output must be a new or empty directory; refusing to overwrite existing artifacts")
-        output.mkdir(parents=True, exist_ok=True)
         default = "smoke.json" if args.command == "smoke" else "opamp2_smoke.json"
         config = _read(args.config) if args.config else json.loads(files("device_jepa").joinpath("defaults", default).read_text())
+        # The old direct smoke command remains JEPA-only unless a selection is
+        # supplied in the CLI/config. Comparison scripts keep their own default.
+        models = select_models(config, args.models, default=('jepa_zerosim',))
+        from .budgets import comparison_epoch_budget, smoke_epochs
+        smoke_epochs(config)
+        comparison_epoch_budget(config, models)
+        from .resident import require_device
+        require_device(args.device)
+        output.mkdir(parents=True, exist_ok=True)
         if args.command == "smoke":
             dataset = synthetic_dataset(24, config["training"]["seed"])
             label = "SYNTHETIC"
@@ -153,20 +165,39 @@ def main(argv=None):
             sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True) for path in args.input]
             dataset = sources[0] if len(sources) == 1 else combine_datasets(sources)
             del sources
-            # Never turn a smoke request into a long experiment via custom config.
-            from .budgets import smoke_epochs
-            smoke_epochs(config)
             label = "REAL-DATA PIPELINE CHECK (NOT ACCURACY EVIDENCE)"
         from .states import apply_op_states
         dataset = apply_op_states(dataset, config.get("op_state"))
         manifest = _new_manifest(dataset, config, output / "manifest.json")
         _write(output / "data.json", dataset)
-        p = pretrain(dataset, manifest, config, output)
-        d = train_decoder(dataset, p, config, output)
-        for subset in ("test", "ood"):
-            if manifest[subset]:
-                report = evaluate(dataset, d, split=subset, output=output / f"{subset}_report.json")
-                print(f"{label} {subset}: {json.dumps(report['metrics'])}")
+        print('Selected models: ' + ', '.join(models), flush=True)
+        reports = []
+        for mode in models:
+            method = method_spec(mode)
+            # Preserve the historical JEPA-only smoke artifact paths.
+            destination = output if models == ['jepa_zerosim'] else output / mode / f"seed_{config['training']['seed']}"
+            if method.workflow == 'jepa':
+                p = pretrain(dataset, manifest, config, destination, args.device)
+                checkpoint = train_decoder(dataset, p, config, destination, args.device)
+                evaluator = evaluate
+            else:
+                from .baselines import train_baseline, evaluate_baseline
+                checkpoint = train_baseline(dataset, manifest, config, destination, mode=mode, device=args.device)
+                evaluator = evaluate_baseline
+            for subset in ("test", "ood"):
+                if manifest[subset]:
+                    report_path = destination / f"{subset}_report.json"
+                    report = evaluator(dataset, checkpoint, split=subset, device=args.device, output=report_path)
+                    reports.append(str(report_path))
+                    print(f"{label} {mode} {subset}: {json.dumps(report['metrics'])}")
+        from .comparison import main as compare
+        compare(['--reports', *reports, '--output', str(output / 'comparison'), '--models', *models])
+        complete = _read(output / 'comparison/comparison.json')['complete']
+        if not complete:
+            raise ValueError('Selected-model smoke comparison is incomplete')
+        _write(output / 'config.json', config)
+        _write(output / 'experiment.json', dict(models=models, seeds=[config['training']['seed']],
+               evaluation_splits=[s for s in ('test', 'ood') if manifest[s]], complete=True))
         if not manifest["ood"]:
             print("NO OOD HOLDOUT: this dataset/config cannot establish cross-circuit OOD generalization.")
         print("Smoke complete: mechanics only. No real performance claim.")

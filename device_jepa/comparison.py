@@ -14,12 +14,8 @@ from pathlib import Path
 from statistics import mean, stdev
 from .early_stopping import (PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
                              early_stopping_config, executed_epochs)
-
-LEGACY_MODES = ('zerosim_pin', 'zerosim_device', 'jepa_zerosim')
-OP_MODES = ('zerosim_pin_op', 'zerosim_device_op')
-MODES = (*LEGACY_MODES, *OP_MODES)
-OP_PAIRS = (('pin', 'zerosim_pin', 'zerosim_pin_op'),
-            ('device', 'zerosim_device', 'zerosim_device_op'))
+from .methods import (DEFAULT_MODELS, LEGACY_MODES, MODES, OP_MODES, OP_PAIRS,
+                      add_model_arguments, method_spec)
 
 
 def _information_contract(report):
@@ -31,11 +27,12 @@ def _information_contract(report):
     """
     p = report['provenance']
     mode = p['mode']
-    required = mode in OP_MODES
+    method = method_spec(mode)
+    required = method.requires_op_at_inference
     declared = p.get('requires_op_at_inference', False)
     if type(declared) is not bool or declared != required:
         raise ValueError(f'Incorrect or missing requires_op_at_inference for {mode}')
-    training_use = 'input' if required else ('pretraining_target' if mode == 'jepa_zerosim' else 'none')
+    training_use = 'input' if required else ('pretraining_target' if method.workflow == 'jepa' else 'none')
     inference_use = 'input' if required else 'none'
     info = p.get('op_information', {})
     if not isinstance(info, dict):
@@ -298,7 +295,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     # an OP-input report is supplied, all five are expected unless the caller
     # explicitly declares a different cohort (e.g. a two-mode ablation).
     if expected_modes is None:
-        expected_modes = LEGACY_MODES if supplied_modes <= set(LEGACY_MODES) else MODES
+        expected_modes = LEGACY_MODES if supplied_modes <= set(LEGACY_MODES) else DEFAULT_MODELS
     expected_modes = tuple(expected_modes)
     if not expected_modes or len(expected_modes) != len(set(expected_modes)) or any(m not in MODES for m in expected_modes):
         raise ValueError('Expected modes must be a nonempty unique selection of supported modes')
@@ -619,10 +616,9 @@ def main(argv=None):
     parser.add_argument('--reports', nargs='+', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--allow-partial', action='store_true', help='Allow missing modes/seeds; still enforce provenance')
-    parser.add_argument('--modes', nargs='+', choices=MODES,
-                        help='Explicit expected cohort; default is legacy three for legacy-only reports, otherwise five')
+    add_model_arguments(parser, comparison=True)
     args = parser.parse_args(argv)
-    result = compare_reports([json.loads(Path(p).read_text()) for p in args.reports], not args.allow_partial, args.modes)
+    result = compare_reports([json.loads(Path(p).read_text()) for p in args.reports], not args.allow_partial, args.models)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     (out/'comparison.json').write_text(json.dumps(result, indent=2, allow_nan=False)+'\n')

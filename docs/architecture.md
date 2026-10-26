@@ -74,7 +74,7 @@ Metrics are computed only on observed targets: original-unit MAE/RMSE/R² plus n
 
 ## Paired reporting and cost boundaries
 
-The runner defaults to all five modes; `--modes` can explicitly select a legacy-three cohort or a narrower pair. Strict aggregation checks input/target/dataset identity, grouped split and labels, selected OP transform, total epoch budget, supervised optimizer settings and within-mode architecture. Matching OP/no-OP pairs have identical base model hyperparameters; extra OP projections are declared capacity changes.
+The shared method registry supplies CLI choices, workflow dispatch, baseline categories and OP pairing. `--models` (legacy alias `--modes`) overrides `experiment.models`; only those models are trained, evaluated and aggregated. Without either, comparison scripts retain the original-five default; newly registered models require explicit selection. Direct legacy smoke retains its JEPA-only default. Single-model and partial cohorts are complete when all selected runs satisfy provenance. Strict aggregation checks input/target/dataset identity, grouped split and labels, selected OP transform, total epoch budget, supervised optimizer settings and within-mode architecture. Matching OP/no-OP pairs have identical base model hyperparameters; extra OP projections are declared capacity changes.
 
 `paired_per_seed.csv` computes OP-minus-no-OP differences before aggregation. `paired_summary.csv` summarizes the actual matched differences with sample SD; undefined R2 remains null and one-seed SD remains blank. Negative MAE/RMSE deltas and positive R2 deltas favor OP inputs, but smoke deltas do not establish scientific benefit.
 

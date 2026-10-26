@@ -1,4 +1,4 @@
-# Five-mode matched experiments
+# Selected-model matched experiments
 
 This directory follows the reference repository's `analog-agent/scripts/{git,smoke_test,run}` organization:
 https://github.com/SetsunaFSeiei21/Analog-Agent-NN-Memory/tree/main/analog-agent/scripts
@@ -29,7 +29,7 @@ From the repository root:
 bash scripts/smoke_test/run_smoke.sh
 ```
 
-This runs unit tests, creates explicitly synthetic data, runs JEPA for one pretraining epoch plus one decoder epoch and each of the four baselines for two epochs, then exports matched comparisons and within-seed OP/no-OP deltas. The old `scripts/run_smoke.sh` remains a JEPA-only compatibility entrypoint.
+This creates explicitly synthetic data and runs the selected models: JEPA for one pretraining epoch plus one decoder epoch, each selected baseline for two epochs. Pass `--models NAME [NAME ...]` to choose the cohort. Unit tests are separate unless `--run-tests` is explicitly supplied; this avoids training other models as part of an implicit test suite. The old `scripts/run_smoke.sh` remains JEPA-only by default and also forwards `--models` when requested.
 
 ## Actual imported data
 
@@ -60,13 +60,22 @@ Training budgets are explicit, separate fields under `training` in the JSON conf
 
 The standalone `python -m device_jepa smoke` and `smoke_real` entrypoints also require a new/empty output directory. They check this before importing data, creating a manifest or writing `data.json`; a rejected pre-existing directory is left unchanged, including when it has no manifest.
 
-All five modes run by default. Original three-mode experiments remain supported, and explicit pairs can be run for a narrower ablation:
+Use `--models` to select exactly the methods to train, evaluate and aggregate.
+It overrides the JSON `experiment.models` list. Without either, comparison
+scripts retain the explicit original-five default; adding registered models does
+not grow that default. `--models all` explicitly opts into every registered model.
+`--modes` remains a compatible alias. List names without data/GPU access or job
+submission using `bash scripts/run/submit_raw_comparison.sh --list-models`.
+The shared registry is `device_jepa/methods.py`; the resolved selection is saved
+in run configs and `experiment.json`. See [selection details](../docs/MODEL_SELECTION_ZH.md).
 
 ```bash
 # Original three-mode experiment (same dataset/config/output requirements):
-bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/legacy_compare --modes zerosim_pin zerosim_device jepa_zerosim
+bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/legacy_compare --models zerosim_pin zerosim_device jepa_zerosim
 # Device-node OP/no-OP pair only:
-bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/device_pair --modes zerosim_device zerosim_device_op
+bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/device_pair --models zerosim_device zerosim_device_op
+# A single model: no baselines are started implicitly.
+bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/jepa_only --models jepa_zerosim
 ```
 
 ## Slurm
@@ -74,7 +83,7 @@ bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/m
 For a large raw Analog-Agent dataset, import and train on the compute node in
 one allocation. The single-circuit entrypoint reads the circuit identity from
 SQLite, copies the base config, sets that circuit as the only ID circuit with
-no OOD, and reuses the existing matched five-mode runner. The default base
+no OOD, and reuses the matched runner with only the selected models. The default base
 config allows at most 30 JEPA pretraining epochs plus 50 JEPA decoder epochs, and 80
 epochs for each non-JEPA baseline, with validation early stopping, with full train-label availability. Every
 seed uses one fixed design-group partition.
@@ -100,10 +109,12 @@ observed geometry before any training starts.
 
 ```bash
 source scripts/run/cluster.env.example
+MODELS=(jepa_zerosim zerosim_device)
 for circuit in 5t_ota Opamp0; do
   DRY_RUN=0 bash scripts/run/submit_raw_comparison.sh \
     --input "runs/raw/full_data/$circuit" \
     --config configs/default.json \
+    --models "${MODELS[@]}" \
     --max-table-rows none \
     --seeds 17 29 43 \
     --device cuda

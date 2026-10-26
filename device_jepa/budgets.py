@@ -1,5 +1,6 @@
 """Explicit, independent stage budgets for matched training runs."""
 from .early_stopping import early_stopping_config
+from .methods import method_spec, validate_models
 
 
 def positive_epochs(training, key):
@@ -17,12 +18,13 @@ def comparison_epoch_budget(options, modes):
     """Fail before running any stage; do not silently rewrite a user's budget."""
     tr = options['training']
     early_stopping_config(tr)
+    modes = validate_models(modes)
     pretrain = positive_epochs(tr, 'pretrain_epochs')
     decoder = positive_epochs(tr, 'decoder_epochs')
     baseline = positive_epochs(tr, 'baseline_epochs')
-    budgets = {mode: {'pretrain_epochs': pretrain if mode == 'jepa_zerosim' else 0,
-                      'supervised_epochs': decoder if mode == 'jepa_zerosim' else baseline,
-                      'total_epochs': pretrain + decoder if mode == 'jepa_zerosim' else baseline}
+    budgets = {mode: {'pretrain_epochs': pretrain if method_spec(mode).workflow == 'jepa' else 0,
+                      'supervised_epochs': decoder if method_spec(mode).workflow == 'jepa' else baseline,
+                      'total_epochs': pretrain + decoder if method_spec(mode).workflow == 'jepa' else baseline}
                for mode in modes}
     if len({item['total_epochs'] for item in budgets.values()}) > 1:
         raise ValueError('Incompatible total training budget: '

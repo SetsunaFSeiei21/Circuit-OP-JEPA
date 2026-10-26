@@ -1,4 +1,7 @@
 {
+  "experiment": {
+    "models": ["zerosim_pin", "zerosim_device", "jepa_zerosim", "zerosim_pin_op", "zerosim_device_op"]
+  },
   "model": {
     "dim": 128,
     "heads": 8,

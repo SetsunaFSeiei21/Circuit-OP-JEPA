@@ -1,0 +1,85 @@
+{
+  "version": "0.4.4",
+  "base_commit": "d06c5ea486153130920bfa8bdfa23e9d3b21d880",
+  "scope": "Model selection, orchestration and packaging; CPU mechanics only",
+  "unit_tests": {
+    "command": "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "total": 406,
+    "passed": 402,
+    "skipped": 4,
+    "skip_reason": "CUDA hardware unavailable",
+    "million_row_reader_enabled": true
+  },
+  "selection_checks": [
+    "Each of the five registered models alone with no unselected training/evaluation artifacts",
+    "CLI selection overrides configured models, including multiple seeds",
+    "Configured OP/no-OP pair only",
+    "Unknown, empty and duplicate selections rejected",
+    "Legacy --modes alias supported; explicit all selects registry",
+    "New registration does not expand legacy or configured selection",
+    "Selected-model smoke does not implicitly run the full unit-test suite",
+    "Slurm forwards chosen models; list-models never calls sbatch"
+  ],
+  "actual_cli_runs": [
+    {
+      "name": "real_raw_single_model",
+      "models": [
+        "zerosim_device_op"
+      ],
+      "seeds": [
+        17
+      ],
+      "evaluation_splits": [
+        "test"
+      ],
+      "complete": true,
+      "model_directories": [
+        "zerosim_device_op"
+      ],
+      "checkpoints": [
+        "zerosim_device_op/seed_17/zerosim_device_op_best.pt"
+      ],
+      "evaluation_report_count": 1,
+      "training_run_count": 1,
+      "paired_rows": 0
+    },
+    {
+      "name": "shell_smoke_subset",
+      "models": [
+        "jepa_zerosim",
+        "zerosim_device"
+      ],
+      "seeds": [
+        17
+      ],
+      "evaluation_splits": [
+        "test",
+        "ood"
+      ],
+      "complete": true,
+      "model_directories": [
+        "jepa_zerosim",
+        "zerosim_device"
+      ],
+      "checkpoints": [
+        "jepa_zerosim/seed_17/decoder_best.pt",
+        "jepa_zerosim/seed_17/pretrain_best.pt",
+        "zerosim_device/seed_17/zerosim_device_best.pt"
+      ],
+      "evaluation_report_count": 4,
+      "training_run_count": 2,
+      "paired_rows": 0
+    }
+  ],
+  "package": {
+    "version": "0.4.4",
+    "verified_packaged_files": 18,
+    "catalog_imports_torch": false,
+    "sha256": "6df40be99df6137e9cbc6aafebd621a2ac5155da6a5bca13d9f978dfc9c0985a"
+  },
+  "limitations": [
+    "No CUDA hardware test executed in this environment",
+    "Slurm submission checked with dry runs and fake sbatch; no cluster job submitted",
+    "Real raw-data check used the supplied 32-sample Opamp2 source; full 60000-sample capacity not measured"
+  ]
+}

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from device_jepa.cli import _max_table_rows
-from device_jepa.comparison import MODES
+from device_jepa.methods import MODES, add_model_arguments, select_models
 from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
 from scripts.run.result_paths import create_default_output
 
@@ -54,7 +54,7 @@ def main(argv=None):
     parser.add_argument('--config', default=str(ROOT / 'configs/default.json'),
                         help='Base model/training config; dataset circuit membership is set from SQLite')
     parser.add_argument('--seeds', nargs='+', type=int, default=[17, 29, 43])
-    parser.add_argument('--modes', nargs='+', choices=MODES, default=list(MODES))
+    add_model_arguments(parser)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--max-table-rows', type=_max_table_rows, default=1_000_000,
                         help="Importer row safety limit; raise explicitly or use 'none'")
@@ -68,12 +68,11 @@ def main(argv=None):
         parser.error('Output must be new/empty; refusing overwrite or stale artifacts')
     if len(set(args.seeds)) != len(args.seeds):
         parser.error('Seeds must be unique')
-    if len(set(args.modes)) != len(args.modes):
-        parser.error('Modes must be unique')
     directory = Path(args.input).resolve()
     if not directory.is_dir():
         parser.error(f'Input must be a per-circuit directory: {directory}')
     config = copy.deepcopy(json.loads(Path(args.config).read_text()))
+    models = select_models(config, args.models)
     circuit, count = source_identity(directory)
     config['dataset'].update(train_circuits=[circuit], ood_circuits=[])
     if args.smoke:
@@ -82,7 +81,7 @@ def main(argv=None):
     from device_jepa.training import _check_options
     ModelConfig(**config['model'])
     _check_options(config)
-    comparison_epoch_budget(config, args.modes)
+    comparison_epoch_budget(config, models)
     from device_jepa.resident import require_device
     require_device(args.device)
 
@@ -94,6 +93,7 @@ def main(argv=None):
     with config_path.open('x') as handle:
         handle.write(json.dumps(config, indent=2, allow_nan=False) + '\n')
     print(f'Independent circuit: {circuit} | source samples: {count} | output: {output}', flush=True)
+    print('Selected models: ' + ', '.join(models), flush=True)
     print('Raw import runs in this process allocation; canonical data still requires full dataset memory.', flush=True)
 
     def run(command):
@@ -107,7 +107,7 @@ def main(argv=None):
     # training, and release each model's dataset allocation between methods.
     command = [sys.executable, ROOT / 'scripts/run/run_comparison.py', '--data', data_path,
                '--config', config_path, '--output', output / 'results', '--device', args.device,
-               '--seeds', *args.seeds, '--modes', *args.modes]
+               '--seeds', *args.seeds, '--models', *models]
     if args.smoke:
         command.append('--smoke')
     run(command)

@@ -72,8 +72,8 @@ class RawOrchestrationTests(unittest.TestCase):
         self.assertEqual(calls[0][calls[0].index('--max-table-rows') + 1], '1000000')
         self.assertIn(str(ROOT / 'scripts/run/run_comparison.py'), calls[1])
         self.assertEqual(calls[1][calls[1].index('--output') + 1], str(self.output / 'results'))
-        self.assertEqual(calls[1][calls[1].index('--seeds') + 1:calls[1].index('--modes')], ['17', '29', '43'])
-        self.assertEqual(calls[1][calls[1].index('--modes') + 1:], list(runner.MODES))
+        self.assertEqual(calls[1][calls[1].index('--seeds') + 1:calls[1].index('--models')], ['17', '29', '43'])
+        self.assertEqual(calls[1][calls[1].index('--models') + 1:], list(runner.MODES))
         self.assertEqual(snapshot(self.source), before)
 
     def test_smoke_and_explicit_row_limit_are_forwarded(self):
@@ -106,6 +106,22 @@ class RawOrchestrationTests(unittest.TestCase):
             self.invoke()
         self.assertTrue((self.output / 'config.json').is_file())
         self.assertFalse(shared.exists())
+
+    def test_configured_models_and_cli_override_are_forwarded_and_saved(self):
+        config = json.loads((ROOT / 'configs/default.json').read_text())
+        config['experiment'] = {'models': ['zerosim_pin_op']}
+        config_path = self.root / 'selection.json'
+        config_path.write_text(json.dumps(config))
+        for index, selected in enumerate((['zerosim_pin_op'], ['jepa_zerosim', 'zerosim_device'])):
+            output = self.root / f'selection_{index}'
+            args = ['--input', str(self.source), '--output', str(output), '--config', str(config_path)]
+            if index:
+                args += ['--models', *selected]
+            calls = self.invoke(args)
+            saved = json.loads((output / 'config.json').read_text())
+            self.assertEqual(saved['experiment']['models'], selected)
+            self.assertEqual(calls[1][calls[1].index('--models') + 1:], selected)
+            self.assertEqual(saved['dataset']['ood_circuits'], [])
 
     def test_invalid_run_does_not_allocate_default_output(self):
         shared = self.root / 'runs/gpu_full'

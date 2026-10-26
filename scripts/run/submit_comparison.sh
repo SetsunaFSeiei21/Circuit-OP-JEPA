@@ -14,6 +14,12 @@ SLURM_MAIL_USER="${SLURM_MAIL_USER:-}"
 SLURM_MAIL_TYPE="${SLURM_MAIL_TYPE:-BEGIN,END,FAIL}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export CIRCUIT_JEPA_ROOT="$PROJECT_ROOT"
+for argument in "$@"; do
+    if [[ "$argument" == --list-models ]]; then
+        export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+        exec "${JEPA_PYTHON:-python}" -m device_jepa --list-models
+    fi
+done
 [[ "$DRY_RUN" =~ ^[01]$ ]] || { echo 'DRY_RUN must be 0 or 1' >&2; exit 2; }
 [[ "$JEPA_RAW_INPUT" =~ ^[01]$ ]] || { echo 'JEPA_RAW_INPUT must be 0 or 1' >&2; exit 2; }
 [[ "$SLURM_CPUS" =~ ^[1-9][0-9]*$ && "$SLURM_GPUS" =~ ^[0-9]+$ ]] || { echo 'Invalid CPU/GPU count' >&2; exit 2; }
