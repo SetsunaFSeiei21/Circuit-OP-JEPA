@@ -22,6 +22,7 @@
     "batch_size": 16,
     "pretrain_epochs": 2,
     "decoder_epochs": 3,
+    "baseline_epochs": 5,
     "pretrain_lr": 0.001,
     "decoder_lr": 0.001,
     "weight_decay": 0.0001,

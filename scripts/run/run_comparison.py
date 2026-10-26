@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from device_jepa.comparison import MODES
+from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
 
 
 def main():
@@ -21,7 +22,7 @@ def main():
     parser.add_argument('--modes', nargs='+', choices=MODES, default=list(MODES),
                         help='Methods to run; defaults to all five. List the original three for a legacy experiment.')
     parser.add_argument('--device', default='cpu')
-    parser.add_argument('--smoke', action='store_true', help='Force exactly one epoch per phase; mechanics only')
+    parser.add_argument('--smoke', action='store_true', help='JEPA 1+1 epochs, baselines 2; mechanics only')
     args = parser.parse_args()
     data = Path(args.data).resolve()
     config = json.loads(Path(args.config).read_text())
@@ -34,10 +35,13 @@ def main():
         parser.error('Seeds must be unique')
     if len(set(args.modes)) != len(args.modes):
         parser.error('Modes must be unique')
-    out.mkdir(parents=True, exist_ok=True)
     if args.smoke:
-        for key in ('pretrain_epochs', 'decoder_epochs', 'baseline_epochs'):
-            config['training'][key] = 1
+        smoke_epochs(config)
+    from device_jepa.training import _check_options
+    _check_options(config)
+    budgets = comparison_epoch_budget(config, args.modes)
+    print('Epoch budgets (equal total): ' + json.dumps(budgets, sort_keys=True), flush=True)
+    out.mkdir(parents=True, exist_ok=True)
     def run(*parts):
         command = [sys.executable, '-m', 'device_jepa', *map(str, parts)]
         print('+ ' + ' '.join(command), flush=True)

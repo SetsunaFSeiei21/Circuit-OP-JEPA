@@ -44,9 +44,20 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual({r['node_granularity'] for r in result['paired_summary']}, {'pin', 'device'})
             self.assertEqual({r['split'] for r in result['paired_summary']}, {'test', 'ood'})
             self.assertTrue(result['complete'])
+            self.assertEqual(result['epoch_budget_policy'], 'equal_total')
+            self.assertEqual(result['total_epoch_budget'], 2)
             self.assertEqual(len(result['run_costs']), 5)
             self.assertEqual(len(result['evaluation_costs']), 10)
             for cost in result['run_costs']:
+                self.assertEqual(cost['total_epochs'], 2)
+                mode_dir = output / cost['mode'] / 'seed_17'
+                if cost['mode'] == 'jepa_zerosim':
+                    self.assertEqual(len(json.loads((mode_dir/'pretrain_history.json').read_text())), 1)
+                    self.assertEqual(len(json.loads((mode_dir/'decoder_history.json').read_text())), 1)
+                    self.assertEqual(cost['supervised_epochs'], 1)
+                else:
+                    self.assertEqual(len(json.loads((mode_dir/f"{cost['mode']}_history.json").read_text())), 2)
+                    self.assertEqual(cost['supervised_epochs'], 2)
                 self.assertEqual(cost['requires_op_at_inference'], cost['mode'] in OP_MODES)
                 self.assertEqual(set(cost['evaluation_splits']), {'test', 'ood'})
                 self.assertGreater(cost['supervised_optimizer_steps'], 0)

@@ -146,7 +146,18 @@ python -m device_jepa train_baseline --mode zerosim_device_op --data DATA --mani
 python -m device_jepa evaluate --data DATA --checkpoint CHECKPOINT --split test --output report.json
 ```
 
-正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，smoke 用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 容器保持 v2，输入契约升级为 `input_contract_version=3`：加入仅从训练集拟合的器件模型名和命名端口关联。新 manifest 要求 `design_fingerprint_version=2`，修复模型身份与正负零分组；旧 manifest 必须从原始 canonical 数据新建实验。旧输入架构仍可重建，旧容器 v1 仍不兼容；不同输入契约不能混作一组公平比较。
+正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，模型结构参数在 `model` 下，训练参数在 `training` 下。JEPA decoder 与四种非 JEPA 模型的轮数独立设置：
+
+| 配置项 | 默认值 | 控制范围 |
+| --- | ---: | --- |
+| `training.batch_size` | 32 | 每次训练迭代的样本数 |
+| `training.pretrain_epochs` | 30 | JEPA 表示预训练 |
+| `training.decoder_epochs` | 50 | JEPA 冻结 encoder 后的 decoder 训练 |
+| `training.baseline_epochs` | 80 | 四种非 JEPA 模型各自的端到端监督训练 |
+
+五模式比较按**总训练轮数**对齐：`pretrain_epochs + decoder_epochs == baseline_epochs`，默认是 JEPA 30＋50 对其他模型各 80 轮。非 JEPA 训练不再借用 `decoder_epochs`；已有自定义配置需要显式添加 `baseline_epochs`。修改 JEPA 两阶段轮数后，应同时调整基线总轮数，比较入口会在输出写入和训练前拒绝不匹配的预算。`--smoke` 将 JEPA 设为 1＋1 轮，其他模型各 2 轮。总轮数相等不代表 FLOPs、参数量、实际耗时或 OP 信息条件相同；报告继续分别记录阶段成本。
+
+smoke 配置使用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 容器保持 v2，输入契约升级为 `input_contract_version=3`：加入仅从训练集拟合的器件模型名和命名端口关联。新 manifest 要求 `design_fingerprint_version=2`，修复模型身份与正负零分组；旧 manifest 必须从原始 canonical 数据新建实验。旧输入架构仍可重建，旧容器 v1 仍不兼容；不同输入契约不能混作一组公平比较。
 
 独立审查发现的问题、逐项修复和验证范围见 [修复说明](docs/INDEPENDENT_AUDIT_FIXES_ZH.md)。0.4.1 的[边界修复](docs/BOUNDARY_FIXES_ZH.md)使 `smoke` / `smoke_real` 在任何输出写入前拒绝非空目录；训练和验证选模在标签归一化前就排除训练中没有观测的指标。正式评估仍保留全部指标。直接训练命令也会拒绝覆盖已有阶段产物；JEPA 第二阶段保留真实预训练协议与种子。导入大型 SQLite 时可显式提高 `--max-table-rows`，或用 `none` 取消行数限制；canonical 数据仍需放入内存。
 

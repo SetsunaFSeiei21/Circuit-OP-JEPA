@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from device_jepa.cli import _max_table_rows
 from device_jepa.comparison import MODES
+from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
 
 
 def source_identity(directory):
@@ -55,7 +56,7 @@ def main(argv=None):
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--max-table-rows', type=_max_table_rows, default=1_000_000,
                         help="Importer row safety limit; raise explicitly or use 'none'")
-    parser.add_argument('--smoke', action='store_true', help='One epoch per phase; does not subsample data')
+    parser.add_argument('--smoke', action='store_true', help='JEPA 1+1 epochs, baselines 2; does not subsample data')
     args = parser.parse_args(argv)
 
     output = Path(args.output).resolve()
@@ -74,12 +75,12 @@ def main(argv=None):
     circuit, count = source_identity(directory)
     config['dataset'].update(train_circuits=[circuit], ood_circuits=[])
     if args.smoke:
-        for key in ('pretrain_epochs', 'decoder_epochs', 'baseline_epochs'):
-            config['training'][key] = 1
+        smoke_epochs(config)
     from device_jepa.model import ModelConfig
     from device_jepa.training import _check_options
     ModelConfig(**config['model'])
     _check_options(config)
+    comparison_epoch_budget(config, args.modes)
 
     output.mkdir(parents=True, exist_ok=True)
     config_path, data_path = output / 'config.json', output / 'data.json'

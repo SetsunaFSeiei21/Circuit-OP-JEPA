@@ -21,7 +21,7 @@ From the repository root:
 bash scripts/smoke_test/run_smoke.sh
 ```
 
-This runs unit tests, creates explicitly synthetic data, runs all five modes with each phase capped at one epoch, then exports matched comparisons and within-seed OP/no-OP deltas. The old `scripts/run_smoke.sh` remains a JEPA-only compatibility entrypoint.
+This runs unit tests, creates explicitly synthetic data, runs JEPA for one pretraining epoch plus one decoder epoch and each of the four baselines for two epochs, then exports matched comparisons and within-seed OP/no-OP deltas. The old `scripts/run_smoke.sh` remains a JEPA-only compatibility entrypoint.
 
 ## Actual imported data
 
@@ -36,7 +36,19 @@ For a genuine multi-circuit experiment, import all circuit directories together 
 bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/my_experiment.json --output runs/real_compare --seeds 17 29 43 --device cuda
 ```
 
-Each new experiment requires a new/empty output directory. One immutable `manifest.json` fixes train/validation/test/OOD membership and `labeled_train` for all methods and seeds. `--smoke` caps pretraining, baseline and decoder phases to one epoch. Direct `pretrain`, `train_decoder` and `train_baseline` commands also reject duplicate stage artifacts or stale reports; they are not resume APIs. Stage two may use its matching stage-one output directory, including a verified labels-only dataset update. Run replacement stages in new directories, then explicitly compare their reports.
+Each new experiment requires a new/empty output directory. One immutable `manifest.json` fixes train/validation/test/OOD membership and `labeled_train` for all methods and seeds. `--smoke` sets JEPA pretraining and decoder training to one epoch each and baseline training to two epochs, preserving equal total epochs. Direct `pretrain`, `train_decoder` and `train_baseline` commands also reject duplicate stage artifacts or stale reports; they are not resume APIs. Stage two may use its matching stage-one output directory, including a verified labels-only dataset update. Run replacement stages in new directories, then explicitly compare their reports.
+
+Training budgets are explicit, separate fields under `training` in the JSON config:
+
+```json
+{
+  "pretrain_epochs": 30,
+  "decoder_epochs": 50,
+  "baseline_epochs": 80
+}
+```
+
+`decoder_epochs` controls only the frozen-encoder JEPA decoder. `baseline_epochs` controls all four non-JEPA models and is required for new baseline runs; it does not inherit the JEPA decoder value. Matched runs containing JEPA and baselines require `pretrain_epochs + decoder_epochs == baseline_epochs` before creating output files or starting training. The raw-data runner checks this before import as well. Update copied experiment configs explicitly when changing either JEPA stage. The shipped `smoke.json` uses 2 + 3 versus 5 epochs; `opamp2_smoke.json` uses 1 + 1 versus 2. Passing `--smoke` overrides either config to 1 + 1 versus 2. Equal epochs do not imply equal optimizer steps when labeled training is a subset, or equal runtime/FLOPs across architectures.
 
 The standalone `python -m device_jepa smoke` and `smoke_real` entrypoints also require a new/empty output directory. They check this before importing data, creating a manifest or writing `data.json`; a rejected pre-existing directory is left unchanged, including when it has no manifest.
 
@@ -55,8 +67,9 @@ For a large raw Analog-Agent dataset, import and train on the compute node in
 one allocation. The single-circuit entrypoint reads the circuit identity from
 SQLite, copies the base config, sets that circuit as the only ID circuit with
 no OOD, and reuses the existing matched five-mode runner. The default base
-config retains 30 pretraining epochs, 50 supervised epochs and full train-label
-availability. Every seed uses one fixed design-group partition.
+config uses 30 JEPA pretraining epochs plus 50 JEPA decoder epochs, and 80
+epochs for each non-JEPA baseline, with full train-label availability. Every
+seed uses one fixed design-group partition.
 
 Before submission, a small read-only geometry preflight can identify missing
 unit declarations or stale source netlists without constructing canonical JSON:
@@ -98,8 +111,9 @@ comparison tables are under `results/`, with tables in `results/comparison/`.
 The output must be new/empty, and raw files are read only. Import failures stop
 the job before training. Logs are under `hpc_logs/raw_run/`.
 
-This workflow does not subsample the source. `--smoke` caps training to one
-epoch per phase while importing all source samples. Explicitly raising or
+This workflow does not subsample the source. `--smoke` uses one JEPA
+pretraining epoch plus one decoder epoch and two epochs per baseline while
+importing all source samples. Explicitly raising or
 disabling the source row limit does not provide out-of-core storage: canonical
 objects, state encoding and JSON still require dataset-sized memory. Capacity
 for the user's full 60,000-point sources must be measured in their jobs.
@@ -137,7 +151,7 @@ python -m device_jepa.comparison --reports runs/real_compare/*/seed_*/*_report.j
 
 Summary/per-seed rows expose `requires_op_at_inference` and `op_training_use`; cost tables additionally expose `op_inference_use`, OP source/features/state configuration/eligibility and separate evaluation coverage and acquisition scope. Structured CSV fields are JSON-encoded. OP coverage counts original devices, not repeated pin tokens, and records samples without observed OP; missing legacy coverage stays unknown. Imported OP acquisition/simulation cost is **unknown (`null`/blank, `not_measured`)**, never silently zero. Recorded model phase timings do not include an unmeasured DC solve or imply equal end-to-end cost. Parameter counts also may increase when OP projection inputs are added. Any future measured acquisition cost must include its measurement scope and remain separate from model phase timing.
 
-Strict comparison rejects incompatible dataset/performance identity, OP/input identity, partition, labeled training IDs, target scaler, continuous-OP input scaler, metric names, evaluated IDs/targets, or incomplete seed sets across declared modes. Each OP/no-OP pair must have identical model hyperparameters, in addition to the existing device/JEPA architecture check. OP source, continuous feature names, state-feature channels, state configuration (including available mode/thresholds), and eligibility must remain constant within a mode across seeds/splits. JEPA reports preserve actual source pretraining options and both stage seeds; their pretraining protocol digest includes the actual loss and pretraining budget, independently of stage-two options. Supervised epoch count, learning rate, batch size, weight decay and gradient clipping must match; the full training configuration must remain constant within a mode across seeds (except the seed itself). This is label/epoch-budget parity, not equal compute or equal available information: JEPA pretraining cost is reported separately. It does not compare entire feature preprocessing hashes because pin/device input spaces differ. Standalone comparison can aggregate legacy three-mode reports, but missing run identity or JEPA pretraining provenance sets `strict_provenance=false` and `complete=false`, with explicit gaps even when `cohort_complete=true`. If any OP-input mode is present, all five are expected unless `--modes` declares another cohort. `--allow-partial` permits missing modes/seeds for debugging only and retains identity checks; paired rows use only the actual seed intersection. Comparison output schema is now version 3.
+Strict comparison rejects incompatible dataset/performance identity, OP/input identity, partition, labeled training IDs, target scaler, continuous-OP input scaler, metric names, evaluated IDs/targets, or incomplete seed sets across declared modes. Each OP/no-OP pair must have identical model hyperparameters, in addition to the existing device/JEPA architecture check. OP source, continuous feature names, state-feature channels, state configuration (including available mode/thresholds), and eligibility must remain constant within a mode across seeds/splits. JEPA reports preserve actual source pretraining options and both stage seeds; their pretraining protocol digest includes the actual loss and pretraining budget, independently of stage-two options. Total epoch count must match: JEPA uses the pretraining epoch count from its immutable executed source provenance plus its decoder epoch count; baselines use their independent `baseline_epochs`. The stage-two configuration cannot replace the actual pretraining budget, and the selected best-checkpoint epoch is not the number of epochs executed. Supervised learning rate, batch size, weight decay and gradient clipping must still match; the full training configuration must remain constant within a mode across seeds (except the seed itself). This is label and total-epoch-budget parity, not equal compute or equal available information: JEPA phase costs are reported separately. It does not compare entire feature preprocessing hashes because pin/device input spaces differ. Standalone comparison can aggregate legacy three-mode reports, but missing run identity, JEPA pretraining provenance or explicit baseline epoch provenance sets `strict_provenance=false` and `complete=false`, with explicit gaps even when `cohort_complete=true`. If any OP-input mode is present, all five are expected unless `--modes` declares another cohort. `--allow-partial` permits missing modes/seeds for debugging only and retains identity checks; paired rows use only the actual seed intersection. Comparison output schema is now version 4. Known unequal total epoch budgets are rejected, including in partial comparisons; historical comparisons using equal supervised epochs are not evidence of equal total epochs.
 
 Physical metrics use original dataset units. Normalized metrics use training-only target transforms and scaling, not division by test-set variance. Missing labels are excluded per metric; nonfinite predictions for observed targets fail loudly. R² is null for fewer than two observed targets or zero target variance; JSON null/blank CSV is not zero. Across-seed SD is blank for a single seed. No single grand score averages incompatible physical units. Validation, test and OOD remain separate; OOD is never a checkpoint-selection set.
 

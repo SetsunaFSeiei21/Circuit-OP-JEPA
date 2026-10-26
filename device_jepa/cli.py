@@ -153,7 +153,8 @@ def main(argv=None):
             dataset = sources[0] if len(sources) == 1 else combine_datasets(sources)
             del sources
             # Never turn a smoke request into a long experiment via custom config.
-            config["training"]["pretrain_epochs"] = config["training"]["decoder_epochs"] = 1
+            from .budgets import smoke_epochs
+            smoke_epochs(config)
             label = "REAL-DATA PIPELINE CHECK (NOT ACCURACY EVIDENCE)"
         from .states import apply_op_states
         dataset = apply_op_states(dataset, config.get("op_state"))

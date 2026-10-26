@@ -1,0 +1,181 @@
+{
+  "epoch_budget_policy": "equal_total",
+  "default_epochs": {
+    "pretrain_epochs": 30,
+    "decoder_epochs": 50,
+    "baseline_epochs": 80
+  },
+  "tests": {
+    "command": "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "tests_run": 356,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "successful": true
+  },
+  "real_smoke": {
+    "command": "python scripts/run/run_raw_comparison.py --input RAW/Opamp2 --config configs/opamp2_smoke.json --output NEW_OUTPUT --seeds 17 29 43 --device cpu --smoke",
+    "circuit": "Opamp2",
+    "samples": 32,
+    "seeds": [
+      17,
+      29,
+      43
+    ],
+    "comparison_schema_version": 4,
+    "strict_complete": true,
+    "split_counts": {
+      "train": 26,
+      "val": 3,
+      "test": 3,
+      "ood": 0,
+      "labeled_train": 26
+    },
+    "run_budgets": [
+      {
+        "mode": "zerosim_pin",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 17,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 2,
+        "supervised_optimizer_steps": 2
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 17,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 29,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 2,
+        "supervised_optimizer_steps": 2
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 29,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_pin",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "jepa_zerosim",
+        "seed": 43,
+        "pretrain_epochs": 1,
+        "supervised_epochs": 1,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 2,
+        "supervised_optimizer_steps": 2
+      },
+      {
+        "mode": "zerosim_pin_op",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      },
+      {
+        "mode": "zerosim_device_op",
+        "seed": 43,
+        "pretrain_epochs": 0,
+        "supervised_epochs": 2,
+        "total_epochs": 2,
+        "pretrain_optimizer_steps": 0,
+        "supervised_optimizer_steps": 4
+      }
+    ]
+  },
+  "source_sha256": {
+    "raw_zip": "54e16b0e3bb6ffc33e19efc5b01428e83bd672d2faa925e152223e31a6141edc",
+    "opamp2_sqlite": "f7b262d93d46f154fcc14848612eabd36cb97112892bb575eeea2f4d53b89b86"
+  },
+  "limitations": [
+    "CPU smoke verifies execution and budget accounting, not predictive accuracy or GPU performance.",
+    "Full 60000-sample import/training capacity and OOD generalization are not established.",
+    "Equal total epochs do not imply equal FLOPs or sample exposure when labeled_train is a subset."
+  ]
+}

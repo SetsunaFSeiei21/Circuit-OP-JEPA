@@ -21,7 +21,7 @@ from device_jepa.training import load_checkpoint, seed_everything, state_digest
 def tiny_options(label_fraction=1., no_ood=False):
     options = json.loads((Path(__file__).parents[1] / "configs" / "smoke.json").read_text())
     options["model"].update(dim=8, heads=2, ffn_dim=16, decoder_ffn_dim=16, dropout=0., max_devices=64)
-    options["training"].update(pretrain_epochs=1, decoder_epochs=2, batch_size=8)
+    options["training"].update(pretrain_epochs=1, decoder_epochs=2, baseline_epochs=2, batch_size=8)
     options["dataset"]["finetune_label_fraction"] = label_fraction
     if no_ood:
         options["dataset"]["train_circuits"].append("synthetic_4")
@@ -202,6 +202,8 @@ class BaselinePipelineTests(unittest.TestCase):
                 self.assertEqual(source["selection"]["split"], "val")
                 self.assertEqual(source["training_cost"]["pretrain_epochs"], 0)
                 cost = source["training_cost"]
+                self.assertEqual(cost["supervised_epochs"], 2)
+                self.assertEqual(cost["total_epochs"], 2)
                 self.assertEqual(cost["total_parameter_count"], cost["trainable_parameter_count"])
                 self.assertEqual(cost["encoder_parameter_count"] + cost["decoder_parameter_count"], cost["total_parameter_count"])
                 expected_steps = math.ceil(len(self.manifest["labeled_train"]) / self.options["training"]["batch_size"]) * 2
@@ -278,6 +280,15 @@ class BaselinePipelineTests(unittest.TestCase):
             self.assertEqual(source["training_cost"]["epochs"], 1)
             self.assertEqual(source["options"]["training"]["decoder_epochs"], 2)
             self.assertEqual(source["options"]["training"]["baseline_epochs"], 1)
+
+    def test_missing_baseline_epoch_budget_cannot_fall_back_to_decoder(self):
+        options = copy.deepcopy(self.options)
+        del options["training"]["baseline_epochs"]
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'baseline'
+            with self.assertRaisesRegex(ValueError, 'baseline_epochs.*explicit positive integer'):
+                train_baseline(self.data, self.manifest, options, output)
+            self.assertFalse(output.exists())
 
     def test_signed_target_transform_metrics_and_json_round_trip(self):
         data = copy.deepcopy(self.data)

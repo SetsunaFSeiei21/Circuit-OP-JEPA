@@ -18,6 +18,7 @@ from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_finger
                    partition_fingerprint, samples_for_split, verify_manifest, is_op_target)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
+from .budgets import positive_epochs
 
 
 def seed_everything(seed, threads=1):
@@ -68,8 +69,10 @@ def _save_json(path, value):
 
 def _check_options(options):
     tr = options["training"]
-    if tr["batch_size"] < 1 or tr["pretrain_epochs"] < 1 or tr["decoder_epochs"] < 1:
-        raise ValueError("batch_size and epochs must be positive")
+    for key in ('batch_size', 'pretrain_epochs', 'decoder_epochs'):
+        positive_epochs(tr, key)
+    if 'baseline_epochs' in tr:
+        positive_epochs(tr, 'baseline_epochs')
     for k in ("pretrain_lr", "decoder_lr", "grad_clip"):
         if tr[k] <= 0:
             raise ValueError(f"{k} must be positive")
@@ -436,6 +439,9 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                     timings={"pretrain_seconds": source["timings"]["pretrain_seconds"],
                              "supervised_seconds": time.perf_counter()-started},
                     training_cost={**source["training_cost"], "supervised_optimizer_steps": optimizer_steps,
+                                   "pretrain_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"],
+                                   "supervised_epochs": tr["decoder_epochs"],
+                                   "total_epochs": pretrain_provenance["protocol"]["training"]["pretrain_epochs"] + tr["decoder_epochs"],
                                    "labeled_train_examples": len(split_rows["train"])},
                     parameter_count={"total": sum(p.numel() for p in model.parameters()),
                                      "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),

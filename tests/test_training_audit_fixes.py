@@ -58,6 +58,10 @@ class TrainingAuditFixTests(unittest.TestCase):
             self.assertEqual(cp['pretrain_seed'], actual['options']['training']['seed'])
             self.assertEqual(cp['decoder_seed'], seed)
             self.assertEqual(cp['pretrain_provenance']['encoder_digest'], actual['encoder_digest'])
+            actual_pretrain_epochs = actual['options']['training']['pretrain_epochs']
+            self.assertEqual(cp['training_cost']['pretrain_epochs'], actual_pretrain_epochs)
+            self.assertEqual(cp['training_cost']['supervised_epochs'], 1)
+            self.assertEqual(cp['training_cost']['total_epochs'], actual_pretrain_epochs + 1)
             reports.append(evaluate(self.data, checkpoint))
         self.assertNotEqual(reports[0]['provenance']['pretraining_protocol_digest'],
                             reports[1]['provenance']['pretraining_protocol_digest'])

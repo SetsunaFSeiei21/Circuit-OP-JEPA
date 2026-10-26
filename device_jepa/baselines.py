@@ -20,6 +20,7 @@ import time
 import torch
 from torch import nn
 
+from .budgets import positive_epochs
 from .data import (device_category, fit_preprocessor, is_op_target, parameter_applicability,
                    partition_fingerprint, samples_for_split, verify_manifest, canonical_port_name)
 from .model import DeviceEncoder, OperatingPointDeviceEncoder, ModelConfig, make_decoder, masked_mse
@@ -218,9 +219,10 @@ def _collate(samples, preprocessing, mode, model_config, pin_vocab, *, performan
 def train_baseline(dataset, manifest, options, output, mode="zerosim_device", device="cpu"):
     """Train encoder+decoder only on labeled ID train; select using ID validation.
 
-    Epoch count, optimizer LR, minibatches, seed, target mask and objective match
-    JEPA's decoder training budget. This is *label-budget* parity, not equal FLOPs
-    or parameter count. No OP pretraining is run. Pin mode defaults to no learned
+    Epoch count uses an explicit baseline_epochs, independent of JEPA decoder
+    epochs. Matched runners require it to equal JEPA pretraining + decoder epochs.
+    Equal epochs and label sets do not imply equal FLOPs or parameter count.
+    No OP pretraining is run. Pin mode defaults to no learned
     terminal edge bias; set ``options['baseline']['pin_terminal_bias']=True`` to
     opt into the explicitly recorded implementation enhancement.
     """
@@ -236,9 +238,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             raise ValueError("baseline.pin_terminal_bias must be a boolean")
         effective["model"]["terminal_bias"] = terminal_bias
     tr = effective["training"]
-    epochs = tr.get("baseline_epochs", tr["decoder_epochs"])
-    if type(epochs) is not int or epochs < 1:
-        raise ValueError("baseline_epochs must be a positive integer")
+    epochs = positive_epochs(tr, "baseline_epochs")
     seed_everything(tr["seed"], tr.get("torch_threads", 1))
     prep = fit_preprocessor(dataset, manifest, include_performance=True,
                             config=effective.get("normalization"))
@@ -267,6 +267,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             "encoder_parameter_count": sum(p.numel() for p in model.encoder.parameters()),
             "decoder_parameter_count": sum(p.numel() for p in model.decoder.parameters()),
             "optimizer_steps": 0, "epochs": epochs, "pretrain_epochs": 0,
+            "supervised_epochs": epochs, "total_epochs": epochs,
             "learning_rate": tr["decoder_lr"], "batch_size": tr["batch_size"], "seed": tr["seed"]}
     checkpoint_path = output / f"{mode}_best.pt"
     history, best = [], math.inf

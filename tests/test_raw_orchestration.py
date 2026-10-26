@@ -64,6 +64,7 @@ class RawOrchestrationTests(unittest.TestCase):
         self.assertEqual(config['dataset']['ood_circuits'], [])
         self.assertEqual(config['training']['pretrain_epochs'], 30)
         self.assertEqual(config['training']['decoder_epochs'], 50)
+        self.assertEqual(config['training']['baseline_epochs'], 80)
         self.assertEqual(calls[0][1:4], ['-m', 'device_jepa', 'import_analog_agent'])
         self.assertEqual(calls[0][calls[0].index('--input') + 1], str(self.source.resolve()))
         self.assertEqual(calls[0][calls[0].index('--max-table-rows') + 1], '1000000')
@@ -77,8 +78,8 @@ class RawOrchestrationTests(unittest.TestCase):
         calls = self.invoke(self.args + ['--smoke', '--max-table-rows', 'none', '--seeds', '29',
                                         '--modes', 'zerosim_device', 'zerosim_device_op'])
         config = json.loads((self.output / 'config.json').read_text())
-        self.assertTrue(all(config['training'][k] == 1 for k in
-                            ('pretrain_epochs', 'decoder_epochs', 'baseline_epochs')))
+        self.assertEqual([config['training'][k] for k in
+                          ('pretrain_epochs', 'decoder_epochs', 'baseline_epochs')], [1, 1, 2])
         self.assertEqual(calls[0][-1], 'none')
         self.assertEqual(calls[1][-1], '--smoke')
         self.assertEqual(calls[1][calls[1].index('--seeds') + 1], '29')

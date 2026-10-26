@@ -15,7 +15,8 @@ def report(mode, seed=17, split='test'):
                                 requires_op_at_inference=mode in OP_MODES, op_input_transform_digest='op_transform',
                                 input_op_fingerprint='input', input_transform_digest='transform', performance_fingerprint='perf', target_scaler_digest='scaler',
                                 labeled_train_ids=['train1'], train_ids=['train1', 'train2'], timing={},
-                                training_config=dict(decoder_epochs=1, decoder_lr=.001, batch_size=8, weight_decay=.0001, grad_clip=1)),
+                                training_config=dict(pretrain_epochs=1, decoder_epochs=1, baseline_epochs=2,
+                                                     decoder_lr=.001, batch_size=8, weight_decay=.0001, grad_clip=1)),
                 predictions=[dict(sample_id=str(i), circuit_id='circuit', target={'gain': y},
                                   prediction={'gain': 2.0}, normalized_target={'gain': y},
                                   normalized_prediction={'gain': 2.0}) for i, y in enumerate([1.0, 3.0, None])])
@@ -269,7 +270,7 @@ class ComparisonTests(unittest.TestCase):
             output = root/'comparison'
             main(['--reports', *paths, '--output', str(output)])
             result = json.loads((output/'comparison.json').read_text())
-            self.assertEqual(result['schema_version'], 3)
+            self.assertEqual(result['schema_version'], 4)
             with (output/'evaluation_costs.csv').open() as handle:
                 costs = list(csv.DictReader(handle))
             self.assertTrue(all(row['op_acquisition_cost_seconds'] == '' for row in costs))
@@ -294,7 +295,7 @@ class ComparisonTests(unittest.TestCase):
                 compare_reports(reports)
 
     def test_reject_supervised_budget_mismatch(self):
-        for key in ('decoder_epochs', 'decoder_lr', 'batch_size', 'weight_decay', 'grad_clip'):
+        for key in ('baseline_epochs', 'decoder_lr', 'batch_size', 'weight_decay', 'grad_clip'):
             reports = [report(m) for m in MODES]
             reports[1]['provenance']['training_config'][key] *= 2
             with self.assertRaisesRegex(ValueError, 'training budget'):
