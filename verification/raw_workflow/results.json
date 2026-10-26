@@ -1,0 +1,46 @@
+{
+  "base_commit": "f3abd0b820729dd84b2d25729781501f25fbba92",
+  "date": "2026-10-26",
+  "unit_tests_passed": 335,
+  "unit_tests_skipped": 0,
+  "new_raw_orchestration_tests": 9,
+  "shell_scripts_checked": 8,
+  "end_to_end": {
+    "source": "Supplied real Opamp2",
+    "samples": 32,
+    "seeds": [
+      17
+    ],
+    "epochs_per_phase": 1,
+    "device": "cpu",
+    "modes": [
+      "zerosim_pin",
+      "zerosim_device",
+      "jepa_zerosim",
+      "zerosim_pin_op",
+      "zerosim_device_op"
+    ],
+    "complete": true,
+    "strict_provenance": true,
+    "training_cost_rows": 5,
+    "source_sqlite_sha256_unchanged": "f7b262d93d46f154fcc14848612eabd36cb97112892bb575eeea2f4d53b89b86"
+  },
+  "checks": [
+    "Raw import executes before matched training in the worker allocation.",
+    "SQL circuit identity sets the independent ID config; full training budgets are retained.",
+    "Nonempty output paths fail before writes.",
+    "Import failure stops before training.",
+    "Incomplete comparison is rejected.",
+    "Slurm preview does not call sbatch or create experiment artifacts."
+  ],
+  "limits": [
+    "No actual Slurm job was submitted by this validation.",
+    "The user-provided 60,000-point source directories were not accessible in this environment.",
+    "Memory capacity for full canonical import, OP state encoding, JSON and training remains to be measured on the cluster.",
+    "The opt-in million-row reader test is included in the full suite, not a full training capacity benchmark."
+  ],
+  "commands": [
+    "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "python scripts/run/run_raw_comparison.py --input /path/to/tmp_data/Opamp2 --config configs/opamp2_smoke.json --output /tmp/raw_workflow_check --seeds 17 --device cpu --smoke"
+  ]
+}

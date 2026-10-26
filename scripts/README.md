@@ -51,6 +51,46 @@ bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/m
 
 ## Slurm
 
+For a large raw Analog-Agent dataset, import and train on the compute node in
+one allocation. The single-circuit entrypoint reads the circuit identity from
+SQLite, copies the base config, sets that circuit as the only ID circuit with
+no OOD, and reuses the existing matched five-mode runner. The default base
+config retains 30 pretraining epochs, 50 supervised epochs and full train-label
+availability. Every seed uses one fixed design-group partition.
+
+```bash
+source scripts/run/cluster.env.example
+RUN_ID=$(date +%Y%m%d_%H%M%S)
+for circuit in 5t_ota Opamp0; do
+  DRY_RUN=0 bash scripts/run/submit_raw_comparison.sh \
+    --input "runs/raw/full_data/$circuit" \
+    --config configs/default.json \
+    --output "runs/independent_${RUN_ID}/$circuit" \
+    --max-table-rows none \
+    --seeds 17 29 43 \
+    --device cuda
+done
+```
+
+This submits two independent jobs (the example cluster preset requests one GPU
+and 80 GB host RAM per job). Use `DRY_RUN=1` to preview instead. Each job writes
+`config.json` and `data.json` at its output root; trained checkpoints, split and
+comparison tables are under `results/`, with tables in `results/comparison/`.
+The output must be new/empty, and raw files are read only. Import failures stop
+the job before training. Logs are under `hpc_logs/raw_run/`.
+
+This workflow does not subsample the source. `--smoke` caps training to one
+epoch per phase while importing all source samples. Explicitly raising or
+disabling the source row limit does not provide out-of-core storage: canonical
+objects, state encoding and JSON still require dataset-sized memory. Capacity
+for the user's full 60,000-point sources must be measured in their jobs.
+
+Single-circuit results are ID experiments. For later joint training with an
+OOD circuit, import the chosen source directories together and use the original
+`submit_comparison.sh` with an explicit multi-circuit dataset config. The OOD
+circuit must be excluded from pretraining, fitted transforms, supervised
+training and checkpoint selection.
+
 ```bash
 # Preview only, without sbatch or directory creation:
 SLURM_ACCOUNT=b_phzhwu SLURM_PARTITION=ex01A800 bash scripts/run/submit_comparison.sh --data /absolute/data.json --config /absolute/config.json --output /absolute/new_results --device cuda
