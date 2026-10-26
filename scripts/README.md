@@ -117,7 +117,13 @@ and 80 GB host RAM per job). Use `DRY_RUN=1` to preview instead. Each job writes
 `config.json` and `data.json` at its output root; trained checkpoints, split and
 comparison tables are under `results/`, with tables in `results/comparison/`.
 The output must be new/empty, and raw files are read only. Import failures stop
-the job before training. Logs are under `hpc_logs/raw_run/`.
+the job before training. Logs are under `hpc_logs/raw_run/` by default. Set
+`JEPA_LOG_DIR` to an absolute directory to share a fixed log location between
+worktrees, for example `export JEPA_LOG_DIR=/path/to/original/Circuit-OP-JEPA/hpc_logs/gpu_full`.
+Both canonical and raw submission scripts use this exact base directory, adding
+only the timestamp/PID folder and job-ID filenames; `JEPA_JOB_KIND` still controls
+the job name. Dry runs create no log directories. This setting applies at
+submission and does not move logs from already submitted jobs.
 
 This workflow does not subsample the source. `--smoke` uses one JEPA
 pretraining epoch plus one decoder epoch and two epochs per baseline while

@@ -18,7 +18,10 @@ export CIRCUIT_JEPA_ROOT="$PROJECT_ROOT"
 [[ "$JEPA_RAW_INPUT" =~ ^[01]$ ]] || { echo 'JEPA_RAW_INPUT must be 0 or 1' >&2; exit 2; }
 [[ "$SLURM_CPUS" =~ ^[1-9][0-9]*$ && "$SLURM_GPUS" =~ ^[0-9]+$ ]] || { echo 'Invalid CPU/GPU count' >&2; exit 2; }
 (( $# > 0 )) || { echo 'Usage: submit_comparison.sh --data FILE --config FILE --output DIR [--seeds 17 29 43] [--device cuda]' >&2; exit 2; }
-LOG_DIR="$PROJECT_ROOT/hpc_logs/${JEPA_JOB_KIND:-run}/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# An explicit base directory lets separate worktrees share the same log folder.
+JEPA_LOG_DIR="${JEPA_LOG_DIR:-$PROJECT_ROOT/hpc_logs/${JEPA_JOB_KIND:-run}}"
+[[ "$JEPA_LOG_DIR" == /* ]] || { echo 'JEPA_LOG_DIR must be an absolute directory' >&2; exit 2; }
+LOG_DIR="$JEPA_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 OPTIONS=(--parsable --job-name="circuit-jepa-${JEPA_JOB_KIND:-run}" --chdir="$PROJECT_ROOT"
     --output="$LOG_DIR/%j.out" --error="$LOG_DIR/%j.err" --nodes=1 --ntasks=1
     --ntasks-per-node=1 --cpus-per-task="$SLURM_CPUS" --mem="$SLURM_MEM" --time="$SLURM_TIME" --export=ALL)
