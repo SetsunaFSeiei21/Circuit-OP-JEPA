@@ -23,7 +23,7 @@ from torch import nn
 from .data import (device_category, fit_preprocessor, is_op_target, parameter_applicability,
                    partition_fingerprint, samples_for_split, verify_manifest, canonical_port_name)
 from .model import DeviceEncoder, OperatingPointDeviceEncoder, ModelConfig, make_decoder, masked_mse
-from .tensors import (_fill, collate_samples, denormalize, to_device, evaluation_targets,
+from .tensors import (_fill, _performance_metric_mask, collate_samples, denormalize, to_device, evaluation_targets,
                       _identity_vocabularies, _model_identity, _named_port_nets)
 from .training import (_batches, _check_dataset_options, _check_options, _metrics,
                        _provenance, _save_json, _prepare_stage_output,
@@ -84,7 +84,8 @@ def _pin_tokens(sample, terminal_names, input_contract_version=3):
 
 
 def collate_pin_samples(samples, preprocessing, pin_vocab,
-                        include_performance=True, max_tokens=None, include_op=False):
+                        include_performance=True, max_tokens=None, include_op=False, *,
+                        performance_metric_mask=None):
     """Tensorize canonical device samples as ports followed by device/pin tokens.
 
     ``max_tokens`` (the model config's ``max_devices``) includes external ports
@@ -106,6 +107,7 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
     pn, mn, tn = (spec[k] for k in ("parameter_names", "metric_names", "terminal_names"))
     rows = [_pin_tokens(sample, tn, preprocessing.get("input_contract_version", 1)) for sample in samples]
     b, n, p, m, t = len(rows), max(map(len, rows)), len(pn), len(mn), len(tn)
+    selected_metrics = _performance_metric_mask(performance_metric_mask, m, include_performance)
     if max_tokens is not None and n > max_tokens:
         raise ValueError(f"{n} pin/port tokens exceed max_tokens={max_tokens} (max_devices); no truncation is allowed")
     batch = {"device_types": torch.zeros(b, n, dtype=torch.long),
@@ -166,7 +168,8 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
                         batch["edge_roles"][bi, ni, nj, ti[token["terminal"]] * t + ti[other["terminal"]]] = 1
         if include_performance:
             _fill(batch["performance"][bi], batch["performance_mask"][bi],
-                  sample.get("performance", {}), mn, preprocessing["performance"])
+                  sample.get("performance", {}), mn, preprocessing["performance"],
+                  feature_mask=selected_metrics)
     return batch
 
 
@@ -202,12 +205,14 @@ def _make_model(mode, model_config, preprocessing, pin_vocab=None):
                                       len(preprocessing["feature_spec"]["metric_names"])))
 
 
-def _collate(samples, preprocessing, mode, model_config, pin_vocab):
+def _collate(samples, preprocessing, mode, model_config, pin_vocab, *, performance_metric_mask=None):
     if mode in PIN_MODES:
         return collate_pin_samples(samples, preprocessing, pin_vocab,
-                                   max_tokens=model_config["max_devices"], include_op=mode in OP_INPUT_MODES)
+                                   max_tokens=model_config["max_devices"], include_op=mode in OP_INPUT_MODES,
+                                   performance_metric_mask=performance_metric_mask)
     return collate_samples(samples, preprocessing, include_op=mode in OP_INPUT_MODES,
-                           include_performance=True, include_op_states=False)
+                           include_performance=True, include_op_states=False,
+                           performance_metric_mask=performance_metric_mask)
 
 
 def train_baseline(dataset, manifest, options, output, mode="zerosim_device", device="cpu"):
@@ -244,6 +249,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     output = _prepare_stage_output(output, mode, dataset, manifest)
     manifest_path = output / "manifest.json"
     selection_metrics = _selection_metric_names(prep)
+    selected_metric_mask = [count > 0 for count in prep["performance"]["count"]]
     pin_vocab = fit_pin_vocabulary(dataset, manifest, prep.get("input_contract_version", 1)) if mode in PIN_MODES else None
     model = _make_model(mode, effective["model"], prep, pin_vocab).to(device)
     initial_encoder_digest, initial_decoder_digest = state_digest(model.encoder), state_digest(model.decoder)
@@ -270,7 +276,8 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
             model.train(phase == "train")
             total, count, steps = 0.0, 0, 0
             for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
-                batch = to_device(_collate(samples, prep, mode, effective["model"], pin_vocab), device)
+                batch = to_device(_collate(samples, prep, mode, effective["model"], pin_vocab,
+                                          performance_metric_mask=selected_metric_mask), device)
                 if mode not in OP_INPUT_MODES and any(key.startswith("op") for key in batch):
                     raise AssertionError("Supervised reference batches must not contain OP inputs")
                 mask = _supervised_metric_mask(batch["performance_mask"], prep)

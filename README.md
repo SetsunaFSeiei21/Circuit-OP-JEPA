@@ -146,7 +146,7 @@ python -m device_jepa evaluate --data DATA --checkpoint CHECKPOINT --split test 
 
 正式多电路实验请修改配置，不要把单电路重复复制成五个电路。默认训练配置在 `configs/default.json`，smoke 用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 容器保持 v2，输入契约升级为 `input_contract_version=3`：加入仅从训练集拟合的器件模型名和命名端口关联。新 manifest 要求 `design_fingerprint_version=2`，修复模型身份与正负零分组；旧 manifest 必须从原始 canonical 数据新建实验。旧输入架构仍可重建，旧容器 v1 仍不兼容；不同输入契约不能混作一组公平比较。
 
-独立审查发现的问题、逐项修复和验证范围见 [修复说明](docs/INDEPENDENT_AUDIT_FIXES_ZH.md)。直接训练命令也会拒绝覆盖已有阶段产物；JEPA 第二阶段保留真实预训练协议与种子，验证选模只使用训练中有观测标签的指标。导入大型 SQLite 时可显式提高 `--max-table-rows`，或用 `none` 取消行数限制；canonical 数据仍需放入内存。
+独立审查发现的问题、逐项修复和验证范围见 [修复说明](docs/INDEPENDENT_AUDIT_FIXES_ZH.md)。0.4.1 的[边界修复](docs/BOUNDARY_FIXES_ZH.md)使 `smoke` / `smoke_real` 在任何输出写入前拒绝非空目录；训练和验证选模在标签归一化前就排除训练中没有观测的指标。正式评估仍保留全部指标。直接训练命令也会拒绝覆盖已有阶段产物；JEPA 第二阶段保留真实预训练协议与种子。导入大型 SQLite 时可显式提高 `--max-table-rows`，或用 `none` 取消行数限制；canonical 数据仍需放入内存。
 
 ## 代码说明与建议审查顺序
 

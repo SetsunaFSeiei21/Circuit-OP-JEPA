@@ -136,6 +136,11 @@ def main(argv=None):
     from .training import evaluate, pretrain, seed_everything, train_decoder
     if args.command in {"smoke", "smoke_real"}:
         output = Path(args.output)
+        # Smoke owns the whole experiment directory. Reject existing artifacts
+        # before creating a manifest or replacing data; the stage-level guard
+        # runs later and cannot undo those earlier writes.
+        if output.exists() and (not output.is_dir() or any(output.iterdir())):
+            raise ValueError("Smoke output must be a new or empty directory; refusing to overwrite existing artifacts")
         output.mkdir(parents=True, exist_ok=True)
         default = "smoke.json" if args.command == "smoke" else "opamp2_smoke.json"
         config = _read(args.config) if args.config else json.loads(files("device_jepa").joinpath("defaults", default).read_text())

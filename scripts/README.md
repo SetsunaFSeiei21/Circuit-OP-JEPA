@@ -38,6 +38,8 @@ bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/m
 
 Each new experiment requires a new/empty output directory. One immutable `manifest.json` fixes train/validation/test/OOD membership and `labeled_train` for all methods and seeds. `--smoke` caps pretraining, baseline and decoder phases to one epoch. Direct `pretrain`, `train_decoder` and `train_baseline` commands also reject duplicate stage artifacts or stale reports; they are not resume APIs. Stage two may use its matching stage-one output directory, including a verified labels-only dataset update. Run replacement stages in new directories, then explicitly compare their reports.
 
+The standalone `python -m device_jepa smoke` and `smoke_real` entrypoints also require a new/empty output directory. They check this before importing data, creating a manifest or writing `data.json`; a rejected pre-existing directory is left unchanged, including when it has no manifest.
+
 All five modes run by default. Original three-mode experiments remain supported, and explicit pairs can be run for a narrower ablation:
 
 ```bash

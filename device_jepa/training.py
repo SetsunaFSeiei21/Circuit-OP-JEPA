@@ -361,6 +361,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         raise ValueError("No requested metric has an observed labeled-train target")
     unobserved_metrics = [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count]
     selection_metrics = _selection_metric_names(prep)
+    selected_metric_mask = [count > 0 for count in prep["performance"]["count"]]
     output = _prepare_stage_output(output, "decoder", dataset, manifest, source=source)
     pretrain_provenance = _pretraining_provenance(source)
     encoder = encoder_from_metadata(source["model_config"], prep)
@@ -384,7 +385,8 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
             total, count = 0.0, 0
             for samples in _batches(rows, tr["batch_size"], tr["seed"] + epoch if phase == "train" else None):
                 # OP is not even loaded into stage-2 tensors.
-                batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True), device)
+                batch = to_device(collate_samples(samples, prep, include_op=False, include_performance=True,
+                                                 performance_metric_mask=selected_metric_mask), device)
                 mask = _supervised_metric_mask(batch["performance_mask"], prep)
                 if not mask.any():
                     continue

@@ -43,14 +43,35 @@ def _named_port_nets(sample, port_vocab):
     return nets
 
 
+def _performance_metric_mask(selection, num_metrics, include_performance):
+    """Validate an explicit label selection before reading or converting labels.
+
+    Training may select only metrics supported by its fitted targets. The
+    default remains all metrics so reporting does not silently hide labels.
+    """
+    if selection is None:
+        return None
+    if not include_performance:
+        raise ValueError("performance_metric_mask requires include_performance=True")
+    if isinstance(selection, torch.Tensor):
+        if selection.dtype != torch.bool or selection.ndim != 1:
+            raise ValueError("performance_metric_mask must be a one-dimensional boolean mask")
+        selection = selection.detach().cpu().tolist()
+    if (not isinstance(selection, (list, tuple)) or len(selection) != num_metrics
+            or any(type(value) is not bool for value in selection)):
+        raise ValueError("performance_metric_mask must contain one boolean per metric")
+    return tuple(selection)
+
+
 def collate_samples(samples, preprocessing, include_op=True, include_performance=False,
-                    include_op_states=True):
+                    include_op_states=True, *, performance_metric_mask=None):
     if not samples:
         raise ValueError("Cannot collate an empty batch")
     spec = preprocessing["feature_spec"]
     pn, on, mn, tn = (spec[k] for k in ("parameter_names", "op_names", "metric_names", "terminal_names"))
     b, n = len(samples), max(len(s["devices"]) for s in samples)
     p, o, m, t = len(pn), len(on), len(mn), len(tn)
+    selected_metrics = _performance_metric_mask(performance_metric_mask, m, include_performance)
     batch = {
         "device_types": torch.zeros(b, n, dtype=torch.long),
         "device_categories": torch.zeros(b, n, dtype=torch.long),
@@ -124,12 +145,17 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
                     batch["edge_roles"][bi, ni, nj, ti * t + tj] = 1
         if include_performance:
             _fill(batch["performance"][bi], batch["performance_mask"][bi],
-                  sample.get("performance", {}), mn, preprocessing["performance"])
+                  sample.get("performance", {}), mn, preprocessing["performance"],
+                  feature_mask=selected_metrics)
     return batch
 
 
-def _fill(values, mask, mapping, names, stats):
+def _fill(values, mask, mapping, names, stats, *, feature_mask=None):
     for i, name in enumerate(names):
+        # Inactive labels must not undergo normalization or float32 conversion:
+        # even a finite physical value can overflow before the loss masks it.
+        if feature_mask is not None and not feature_mask[i]:
+            continue
         value = mapping.get(name)
         if value is not None:
             normalized = transform_value(float(value), stats, i)
