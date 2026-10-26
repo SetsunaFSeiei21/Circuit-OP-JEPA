@@ -1,0 +1,230 @@
+{
+  "version": "0.4.5",
+  "base_commit": "a98263217fcb956aac850e0ae220d122ed491f28",
+  "scope": "Topology + continuous DC OP input ablations; CPU mechanics, not predictive-quality evidence",
+  "new_models": [
+    "zerosim_pin_op_only",
+    "zerosim_device_op_only"
+  ],
+  "default_model_count": 5,
+  "registered_model_count": 7,
+  "unit_tests": {
+    "command": "RUN_ADAPTER_SCALE_TEST=1 python -m unittest discover -s tests -v",
+    "total": 415,
+    "passed": 410,
+    "skipped": 5,
+    "duration_seconds": 31.9,
+    "skip_reason": "CUDA hardware unavailable",
+    "million_row_reader_enabled": true
+  },
+  "input_boundary_checks": [
+    "No design-value, observed-mask or applicability tensors in scalar or resident batches",
+    "Poisoned raw design values are not read by OP-only collators or caches",
+    "Predictions unchanged by injected design tensors/masks or categorical OP states",
+    "Predictions respond to continuous OP, OP observation masks and topology changes",
+    "Gradients reach OP projection and topology embeddings",
+    "Retained backbone/decoder initial weights exactly match the full-OP model at the same seed",
+    "Design embedding and value projection parameters are absent, with lower reported parameter counts",
+    "Explicit OP geometry fields are rejected before stage output writes",
+    "Checkpoint/report input-contract tampering is rejected",
+    "Corresponding full-OP/OP-only model configurations must match in strict comparisons",
+    "Each registered model can be selected alone without other model artifacts"
+  ],
+  "cli_runs": [
+    {
+      "name": "real_Opamp2_four_OP_models",
+      "models": [
+        "zerosim_pin_op",
+        "zerosim_pin_op_only",
+        "zerosim_device_op",
+        "zerosim_device_op_only"
+      ],
+      "seeds": [
+        17,
+        29
+      ],
+      "evaluation_splits": [
+        "test"
+      ],
+      "complete": true,
+      "strict_provenance": true,
+      "checkpoint_count": 8,
+      "evaluation_report_count": 8,
+      "training_run_count": 8,
+      "paired_row_count": 0,
+      "models_contracts": {
+        "zerosim_pin_op": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 44897,
+            "trainable": 44897,
+            "encoder": 30688,
+            "decoder": 14209
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_pin_op_only": {
+          "uses_design_parameters": false,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 44673,
+            "trainable": 44673,
+            "encoder": 30464,
+            "decoder": 14209
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_device_op": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 44657,
+            "trainable": 44657,
+            "encoder": 30448,
+            "decoder": 14209
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_device_op_only": {
+          "uses_design_parameters": false,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 44433,
+            "trainable": 44433,
+            "encoder": 30224,
+            "decoder": 14209
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        }
+      }
+    },
+    {
+      "name": "synthetic_all_seven",
+      "models": [
+        "zerosim_pin",
+        "zerosim_device",
+        "jepa_zerosim",
+        "zerosim_pin_op",
+        "zerosim_device_op",
+        "zerosim_pin_op_only",
+        "zerosim_device_op_only"
+      ],
+      "seeds": [
+        17
+      ],
+      "evaluation_splits": [
+        "test",
+        "ood"
+      ],
+      "complete": true,
+      "strict_provenance": true,
+      "checkpoint_count": 8,
+      "evaluation_report_count": 14,
+      "training_run_count": 7,
+      "paired_row_count": 56,
+      "models_contracts": {
+        "zerosim_pin": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": false,
+          "parameter_count": {
+            "total": 39425,
+            "trainable": 39425,
+            "encoder": 25440,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_device": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": false,
+          "parameter_count": {
+            "total": 39281,
+            "trainable": 39281,
+            "encoder": 25296,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "jepa_zerosim": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": false,
+          "parameter_count": {
+            "total": 39281,
+            "trainable": 13985,
+            "encoder": 25296
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_pin_op": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 39617,
+            "trainable": 39617,
+            "encoder": 25632,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_device_op": {
+          "uses_design_parameters": true,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 39473,
+            "trainable": 39473,
+            "encoder": 25488,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_pin_op_only": {
+          "uses_design_parameters": false,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 39425,
+            "trainable": 39425,
+            "encoder": 25440,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        },
+        "zerosim_device_op_only": {
+          "uses_design_parameters": false,
+          "requires_op_at_inference": true,
+          "parameter_count": {
+            "total": 39281,
+            "trainable": 39281,
+            "encoder": 25296,
+            "decoder": 13985
+          },
+          "actual_total_epochs": 2,
+          "planned_total_epochs": 2
+        }
+      }
+    }
+  ],
+  "package": {
+    "version": "0.4.5",
+    "wheel": "device_jepa_demo-0.4.5-py3-none-any.whl",
+    "sha256": "9997bfd8aa49f60361c837ff6f23c43de9f86e2820234d69c9e0387cf3464354",
+    "matched_source_files": 18
+  },
+  "limitations": [
+    "CUDA tests were skipped; no GPU throughput or memory claim",
+    "Real input smoke uses 32 Opamp2 samples and short training, not the full 60000-point datasets",
+    "Synthetic OOD checks orchestration only; it does not demonstrate real cross-circuit generalization",
+    "The million-row reader check does not validate full import/training memory capacity",
+    "Removed design projections change parameter count; the ablation retains backbone configuration, not equal total parameter count"
+  ]
+}

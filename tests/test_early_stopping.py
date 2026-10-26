@@ -11,7 +11,8 @@ from unittest.mock import patch
 import torch
 
 from device_jepa import baselines, training
-from device_jepa.comparison import MODES, compare_reports
+from device_jepa.comparison import compare_reports
+from device_jepa.methods import DEFAULT_MODELS as MODES
 from device_jepa.data import build_manifest, synthetic_dataset
 from device_jepa.early_stopping import (EarlyStopping, PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
                                        early_stopping_config, executed_epochs)

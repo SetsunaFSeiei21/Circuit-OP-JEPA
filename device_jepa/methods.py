@@ -14,6 +14,8 @@ class Method:
     requires_op_at_inference: bool
     description: str
     paired_with: str | None = None
+    uses_design_parameters: bool = True
+    backbone_reference: str | None = None
 
     def best_checkpoint(self, name):
         return 'decoder_best.pt' if self.workflow == 'jepa' else f'{name}_best.pt'
@@ -25,6 +27,10 @@ METHODS = {
     'jepa_zerosim': Method('jepa', 'device', False, 'OP alignment pretraining, then frozen-encoder decoder'),
     'zerosim_pin_op': Method('baseline', 'pin', True, 'Pin-node model with continuous DC OP inputs', 'zerosim_pin'),
     'zerosim_device_op': Method('baseline', 'device', True, 'Device-node model with continuous DC OP inputs', 'zerosim_device'),
+    'zerosim_pin_op_only': Method('baseline', 'pin', True, 'Topology + DC OP only; no design-parameter inputs',
+                                 uses_design_parameters=False, backbone_reference='zerosim_pin_op'),
+    'zerosim_device_op_only': Method('baseline', 'device', True, 'Topology + DC OP only; no design-parameter inputs',
+                                    uses_design_parameters=False, backbone_reference='zerosim_device_op'),
 }
 
 # This compatibility default is deliberately explicit, never tuple(METHODS).
@@ -36,8 +42,11 @@ MODES = tuple(METHODS)
 BASELINE_MODES = tuple(name for name, method in METHODS.items() if method.workflow == 'baseline')
 PIN_MODES = tuple(name for name, method in METHODS.items() if method.node_granularity == 'pin')
 OP_MODES = tuple(name for name, method in METHODS.items() if method.requires_op_at_inference)
+OP_ONLY_MODES = tuple(name for name, method in METHODS.items() if not method.uses_design_parameters)
 OP_PAIRS = tuple((method.node_granularity, method.paired_with, name)
                  for name, method in METHODS.items() if method.paired_with is not None)
+MATCHED_BACKBONES = tuple((method.backbone_reference, name)
+                         for name, method in METHODS.items() if method.backbone_reference is not None)
 
 
 def method_spec(name):
@@ -74,8 +83,8 @@ def model_catalog():
     rows = ['Available models (choose with --models NAME [NAME ...]):']
     for name, method in METHODS.items():
         op = 'yes' if method.requires_op_at_inference else 'no'
-        rows.append(f'  {name:<20} OP at inference: {op:<3} | {method.description}')
-    rows.append('  all                  Explicitly select every registered model')
+        rows.append(f'  {name:<24} OP at inference: {op:<3} | {method.description}')
+    rows.append('  all                      Explicitly select every registered model')
     return '\n'.join(rows)
 
 

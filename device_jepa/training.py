@@ -20,6 +20,7 @@ from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_finger
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
 from .budgets import positive_epochs
+from .methods import OP_MODES, method_spec
 from .early_stopping import (EarlyStopping, PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
                              early_stopping_config, executed_epochs)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device, deterministic_workspace
@@ -355,9 +356,12 @@ def load_checkpoint(path):
                 raise ValueError(f"Checkpoint {key} schema mismatch")
             if prep.get("fit_ids", {}).get(fit_key) != train_ids:
                 raise ValueError(f"Checkpoint {key} was not fitted exclusively on the ID training partition")
-    if checkpoint.get("mode") in {"zerosim_pin_op", "zerosim_device_op"}:
+    if checkpoint.get("mode") in OP_MODES:
         if not checkpoint.get("requires_op_at_inference") or not checkpoint.get("op_inputs_used"):
             raise ValueError("Direct OP checkpoint must declare its training and inference OP requirement")
+        expected_design = method_spec(checkpoint['mode']).uses_design_parameters
+        if checkpoint.get('uses_design_parameters', True) is not expected_design:
+            raise ValueError('Checkpoint uses_design_parameters contradicts its model input contract')
     pretraining = checkpoint.get("pretrain_provenance")
     if pretraining is not None:
         if (pretraining.get("protocol_digest") != _json_digest(pretraining.get("protocol"))
@@ -609,7 +613,8 @@ def report_provenance(source, dataset, rows):
     performance_digest = _json_digest([{ "sample_id": row["sample_id"], "performance": row["performance"]}
                                        for row in sorted(dataset["samples"], key=lambda r: r["sample_id"])])
     mode = source.get("mode", "jepa_zerosim")
-    uses_op_input = mode in {"zerosim_pin_op", "zerosim_device_op"}
+    uses_op_input = mode in OP_MODES
+    uses_design = method_spec(mode).uses_design_parameters
     uses_op = uses_op_input or mode == "jepa_zerosim"
     op_information = {
         "training_use": "input" if uses_op_input else "pretraining_target" if uses_op else "none",
@@ -640,6 +645,7 @@ def report_provenance(source, dataset, rows):
     provenance = {
         "mode": mode, "backend": backend, "seed": source["options"]["training"]["seed"],
         "requires_op_at_inference": uses_op_input, "op_information": op_information,
+        "uses_design_parameters": uses_design,
         "input_contract_version": prep.get("input_contract_version", 1),
         "tensor_pipeline": source.get('tensor_pipeline', 'legacy_scalar'),
         "op_input_transform_digest": _json_digest({"op_names": prep["feature_spec"]["op_names"], "op": prep["op"]}),
@@ -677,6 +683,7 @@ def report_provenance(source, dataset, rows):
     }
     return {"mode": mode, "backend": backend, "seed": provenance["seed"],
             "requires_op_at_inference": uses_op_input, "op_information": op_information,
+            "uses_design_parameters": uses_design,
             "data_fingerprint": manifest["dataset_fingerprint"],
             "partition_fingerprint": source["partition_fingerprint"],
             "metric_preprocessing_fingerprint": target_digest,

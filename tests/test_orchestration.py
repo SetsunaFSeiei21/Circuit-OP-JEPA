@@ -11,7 +11,8 @@ from unittest.mock import patch
 from device_jepa.cli import main as cli
 from device_jepa.data import synthetic_dataset
 from device_jepa.states import apply_op_states
-from device_jepa.comparison import MODES, LEGACY_MODES, OP_MODES
+from device_jepa.comparison import LEGACY_MODES, OP_MODES
+from device_jepa.methods import DEFAULT_MODELS as MODES
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('comparison_runner', ROOT/'scripts/run/run_comparison.py')

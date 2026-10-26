@@ -20,6 +20,7 @@ spec = importlib.util.spec_from_file_location('raw_runner', ROOT / 'scripts/run/
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 from scripts.run import result_paths
+from device_jepa.methods import DEFAULT_MODELS
 
 
 def snapshot(root):
@@ -73,7 +74,7 @@ class RawOrchestrationTests(unittest.TestCase):
         self.assertIn(str(ROOT / 'scripts/run/run_comparison.py'), calls[1])
         self.assertEqual(calls[1][calls[1].index('--output') + 1], str(self.output / 'results'))
         self.assertEqual(calls[1][calls[1].index('--seeds') + 1:calls[1].index('--models')], ['17', '29', '43'])
-        self.assertEqual(calls[1][calls[1].index('--models') + 1:], list(runner.MODES))
+        self.assertEqual(calls[1][calls[1].index('--models') + 1:], list(DEFAULT_MODELS))
         self.assertEqual(snapshot(self.source), before)
 
     def test_smoke_and_explicit_row_limit_are_forwarded(self):

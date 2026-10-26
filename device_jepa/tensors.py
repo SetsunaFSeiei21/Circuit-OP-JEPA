@@ -64,7 +64,7 @@ def _performance_metric_mask(selection, num_metrics, include_performance):
 
 
 def collate_samples(samples, preprocessing, include_op=True, include_performance=False,
-                    include_op_states=True, *, performance_metric_mask=None):
+                    include_op_states=True, *, performance_metric_mask=None, include_parameters=True):
     if not samples:
         raise ValueError("Cannot collate an empty batch")
     spec = preprocessing["feature_spec"]
@@ -76,15 +76,16 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
         "device_types": torch.zeros(b, n, dtype=torch.long),
         "device_categories": torch.zeros(b, n, dtype=torch.long),
         "device_mask": torch.zeros(b, n, dtype=torch.bool),
-        "parameters": torch.zeros(b, n, p),
-        "parameter_mask": torch.zeros(b, n, p, dtype=torch.bool),
-        "parameter_applicability": torch.zeros(b, n, p, dtype=torch.bool),
         "adjacency": torch.zeros(b, n, n, dtype=torch.bool),
         "edge_roles": torch.zeros(b, n, n, t * t),
         "port_roles": torch.zeros(b, n, t),
         "sample_ids": [s["sample_id"] for s in samples],
         "device_ids": [],
     }
+    if include_parameters:
+        batch.update(parameters=torch.zeros(b, n, p),
+                     parameter_mask=torch.zeros(b, n, p, dtype=torch.bool),
+                     parameter_applicability=torch.zeros(b, n, p, dtype=torch.bool))
     model_vocab, port_vocab = _identity_vocabularies(preprocessing)
     if model_vocab is not None:
         batch.update(device_models=torch.zeros(b, n, dtype=torch.long),
@@ -115,9 +116,10 @@ def collate_samples(samples, preprocessing, include_op=True, include_performance
             batch["device_categories"][bi, ni] = preprocessing.get("device_category_vocab", {}).get(device_category(device), 0)
             if model_vocab is not None:
                 batch["device_models"][bi, ni] = _model_identity(device, model_vocab)
-            batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(device, pn))
-            _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
-                  device.get("parameters", {}), pn, preprocessing["parameters"])
+            if include_parameters:
+                batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(device, pn))
+                _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
+                      device.get("parameters", {}), pn, preprocessing["parameters"])
             if include_op:
                 batch["op_target_mask"][bi, ni] = is_op_target(device)
                 if is_op_target(device):

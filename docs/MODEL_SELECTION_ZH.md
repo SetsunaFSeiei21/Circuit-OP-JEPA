@@ -1,4 +1,4 @@
-# 按模型选择训练与评估（0.4.4）
+# 按模型选择训练与评估（0.4.5）
 
 `--models` 指定本次实验唯一的模型名单。原始数据入口、canonical 数据入口、Slurm 提交、smoke 和结果汇总共享模型注册表 `device_jepa/methods.py`。旧参数 `--modes` 是兼容别名。
 
@@ -50,6 +50,8 @@ python -m device_jepa --list-models
 | `jepa_zerosim` | OP 对齐预训练，再冻结 encoder 训练 decoder | 否 |
 | `zerosim_pin_op` | pin 节点监督训练，输入连续 OP | 是 |
 | `zerosim_device_op` | device 节点监督训练，输入连续 OP | 是 |
+| `zerosim_pin_op_only` | pin 节点监督训练，仅拓扑 + 连续 OP | 是 |
+| `zerosim_device_op_only` | device 节点监督训练，仅拓扑 + 连续 OP | 是 |
 
 长期使用同一名单时，在训练 JSON 中添加顶层字段（`model` 仍用于设置网络结构参数）：
 
@@ -64,6 +66,38 @@ python -m device_jepa --list-models
 优先级是 **命令行 `--models` > `experiment.models` > 兼容默认名单**。当前 `configs/default.json` 明确列出原有五个模型；旧配置缺少该字段时，比较脚本保持原有五个模型。新增注册项不会扩展这份默认名单。只有显式使用 `--models all` 才选择当前注册的全部模型。
 
 空名单、重复模型、未知名称、同时重复使用 `--models`/`--modes` 会报错；不会悄悄退回全模型训练。CLI 名称检查在参数解析时进行，配置名单在数据导入和训练前检查。
+
+## 仅拓扑与 DC OP 的消融模型
+
+两个 `*_op_only` 模型分别复用对应 `*_op` 模型的拓扑编码器、融合 Transformer、metric-query decoder 及超参数。区别是移除设计参数 embedding/数值投影，不生成设计参数 token、观测 mask 或适用性 mask；相同随机种子下保留部分的初始权重一致。删除输入分支会减少总参数量，报告记录实际数量。
+
+| 输入 | 原 `*_op` | 新 `*_op_only` |
+|---|---|---|
+| 拓扑、类型、物理 model_name、命名端口 | 使用 | 使用 |
+| W/L/m、R/C、源 DC 设定值及其参数掩码 | 使用 | 不使用 |
+| 连续电气 DC OP、观测掩码与器件资格 | 使用 | 使用 |
+| 离散工作区/检查状态 | 不使用 | 不使用 |
+
+默认 OP 字段已排除 `w_um/l_um/multiplicity`；OP-only 模式拒绝通过 `normalization.op_fields` 把这些设计几何字段加回输入。当前采集器仅提供 MOS OP，源、无源器件和外部端口仍保留拓扑节点，但不会编造其 OP 或用设计值补充 OP。没有适用输入的节点使用公共可学习空特征 token。
+
+这里排除的是显式设计输入，OP 本身仍反映设计的物理影响。canonical 数据中的设计参数仍须保留，用于导入校验、精确重复设计分组和来源身份；共享 preprocessing 可以保留设计统计量，但 OP-only 的 batch、缓存和模型都不消费它们。
+
+这些模型从头监督训练 encoder + decoder，使用 `training.baseline_epochs`、相同早停规则与验证集最佳 checkpoint；不执行 JEPA 预训练。训练和推理均需要 DC OP。只运行新模型，把提交脚本的名单改为：
+
+```bash
+MODELS=(zerosim_pin_op_only zerosim_device_op_only)
+# 仍使用 --models "${MODELS[@]}" 传给现有提交入口。
+```
+
+同时对比设计输入有无时使用：
+
+```bash
+MODELS=(zerosim_pin_op zerosim_pin_op_only zerosim_device_op zerosim_device_op_only)
+```
+
+严格汇总校验同组骨干超参数一致，并在报告和成本表记录 `uses_design_parameters=false`。现有 OP/no-OP 成对表只表达“增加 OP”的对照，OP-only 结果进入常规汇总，不混入这张成对表。默认仍选原五个模型；`--models all` 现在选择全部七个。
+
+输入隔离、剩余权重一致性、checkpoint 重载和汇总契约测试见 `tests/test_op_only.py`；CPU 短流程及验证范围见 [verification/op_only/results.json](../verification/op_only/results.json)。这不代表已验证 GPU 吞吐、完整 60,000 点训练容量或预测收益。
 
 ## smoke 与结果汇总
 

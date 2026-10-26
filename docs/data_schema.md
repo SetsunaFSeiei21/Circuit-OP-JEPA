@@ -30,7 +30,9 @@ The supplied Opamp2 audit contains 32 samples, 17 independent design parameters,
 
 For an applicable field, JSON null or an omitted value means missing. Measured zero is valid. A field outside a device's physical parameter schema is not applicable, rather than an observed zero or a failed measurement. Raw NaN/Infinity from source measurements become null; masks remain explicit in parameter, OP and performance tensors. Padding is separate from unknown device types. Only eligible targets with observed OP contribute to alignment; the current source collector supplies MOS device OP, not passive/source device OP. This is a data-coverage boundary, not a claim that passive devices have no physical DC state.
 
-### Heterogeneous device inputs (all five newly trained modes)
+### Heterogeneous device inputs
+
+Design-parameter semantics below apply when `uses_design_parameters=true`. The two `*_op_only` models retain topology/identity and continuous electrical OP but omit design-value tensors and both parameter masks entirely. They also reject explicit `w_um/l_um/multiplicity` OP inputs. Keep design values in canonical data for validation and grouped splitting; omitting model inputs does not change dataset identity.
 
 Concrete `device_type` stays intact: NMOS and PMOS remain distinct, as do resistor, capacitor, independent current source and independent voltage source. A second fixed semantic vocabulary supplements these subtypes:
 
@@ -60,9 +62,9 @@ These are actual model inputs, not reporting-only flags. Contract-2 named parame
 
 ### Direct DC OP inputs versus JEPA targets
 
-`zerosim_pin_op` and `zerosim_device_op` add selected continuous OP `(value, observed bit)` tokens to the existing own-node feature fusion. They do not add OP-check one-hot states, a predictor, a separate JEPA branch or extra fusion layers. Device-level OP/masks/eligibility are repeated onto that device's own observed pins in pin mode; ports, padding and noneligible devices have no live OP tokens. Current collector non-MOS observations are unavailable, not fabricated. Both new models require the OP tensor/mask/eligibility contract at **training and inference**; per-field missing values remain supported. A training set with no eligible observed selected OP is rejected. Inference reports count observed/possible OP values and samples with no observed OP, counting original devices rather than repeated pins.
+`zerosim_pin_op` and `zerosim_device_op` add selected continuous OP `(value, observed bit)` tokens to the existing own-node feature fusion. They do not add OP-check one-hot states, a predictor, a separate JEPA branch or extra fusion layers. Device-level OP/masks/eligibility are repeated onto that device's own observed pins in pin mode; ports, padding and noneligible devices have no live OP tokens. Current collector non-MOS observations are unavailable, not fabricated. All four direct OP models require the OP tensor/mask/eligibility contract at **training and inference**; per-field missing values remain supported. A training set with no eligible observed selected OP is rejected. Inference reports count observed/possible OP values and samples with no observed OP, counting original devices rather than repeated pins.
 
-The original `zerosim_pin`/`zerosim_device` models and the frozen JEPA input encoder do not read OP at inference. JEPA uses OP on its pretraining target branch only. All five modes share parameter scalers and target-label budgets; all OP-using methods share selected continuous OP fields and ID-train-only transforms. OP acquisition time is unmeasured (`null`, not zero) and reported separately from model training time.
+The original `zerosim_pin`/`zerosim_device` models and the frozen JEPA input encoder do not read OP at inference. JEPA uses OP on its pretraining target branch only. All selected modes share target-label budgets and dataset identity; unused design scalers may remain in OP-only preprocessing for provenance, but are never read by its model/batch cache; all OP-using methods share selected continuous OP fields and ID-train-only transforms. OP acquisition time is unmeasured (`null`, not zero) and reported separately from model training time.
 
 ### Input-contract compatibility
 

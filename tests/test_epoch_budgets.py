@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from device_jepa.budgets import comparison_epoch_budget, positive_epochs, smoke_epochs
-from device_jepa.comparison import MODES, compare_reports
+from device_jepa.comparison import compare_reports
+from device_jepa.methods import DEFAULT_MODELS as MODES
 from test_comparison import report
 
 

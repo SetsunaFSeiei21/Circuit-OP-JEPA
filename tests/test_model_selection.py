@@ -82,7 +82,7 @@ class ModelSelectionTests(unittest.TestCase):
         return result
 
     def test_each_model_alone_runs_only_its_own_stages_and_test(self):
-        for name in DEFAULT_MODELS:
+        for name in METHODS:
             with self.subTest(model=name):
                 result = self.run_experiment([name])
                 self.assertEqual(result['paired_summary'], [])

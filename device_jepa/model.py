@@ -210,7 +210,8 @@ class OperatingPointDeviceEncoder(DeviceEncoder):
     non-MOS devices, ports and padded nodes have no live OP feature tokens.
     """
     def __init__(self, cfg, num_types, num_parameters, num_terminals, num_op_features,
-                 input_contract_version=2, num_categories=0, num_models=0, num_port_roles=0):
+                 input_contract_version=2, num_categories=0, num_models=0, num_port_roles=0,
+                 use_design_parameters=True):
         super().__init__(cfg, num_types, num_parameters, num_terminals,
                          input_contract_version, num_categories, num_models, num_port_roles)
         if num_op_features < 1:
@@ -218,9 +219,16 @@ class OperatingPointDeviceEncoder(DeviceEncoder):
         self.num_op_features = num_op_features
         self.op_names = nn.Embedding(num_op_features, cfg.dim)
         self.op_value = nn.Linear(2, cfg.dim)
+        if type(use_design_parameters) is not bool:
+            raise ValueError('use_design_parameters must be a boolean')
+        self.use_design_parameters = use_design_parameters
+        if not use_design_parameters:
+            # Keep identical topology/fusion/decoder blocks and initialization
+            # order, but remove the design-input branch, including its masks.
+            del self.parameter_names
+            del self.parameter_value
 
     def input_tokens(self, batch):
-        parameters, live = super().input_tokens(batch)
         if not {"op", "op_mask", "op_target_mask"} <= batch.keys():
             raise ValueError("This model requires DC OP values, observation masks and eligibility at inference")
         op, observed = batch["op"], batch["op_mask"]
@@ -232,6 +240,9 @@ class OperatingPointDeviceEncoder(DeviceEncoder):
         values = torch.stack([torch.where(observed, op, torch.zeros_like(op)), observed.to(op.dtype)], -1)
         tokens = self.op_value(values) + self.op_names.weight[None, None]
         op_live = eligible.unsqueeze(-1).expand_as(observed)
+        if not self.use_design_parameters:
+            return tokens, op_live
+        parameters, live = super().input_tokens(batch)
         return torch.cat([parameters, tokens], 2), torch.cat([live, op_live], 2)
 
 

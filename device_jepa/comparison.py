@@ -14,8 +14,9 @@ from pathlib import Path
 from statistics import mean, stdev
 from .early_stopping import (PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
                              early_stopping_config, executed_epochs)
-from .methods import (DEFAULT_MODELS, LEGACY_MODES, MODES, OP_MODES, OP_PAIRS,
+from .methods import (DEFAULT_MODELS, LEGACY_MODES, MODES, OP_MODES, OP_PAIRS, MATCHED_BACKBONES,
                       add_model_arguments, method_spec)
+from .data import OP_GEOMETRY_FIELDS
 
 
 def _information_contract(report):
@@ -32,6 +33,9 @@ def _information_contract(report):
     declared = p.get('requires_op_at_inference', False)
     if type(declared) is not bool or declared != required:
         raise ValueError(f'Incorrect or missing requires_op_at_inference for {mode}')
+    uses_design = p.get('uses_design_parameters', True)
+    if type(uses_design) is not bool or uses_design != method.uses_design_parameters:
+        raise ValueError(f'Incorrect or missing uses_design_parameters for {mode}')
     training_use = 'input' if required else ('pretraining_target' if method.workflow == 'jepa' else 'none')
     inference_use = 'input' if required else 'none'
     info = p.get('op_information', {})
@@ -42,6 +46,12 @@ def _information_contract(report):
             raise ValueError(f'Incorrect OP {key} for {mode}')
     if required and info.get('state_features'):
         raise ValueError('Continuous OP-input baselines must not consume discrete OP states')
+    if not uses_design:
+        fields = info.get('feature_names')
+        if not isinstance(fields, list) or not fields or any(not isinstance(n, str) for n in fields):
+            raise ValueError('OP-only reports must declare their OP input fields')
+        if any(n.lower() in OP_GEOMETRY_FIELDS for n in fields):
+            raise ValueError('OP-only reports contain design geometry fields in OP inputs')
     if training_use != 'none' and 'scaler_fitted_sample_ids' in info:
         if sorted(info['scaler_fitted_sample_ids']) != sorted(p['train_ids']):
             raise ValueError('OP scaler must be fitted on the shared ID training samples only')
@@ -56,6 +66,7 @@ def _information_contract(report):
     elif status == 'measured':
         raise ValueError('Measured OP acquisition cost requires seconds')
     return dict(requires_op_at_inference=required, op_training_use=training_use,
+                uses_design_parameters=uses_design,
                 op_inference_use=inference_use,
                 op_source=info.get('source'), op_feature_names=info.get('feature_names'),
                 op_state_features=info.get('state_features'), op_state_config=info.get('state_config'),
@@ -292,10 +303,11 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
         raise ValueError('No reports supplied')
     supplied_modes = {r['provenance']['mode'] for r in reports}
     # Preserve strict comparison of pre-existing three-mode result sets. Once
-    # an OP-input report is supplied, all five are expected unless the caller
-    # explicitly declares a different cohort (e.g. a two-mode ablation).
+    # an original OP-input report is supplied, expect the original five.
+    # New cohorts should explicitly declare their selected modes.
     if expected_modes is None:
-        expected_modes = LEGACY_MODES if supplied_modes <= set(LEGACY_MODES) else DEFAULT_MODELS
+        expected_modes = (LEGACY_MODES if supplied_modes <= set(LEGACY_MODES) else
+                          DEFAULT_MODELS if supplied_modes <= set(DEFAULT_MODELS) else MODES)
     expected_modes = tuple(expected_modes)
     if not expected_modes or len(expected_modes) != len(set(expected_modes)) or any(m not in MODES for m in expected_modes):
         raise ValueError('Expected modes must be a nonempty unique selection of supported modes')
@@ -457,6 +469,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                     per_seed.append(dict(mode=mode, backend=p.get('backend', 'unspecified'), seed=seed,
                                          split=split, scope=scope, circuit=circuit, metric=metric, scale=scale,
                                          requires_op_at_inference=information['requires_op_at_inference'],
+                                         uses_design_parameters=information['uses_design_parameters'],
                                          op_training_use=information['op_training_use'], **scores))
         # Training belongs to a checkpoint run, whereas coverage and OP
         # acquisition belong to the evaluation or an explicitly stated scope.
@@ -509,6 +522,9 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     for _, baseline_mode, op_mode in OP_PAIRS:
         if baseline_mode in architectures and op_mode in architectures and architectures[baseline_mode] != architectures[op_mode]:
             raise ValueError(f'Model configuration differs within OP/no-OP pair {baseline_mode}/{op_mode}')
+    for reference, ablation in MATCHED_BACKBONES:
+        if reference in architectures and ablation in architectures and architectures[reference] != architectures[ablation]:
+            raise ValueError(f'Model configuration differs within design-input ablation {reference}/{ablation}')
     if 'zerosim_device_op' in architectures and 'jepa_zerosim' in architectures:
         if architectures['zerosim_device_op'] != architectures['jepa_zerosim']:
             raise ValueError('Model configuration differs between device OP and JEPA modes')
@@ -529,6 +545,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
         item = dict(zip(('mode', 'backend', 'split', 'scope', 'circuit', 'metric', 'scale'), key))
         item.update(num_seeds=len(rows), count_per_seed=rows[0]['count'],
                     requires_op_at_inference=rows[0]['requires_op_at_inference'],
+                    uses_design_parameters=rows[0]['uses_design_parameters'],
                     op_training_use=rows[0]['op_training_use'])
         for metric in ('mae', 'rmse', 'r2'):
             values = [r[metric] for r in rows if r[metric] is not None]

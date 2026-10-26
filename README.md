@@ -1,14 +1,18 @@
 # Circuit-OP-JEPA
 
-器件级共享结构编码、OP 表示对齐，以及可直接比较的五个模式：
+器件级共享结构编码、OP 表示对齐，以及可按需选择的七个模式：
 
 - `zerosim_pin`：独立复现的 **pin-node ZeroSim-style** 监督基线，训练 encoder + metric-query decoder。
 - `zerosim_device`：器件节点 ZeroSim-style 监督基线，训练 encoder + decoder。
 - `jepa_zerosim`：器件节点共享结构 OP 预训练，然后冻结整个输入 encoder，只训练 decoder；性能推理不读取 OP。
 - `zerosim_pin_op`：在匹配的 pin-node 监督基线上，加入逐器件电气 OP 与观测 mask；训练和推理均使用 OP。
 - `zerosim_device_op`：在匹配的 device-node 监督基线上，加入逐器件电气 OP 与观测 mask；训练和推理均使用 OP。
+- `zerosim_pin_op_only`：沿用 `zerosim_pin_op` 的拓扑编码、融合层和 decoder，仅输入拓扑及 DC OP，移除设计参数输入分支。
+- `zerosim_device_op_only`：沿用 `zerosim_device_op` 的对应架构，仅输入拓扑及 DC OP，移除设计参数输入分支。
 
-`zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。五种模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。两种 OP 输入模式是信息增强对照，分别与对应无 OP 基线配对，不是同等推理成本的零仿真替代品。OP 采集成本未测量，报告标为 `not_measured`/`null`，不默认为零。
+`zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。各模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。两个 `*_op` 模式是加入 OP 的信息增强对照；两个 `*_op_only` 模式用于检验固定拓扑与 OP 后设计参数输入的作用。四个直接 OP 模型在训练和推理时均需要 OP。OP 采集成本未测量，报告标为 `not_measured`/`null`，不默认为零。
+
+默认名单仍为原有五个模型。只运行新增模型时传入 `--models zerosim_pin_op_only zerosim_device_op_only`；`--models all` 显式选择七个模型。
 
 新版完整交接与独立复审提示见 [docs/REVIEW_HANDOFF_ZH.md](docs/REVIEW_HANDOFF_ZH.md)；本轮有限验证与历史三模式证据分开见 [verification/five_mode/RESULTS.md](verification/five_mode/RESULTS.md)。
 
@@ -38,7 +42,7 @@ python -m device_jepa smoke_real \
 
 通过 `--models jepa_zerosim zerosim_device` 选择本次要训练、测试和汇总的模型，也可只选一个；`--list-models` 列出可用名称。选择规则、配置和提交示例见 [模型选择说明](docs/MODEL_SELECTION_ZH.md)，多个随机种子及成对结果处理见 [scripts/README.md](scripts/README.md)。脚本分为 `scripts/git/`、`scripts/smoke_test/`、`scripts/run/`，与 Analog-Agent 的组织方式对应。先做 smoke，再运行正式实验。
 
-大型原始数据可直接通过 `scripts/run/submit_raw_comparison.sh --input 原始电路目录 --max-table-rows none --device cuda` 提交；导入和五模式训练均在计算节点执行，默认仍为预览，实际提交需设置 `DRY_RUN=0`。省略 `--output` 时，结果统一放在原仓库的 `runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`，从 Git worktree 提交也使用此位置。该入口自动从 SQLite 读取单电路身份并生成独立实验配置，完整双电路示例及资源要求见 [运行说明](scripts/README.md#slurm)。
+大型原始数据可直接通过 `scripts/run/submit_raw_comparison.sh --input 原始电路目录 --max-table-rows none --device cuda` 提交；导入和所选模型训练均在计算节点执行，默认仍为预览，实际提交需设置 `DRY_RUN=0`。省略 `--output` 时，结果统一放在原仓库的 `runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`，从 Git worktree 提交也使用此位置。该入口自动从 SQLite 读取单电路身份并生成独立实验配置，完整双电路示例及资源要求见 [运行说明](scripts/README.md#slurm)。
 
 ## 数据处理流程
 
@@ -60,7 +64,7 @@ python -m device_jepa split \
 2. 按对应样本的 design vector 解析 W/L/m 等表达式。采用有界语法树白名单，不使用 `eval`；不支持的语法明确报错，不静默漏器件。
 3. 按 `(sample_id, device_name)` 精确匹配 OP，保留全部 44 个原始字段及符号，性能 NaN 转为 `null`。
 4. 将电流源等非 MOS 保留在输入图中，但不把它们当作 MOS OP 对齐目标。
-5. 保存原始 reasons、check scope、阈值来源和运行 provenance。多来源合并通过 source_id + circuit_id + run_id 关联检查记录，不能仅用不同电路可能重复的 run_id。collector 工作检查类别只进入 JEPA 的 OP 目标分支，不进入共享结构、设计输入或两个直接 OP 监督模型。
+5. 保存原始 reasons、check scope、阈值来源和运行 provenance。多来源合并通过 source_id + circuit_id + run_id 关联检查记录，不能仅用不同电路可能重复的 run_id。collector 工作检查类别只进入 JEPA 的 OP 目标分支，不进入共享结构、设计输入或四个直接 OP 监督模型。
 
 预训练启用状态特征时，会从原始证据重新推导并核对已存编码与配置；不匹配或缺少 provenance 时要求重新导入，不能把缺失编码静默当作全未知。显式 `features: []` 可关闭状态输入。
 
@@ -76,6 +80,8 @@ python -m device_jepa split \
 - 当前 collector 只有 MOS OP，非 MOS 仍保留在图中，但不会编造其 OP；这不是声称无源器件没有物理 DC 状态。
 
 两个 `*_op` 模式把命名电气 OP 值及观测位加入后段 own-node 输入融合；pin 模式只复制到父器件自己的 pins，端口无伪 OP。新增 OP token 会增加参数量，所以配对比较是信息增强消融，并非严格参数量匹配的纯因果实验。
+
+两个 `*_op_only` 模式移除全部设计参数 token、观测/适用性 mask 和设计参数 embedding/投影，仅保留拓扑身份信息与电气 OP。W/L/m、R/C、源 DC 设定值均不进入网络；自定义 OP 字段也不得包含 `w_um/l_um/multiplicity`。其余骨干结构相同，移除输入分支后总参数量会减少。原始设计参数仍用于完整性检查和设计分组，见 [模型选择说明](docs/MODEL_SELECTION_ZH.md#仅拓扑与-dc-op-的消融模型)。
 
 ## 划分与归一化
 

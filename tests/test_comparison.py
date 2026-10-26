@@ -6,7 +6,8 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
-from device_jepa.comparison import compare_reports, regression_metrics, main, MODES, LEGACY_MODES, OP_MODES
+from device_jepa.comparison import compare_reports, regression_metrics, main, LEGACY_MODES, OP_MODES
+from device_jepa.methods import DEFAULT_MODELS as MODES, method_spec
 
 
 def report(mode, seed=17, split='test'):
@@ -21,6 +22,8 @@ def report(mode, seed=17, split='test'):
                                   prediction={'gain': 2.0}, normalized_target={'gain': y},
                                   normalized_prediction={'gain': 2.0}) for i, y in enumerate([1.0, 3.0, None])])
     p = result['provenance']
+    if not method_spec(mode).uses_design_parameters:
+        p.update(uses_design_parameters=False, op_information={'feature_names': ['gm'], 'state_features': []})
     p.update(run_identity=f'{mode}/{seed}', decoder_seed=seed, selection_metric_names=['gain'])
     if mode == 'jepa_zerosim':
         protocol = {'protocol_version': 1, 'optimizer': 'AdamW', 'model_config': {'dim': 32},
@@ -205,7 +208,8 @@ class ComparisonTests(unittest.TestCase):
             compare_reports([item], False)
         for mode in (*OP_MODES, 'jepa_zerosim'):
             item = report(mode)
-            item['provenance']['op_information'] = {'scaler_fitted_sample_ids': ['train1', 'train2', 'test1']}
+            item['provenance'].setdefault('op_information', {}).update(
+                scaler_fitted_sample_ids=['train1', 'train2', 'test1'])
             with self.assertRaisesRegex(ValueError, 'ID training samples'):
                 compare_reports([item], False)
 

@@ -216,7 +216,7 @@ class ResidentDataset:
     def __init__(self, samples, preprocessing, device, *, include_op=False,
                  include_performance=False, include_op_states=False, pin_vocab=None,
                  max_tokens=None, performance_metric_mask=None, performance_dtype=torch.float32,
-                 label="data", verbose=True):
+                 label="data", verbose=True, include_parameters=True):
         if not samples:
             raise ValueError("Cannot cache an empty dataset")
         started = time.perf_counter()
@@ -229,14 +229,15 @@ class ResidentDataset:
         states = preprocessing.get("op_state_features", []) if include_op_states else []
         ordered = [sorted(s["devices"], key=lambda d: d["device_id"]) for s in samples]
         b, d = len(samples), max(map(len, ordered))
-        needed = b*d*(len(pn)*11 + (len(on)*13 if include_op else 0) + len(states)*5)
+        needed = b*d*((len(pn)*11 if include_parameters else 0) + (len(on)*13 if include_op else 0) + len(states)*5)
         needed += b*len(mn)*21 if include_performance else 0
         _reserve(self.device, needed)
         if verbose:
             print(f"{label}: preparing {b} samples on {self.device} (resident numeric cache)", flush=True)
-        raw_p = np.zeros((b, d, len(pn)), dtype=np.float64)
-        mask_p = np.zeros(raw_p.shape, dtype=np.bool_)
-        app_p = np.zeros(raw_p.shape, dtype=np.bool_)
+        if include_parameters:
+            raw_p = np.zeros((b, d, len(pn)), dtype=np.float64)
+            mask_p = np.zeros(raw_p.shape, dtype=np.bool_)
+            app_p = np.zeros(raw_p.shape, dtype=np.bool_)
         if include_op:
             raw_o = np.zeros((b, d, len(on)), dtype=np.float64)
             mask_o = np.zeros(raw_o.shape, dtype=np.bool_)
@@ -259,10 +260,11 @@ class ResidentDataset:
                 graphs.append(graph)
             graph_ids.append(lookup[key])
             for ni, dev in enumerate(devices):
-                params = dev.get("parameters", {})
-                raw_p[bi, ni] = [params.get(name) if params.get(name) is not None else 0. for name in pn]
-                mask_p[bi, ni] = [params.get(name) is not None for name in pn]
-                app_p[bi, ni] = parameter_applicability(dev, pn)
+                if include_parameters:
+                    params = dev.get("parameters", {})
+                    raw_p[bi, ni] = [params.get(name) if params.get(name) is not None else 0. for name in pn]
+                    mask_p[bi, ni] = [params.get(name) is not None for name in pn]
+                    app_p[bi, ni] = parameter_applicability(dev, pn)
                 if include_op and is_op_target(dev):
                     eligible[bi, ni] = True
                     op = dev.get("op", {})
@@ -285,7 +287,7 @@ class ResidentDataset:
                 print(f"{label}: decoded {bi+1}/{b} samples | {len(graphs)} unique topologies", flush=True)
         self.tables = {}
         for name, raw, mask, stats, names in (
-                ("parameters", raw_p, mask_p, preprocessing["parameters"], pn),
+                *(([("parameters", raw_p, mask_p, preprocessing["parameters"], pn)]) if include_parameters else []),
                 *(([("op", raw_o, mask_o, preprocessing["op"], on)]) if include_op else []),
                 *(([("performance", raw_y, mask_y, preprocessing["performance"], mn)]) if include_performance else [])):
             tensor, observed = torch.as_tensor(raw, device=self.device), torch.as_tensor(mask, device=self.device)
@@ -294,7 +296,8 @@ class ResidentDataset:
             self.tables['parameter_mask' if name == 'parameters' else name + '_mask'] = observed
             if name == "performance" and performance_dtype == torch.float64:
                 self.tables["physical_performance"] = tensor
-        self.tables["parameter_applicability"] = torch.as_tensor(app_p, device=self.device)
+        if include_parameters:
+            self.tables["parameter_applicability"] = torch.as_tensor(app_p, device=self.device)
         if include_op:
             self.tables["op_target_mask"] = torch.as_tensor(eligible, device=self.device)
         if states:

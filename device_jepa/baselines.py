@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from .budgets import positive_epochs
-from .data import (device_category, fit_preprocessor, is_op_target, parameter_applicability,
+from .data import (OP_GEOMETRY_FIELDS, device_category, fit_preprocessor, is_op_target, parameter_applicability,
                    partition_fingerprint, samples_for_split, verify_manifest, canonical_port_name)
 from .model import DeviceEncoder, OperatingPointDeviceEncoder, ModelConfig, make_decoder, masked_mse
 from .tensors import (_fill, _performance_metric_mask, collate_samples, denormalize, to_device, evaluation_targets,
@@ -34,7 +34,7 @@ from .training import (_batches, _check_dataset_options, _check_options, _metric
                        seed_everything, state_digest)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device
 from .early_stopping import EarlyStopping, SUPERVISED_OBJECTIVE
-from .methods import BASELINE_MODES, PIN_MODES, OP_MODES as OP_INPUT_MODES
+from .methods import BASELINE_MODES, PIN_MODES, OP_MODES as OP_INPUT_MODES, method_spec
 
 
 def _check_mode(mode):
@@ -85,7 +85,7 @@ def _pin_tokens(sample, terminal_names, input_contract_version=3):
 
 def collate_pin_samples(samples, preprocessing, pin_vocab,
                         include_performance=True, max_tokens=None, include_op=False, *,
-                        performance_metric_mask=None):
+                        performance_metric_mask=None, include_parameters=True):
     """Tensorize canonical device samples as ports followed by device/pin tokens.
 
     ``max_tokens`` (the model config's ``max_devices``) includes external ports
@@ -113,14 +113,15 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
     batch = {"device_types": torch.zeros(b, n, dtype=torch.long),
              "device_categories": torch.zeros(b, n, dtype=torch.long),
              "device_mask": torch.zeros(b, n, dtype=torch.bool),
-             "parameters": torch.zeros(b, n, p),
-             "parameter_mask": torch.zeros(b, n, p, dtype=torch.bool),
-             "parameter_applicability": torch.zeros(b, n, p, dtype=torch.bool),
              "adjacency": torch.zeros(b, n, n, dtype=torch.bool),
              "edge_roles": torch.zeros(b, n, n, t * t),
              "port_roles": torch.zeros(b, n, t),
              "sample_ids": [sample["sample_id"] for sample in samples],
              "device_ids": [[token["token_id"] for token in row] for row in rows]}
+    if include_parameters:
+        batch.update(parameters=torch.zeros(b, n, p),
+                     parameter_mask=torch.zeros(b, n, p, dtype=torch.bool),
+                     parameter_applicability=torch.zeros(b, n, p, dtype=torch.bool))
     model_vocab, port_vocab = _identity_vocabularies(preprocessing)
     if model_vocab is not None:
         batch.update(device_models=torch.zeros(b, n, dtype=torch.long),
@@ -147,14 +148,15 @@ def collate_pin_samples(samples, preprocessing, pin_vocab,
                 if token["terminal"] is not None:
                     for role in named_ports.get(token["net"], ()):
                         batch["named_port_roles"][bi, ni, ti[token["terminal"]] * len(port_vocab) + role] = 1
-            if parent is not None:
+            if include_parameters and parent is not None:
                 batch["parameter_applicability"][bi, ni] = torch.tensor(parameter_applicability(parent, pn))
             if include_op and parent is not None and is_op_target(parent):
                 batch["op_target_mask"][bi, ni] = True
                 _fill(batch["op"][bi, ni], batch["op_mask"][bi, ni],
                       parent.get("op", {}), spec["op_names"], preprocessing["op"])
-            _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
-                  token["parameters"], pn, preprocessing["parameters"])
+            if include_parameters:
+                _fill(batch["parameters"][bi, ni], batch["parameter_mask"][bi, ni],
+                      token["parameters"], pn, preprocessing["parameters"])
             for nj, other in enumerate(tokens):
                 both_pins = token["terminal"] is not None and other["terminal"] is not None
                 same_device = both_pins and token["device_id"] == other["device_id"]
@@ -187,6 +189,9 @@ class SupervisedPerformanceModel(nn.Module):
 def _make_model(mode, model_config, preprocessing, pin_vocab=None):
     _check_mode(mode)
     spec = preprocessing["feature_spec"]
+    uses_design = method_spec(mode).uses_design_parameters
+    if not uses_design and any(n.lower() in OP_GEOMETRY_FIELDS for n in spec['op_names']):
+        raise ValueError('OP-only models must exclude design geometry fields w_um/l_um/multiplicity from OP inputs')
     if mode in PIN_MODES:
         if pin_vocab is None:
             raise ValueError("Pin reference requires its saved train-only pin vocabulary")
@@ -199,6 +204,7 @@ def _make_model(mode, model_config, preprocessing, pin_vocab=None):
     cls = OperatingPointDeviceEncoder if mode in OP_INPUT_MODES else DeviceEncoder
     if mode in OP_INPUT_MODES:
         kwargs["num_op_features"] = len(spec["op_names"])
+        kwargs['use_design_parameters'] = uses_design
     encoder = cls(ModelConfig(**model_config), num_types, len(spec["parameter_names"]),
                   len(spec["terminal_names"]), **kwargs)
     return SupervisedPerformanceModel(encoder, make_decoder(encoder.cfg,
@@ -209,8 +215,10 @@ def _collate(samples, preprocessing, mode, model_config, pin_vocab, *, performan
     if mode in PIN_MODES:
         return collate_pin_samples(samples, preprocessing, pin_vocab,
                                    max_tokens=model_config["max_devices"], include_op=mode in OP_INPUT_MODES,
+                                   include_parameters=method_spec(mode).uses_design_parameters,
                                    performance_metric_mask=performance_metric_mask)
     return collate_samples(samples, preprocessing, include_op=mode in OP_INPUT_MODES,
+                           include_parameters=method_spec(mode).uses_design_parameters,
                            include_performance=True, include_op_states=False,
                            performance_metric_mask=performance_metric_mask)
 
@@ -245,6 +253,9 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                                    config=effective.get("normalization"))
     if mode in OP_INPUT_MODES and not any(prep["op"]["count"]):
         raise ValueError("Direct OP baseline requires some observed eligible ID-train DC OP")
+    uses_design = method_spec(mode).uses_design_parameters
+    if not uses_design and any(n.lower() in OP_GEOMETRY_FIELDS for n in prep['feature_spec']['op_names']):
+        raise ValueError('OP-only models must exclude design geometry fields w_um/l_um/multiplicity from OP inputs')
     if not any(prep["performance"]["count"]):
         raise ValueError("No requested metric has an observed labeled-train target")
     output = _prepare_stage_output(output, mode, dataset, manifest)
@@ -263,11 +274,13 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
     provenance = _provenance(dataset, manifest, effective)
     cached = ResidentDataset(splits['train'] + splits['val'], prep, device,
                              include_op=mode in OP_INPUT_MODES, include_performance=True,
+                             include_parameters=uses_design,
                              pin_vocab=pin_vocab, max_tokens=effective['model']['max_devices'],
                              performance_metric_mask=selected_metric_mask, label=f'{mode} data')
     phase_indices = {'train': range(len(splits['train'])),
                      'val': range(len(splits['train']), len(cached.rows))}
     cost = {"labeled_train_count": len(splits["train"]), "input_scaler_train_count": len(manifest["train"]),
+            "uses_design_parameters": uses_design,
             "requires_op_at_inference": mode in OP_INPUT_MODES,
             "op_acquisition_cost_seconds": None, "op_acquisition_cost_status": "not_measured",
             "total_parameter_count": sum(p.numel() for p in model.parameters()),
@@ -336,6 +349,7 @@ def train_baseline(dataset, manifest, options, output, mode="zerosim_device", de
                           "initial_encoder_digest": initial_encoder_digest, "initial_decoder_digest": initial_decoder_digest,
                           "encoder_frozen": False, "freeze_verified": False, "op_inputs_used": mode in OP_INPUT_MODES,
                           "requires_op_at_inference": mode in OP_INPUT_MODES,
+                          "uses_design_parameters": uses_design,
                           "selection_metric_names": selection_metrics,
                           "unobserved_training_metrics": [name for name, count in zip(prep["feature_spec"]["metric_names"], prep["performance"]["count"]) if not count],
                           "training_cost": dict(cost),
@@ -412,6 +426,7 @@ def evaluate_baseline(dataset, checkpoint_path, split="test", batch_size=32, dev
     cached = None
     if rows:
         cached = ResidentDataset(rows, prep, device, include_op=mode in OP_INPUT_MODES,
+                                 include_parameters=method_spec(mode).uses_design_parameters,
                                  include_performance=True, performance_dtype=torch.float64,
                                  pin_vocab=pin_vocab, max_tokens=source['model_config']['max_devices'],
                                  label=f'{mode} evaluate {split}')
