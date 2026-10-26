@@ -1,0 +1,49 @@
+{
+  "base_commit": "ff019c52c189f5a52539c8ebf00cbd7c6a976b59",
+  "date": "2026-10-26",
+  "tests_passed": 343,
+  "tests_skipped": 0,
+  "new_geometry_tests": 8,
+  "supplied_opamp2_check": {
+    "circuit": "Opamp2",
+    "geometry_scale_to_m": 1e-06,
+    "source_samples": 32,
+    "samples_scanned": 32,
+    "mos_devices_scanned": 480,
+    "comparisons": {
+      "W_m": 480,
+      "L_m": 480,
+      "m": 480
+    },
+    "missing_geometry": {
+      "W_m": 0,
+      "L_m": 0,
+      "m": 0
+    },
+    "mismatches": {
+      "W_m": 0,
+      "L_m": 0,
+      "m": 0
+    },
+    "examples": [],
+    "scan_complete": true,
+    "status": "consistent_observed_geometry"
+  },
+  "verified_regressions": [
+    "Missing scale is reported with an OP/input ratio of 1e-6, without editing source.",
+    "Actual W and multiplicity disagreements are still detected.",
+    "Missing geometry is reported; fully missing W/L cannot pass verification.",
+    "Partial sample scans are explicitly marked scan_complete=false.",
+    "Source content and mtimes are unchanged.",
+    "Structural identity conflicts and orphan OP rows fail explicitly."
+  ],
+  "limits": [
+    "Remote 5t_ota and Opamp0 templates lack explicit scale declarations, but the user cluster copies and their 60,000-point SQLite data were not available here.",
+    "Checking a sample prefix does not prove the full dataset agrees.",
+    "The diagnostic streams source rows and does not validate electrical quality, labels, or full-training memory capacity."
+  ],
+  "commands": [
+    "python scripts/run/check_raw_geometry.py --input /path/to/5t_ota /path/to/Opamp0 --max-samples 100",
+    "python scripts/run/check_raw_geometry.py --input /path/to/5t_ota /path/to/Opamp0"
+  ]
+}

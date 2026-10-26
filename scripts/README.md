@@ -58,6 +58,25 @@ no OOD, and reuses the existing matched five-mode runner. The default base
 config retains 30 pretraining epochs, 50 supervised epochs and full train-label
 availability. Every seed uses one fixed design-group partition.
 
+Before submission, a small read-only geometry preflight can identify missing
+unit declarations or stale source netlists without constructing canonical JSON:
+
+```bash
+python scripts/run/check_raw_geometry.py \
+  --input runs/raw/full_data/5t_ota runs/raw/full_data/Opamp0 \
+  --max-samples 100
+```
+
+It resolves sample design parameters and compares W/L in meters with source
+`w_um/l_um` converted from micrometers, and compares multiplicity separately.
+Reported counts cover only available geometry; missing values remain missing.
+Mismatch examples include both physical values and their ratio. No file is
+modified and no scale is guessed. `consistent_observed_geometry` means the
+observed fields in the stated scope agree; `unverifiable`, `mismatch` or a source
+error produce a nonzero exit code. Omit `--max-samples` to stream all records.
+A 100-sample success is a spot check: full import still strictly checks all
+observed geometry before any training starts.
+
 ```bash
 source scripts/run/cluster.env.example
 RUN_ID=$(date +%Y%m%d_%H%M%S)
