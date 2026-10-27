@@ -14,6 +14,8 @@
 
 默认名单仍为原有五个模型。只运行新增模型时传入 `--models zerosim_pin_op_only zerosim_device_op_only`；`--models all` 显式选择七个模型。
 
+实验汇总现在自动生成 `comparison/model_comparison.xlsx`，并排展示各模型 MAE、RMSE、R² 的均值 ± std。旧结果可用 `python scripts/run/export_results_excel.py --input 实验目录` 补导出，无需重新训练或安装额外依赖，见 [Excel 整理说明](docs/EXCEL_RESULTS_ZH.md)。
+
 新版完整交接与独立复审提示见 [docs/REVIEW_HANDOFF_ZH.md](docs/REVIEW_HANDOFF_ZH.md)；本轮有限验证与历史三模式证据分开见 [verification/five_mode/RESULTS.md](verification/five_mode/RESULTS.md)。
 
 ## 快速开始

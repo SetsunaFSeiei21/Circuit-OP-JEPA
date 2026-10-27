@@ -188,6 +188,25 @@ DRY_RUN=0 SLURM_ACCOUNT=b_phzhwu SLURM_PARTITION=ex01A800 JEPA_CONDA_ENV=newbase
 
 ## Read and independently regenerate results
 
+Every completed comparison also writes `comparison/model_comparison.xlsx`:
+models side by side, MAE/RMSE/R² mean ± sample SD, and all original summary
+records on a numeric detail sheet. Circuits and evaluation splits stay separate.
+UGF physical errors are displayed in MHz (mean and SD); original units are
+retained in the detail sheet. Single-seed SD and undefined R² are shown as n/a.
+
+Export an existing run without training, GPU access or extra dependencies:
+
+```bash
+python scripts/run/export_results_excel.py --input runs/gpu_full/<circuit_date>
+# Also accepts a results/comparison directory, summary.csv or comparison.json:
+python scripts/run/export_results_excel.py --input runs/real_compare/comparison --split test
+```
+
+Output defaults to `model_comparison.xlsx` beside the summary. `--output`,
+`--models`, `--split`, `--scale`, `--scope` and `--decimals` customize the view;
+the original summary rows remain intact. Existing derived Excel files can be
+regenerated; source files are never changed. See [Excel export details](../docs/EXCEL_RESULTS_ZH.md).
+
 ```bash
 python -m device_jepa.comparison --reports runs/real_compare/*/seed_*/*_report.json --output runs/reprocessed
 ```

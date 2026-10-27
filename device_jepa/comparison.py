@@ -647,8 +647,12 @@ def main(argv=None):
                            ('op_acquisition_costs.csv', result['op_acquisition_costs'])):
         _csv(out/filename, [{k: json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
                             for k, v in r.items()} for r in rows])
+    from .excel import export_summary
+    workbook = export_summary(result['summary'], out/'model_comparison.xlsx',
+                              source=str((out/'comparison.json').resolve()), metadata=result)
     (out/'README.txt').write_text(result['warning']+'\nsummary.csv: one row per mode/backend/split/scope/circuit/metric/scale. Across-seed SD uses ddof=1; blank with one seed. Never compare different units or different splits as one score.\npaired_per_seed.csv and paired_summary.csv: only matched seeds within pin/device OP/no-OP pairs. Deltas are OP minus no-OP. Missing/undefined values are blank, not zero. These files are omitted if no pairs exist.\ncosts.csv: training costs per verified run, with optimizer steps. evaluation_costs.csv: split coverage and declared OP acquisition metadata. op_acquisition_costs.csv: measured OP costs by run and explicit scope; absent when unmeasured. complete requires both cohort_complete and strict_provenance. Legacy reports remain readable but provenance_gaps identify why they cannot pass strict completeness.\n')
     print(f'Wrote matched comparison to {out}')
+    print(f'Excel comparison: {workbook}')
 
 
 if __name__ == '__main__':
