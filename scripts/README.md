@@ -82,6 +82,23 @@ bash scripts/run/run_comparison.sh --data runs/real_data.json --config configs/m
 
 ## Slurm
 
+For a single-circuit job with editable settings in one Bash file, use:
+
+```bash
+bash scripts/run/train_single_circuit.sh
+# Preview only:
+bash scripts/run/train_single_circuit.sh --dry-run
+```
+
+Edit `CIRCUIT`, `CONFIG`, `MODELS` and `SEEDS` at the top of that file. It defaults
+to `two_stage_opamp_otaf`, the three device models (no OP, design + OP, OP only),
+and seeds 17/29/43. Batch size, epochs and architecture remain in the selected
+JSON config. This convenience launcher submits by default and uses `--dry-run`
+to preview, independently of an inherited `DRY_RUN`. The lower-level submit
+scripts retain their existing preview-only default. Results and logs default
+to this checkout's `runs/gpu_full/` and `hpc_logs/gpu_full/`; explicit absolute
+`JEPA_RESULTS_ROOT`/`JEPA_LOG_DIR` overrides are preserved.
+
 For a large raw Analog-Agent dataset, import and train on the compute node in
 one allocation. The single-circuit entrypoint reads the circuit identity from
 SQLite, copies the base config, sets that circuit as the only ID circuit with

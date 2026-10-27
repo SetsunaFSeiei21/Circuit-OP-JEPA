@@ -4,6 +4,27 @@
 
 ## 在脚本中选择
 
+已把单电路提交命令封装为 `scripts/run/train_single_circuit.sh`：
+
+```bash
+bash scripts/run/train_single_circuit.sh
+# 只预览，不提交，也不创建结果或日志目录：
+bash scripts/run/train_single_circuit.sh --dry-run
+```
+
+在文件开头修改 `CIRCUIT`、`CONFIG`、`MODELS`、`SEEDS` 即可。
+默认电路为 `two_stage_opamp_otaf`，模型为 `zerosim_device`、
+`zerosim_device_op`、`zerosim_device_op_only`，种子为 17、29、43。
+batch size、epoch、网络大小仍在 `CONFIG` 指向的 JSON 中设置。
+也可以使用 `CIRCUIT=Opamp1 CONFIG=runs/configs/my_train.json bash scripts/run/train_single_circuit.sh`。
+该便捷脚本默认正式提交，是否预览由 `--dry-run` 决定，不继承 shell 中的 `DRY_RUN`；
+底层 `submit_*` 脚本仍保持原来的预览默认值。
+它从脚本位置定位仓库，加载现有集群配置，默认将结果放在当前仓库的
+`runs/gpu_full/电路名_日期时间/`，日志放在 `hpc_logs/gpu_full/`。
+显式设置的绝对路径 `JEPA_RESULTS_ROOT`、`JEPA_LOG_DIR` 仍可覆盖上述目录。
+
+需要手动组合参数时，仍可使用原来的提交入口：
+
 ```bash
 # 只修改这一行即可选择本次模型，也可以只写一个。
 MODELS=(jepa_zerosim zerosim_device)
