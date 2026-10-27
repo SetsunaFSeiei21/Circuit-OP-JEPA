@@ -40,7 +40,8 @@ DRY_RUN=0 bash scripts/run/submit_raw_comparison.sh \
 ```
 
 示例使用默认模型大小与训练参数；使用自己的训练配置时替换 `--config`。
-原始数据入口仍只做指定电路的独立实验，自动设置 `ood_circuits=[]`。
+单输入且不指定 ID/OOD 名单时，原始数据入口做独立单电路实验，自动设置 `ood_circuits=[]`。
+跨电路实验使用 `bash scripts/run/train_ood.sh`，在文件开头分别设置 `TRAIN_CIRCUITS`、`OOD_CIRCUITS`、`MODELS`，见 [OOD 运行说明](OOD_RUN_ZH.md)。
 上述名单只执行 JEPA 的预训练和 decoder，以及 `zerosim_device` 的监督训练；每个 seed 只评估这两个模型的最佳验证 checkpoint。未选择的模型不会创建训练目录、checkpoint 或评估报告。
 
 结果继续保存到原仓库 `runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`。`config.json` 记录解析后的 `experiment.models`；内部 `results/experiment.json` 记录模型、种子、评估划分和是否完整完成。汇总在 `results/comparison/`。

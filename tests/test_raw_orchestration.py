@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import sqlite3
 import subprocess
 import tempfile
@@ -38,6 +39,10 @@ class RawOrchestrationTests(unittest.TestCase):
         fixture(self.source, circuit='ActualCircuit')
         self.output = self.root / 'new job' / 'circuit'
         self.args = ['--input', str(self.source), '--output', str(self.output)]
+        # These tests exercise orchestration, not model/CUDA availability.
+        runtime = patch.object(runner, 'check_runtime')
+        self.runtime = runtime.start()
+        self.addCleanup(runtime.stop)
 
     def invoke(self, args=None, fail_import=False, complete=True):
         calls = []
@@ -214,6 +219,132 @@ class RawOrchestrationTests(unittest.TestCase):
                                 env=env, capture_output=True, text=True, check=True)
         self.assertIn('scripts/run/run_raw_comparison.py', result.stdout)
         self.assertFalse(shared.exists())
+
+    def make_source(self, name):
+        directory = self.root / ('directory for ' + name)
+        directory.mkdir()
+        fixture(directory, circuit=name)
+        return directory
+
+    def test_ood_imports_all_sources_and_preserves_explicit_roles(self):
+        second = self.make_source('SecondID')
+        holdout = self.make_source('HeldOut')
+        before = snapshot(self.root)
+        calls = self.invoke(['--input', str(self.source), str(second), str(holdout),
+                             '--output', str(self.output), '--train-circuits', 'ActualCircuit', 'SecondID',
+                             '--ood-circuits', 'HeldOut', '--models', 'all', '--device', 'cuda'])
+        config = json.loads((self.output / 'config.json').read_text())
+        self.assertEqual(config['dataset']['train_circuits'], ['ActualCircuit', 'SecondID'])
+        self.assertEqual(config['dataset']['ood_circuits'], ['HeldOut'])
+        self.assertEqual(len(config['experiment']['models']), 7)
+        self.assertEqual(calls[0][calls[0].index('--input')+1:calls[0].index('--config')],
+                         [str(self.source), str(second), str(holdout)])
+        self.assertEqual(calls[1][calls[1].index('--device')+1], 'cuda')
+        self.runtime.assert_called_once_with(config, 'cuda')
+        after = snapshot(self.root)
+        self.assertTrue(all(after[path] == content for path, content in before.items()))
+
+    def test_ood_default_output_is_separate_from_single_circuit_results(self):
+        holdout = self.make_source('HeldOut')
+        shared = self.root/'runs/gpu_full'
+        with patch.dict(os.environ, {'JEPA_RESULTS_ROOT': str(shared)}), \
+             patch.object(result_paths, 'datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 27, 20, 30)
+            calls = self.invoke(['--input', str(self.source), str(holdout),
+                                 '--train-circuits', 'ActualCircuit', '--ood-circuits', 'HeldOut'])
+        expected = shared/'HeldOut_OOD_20261027_203000'
+        self.assertEqual(calls[1][calls[1].index('--output')+1], str(expected/'results'))
+
+    def test_ood_rejects_ambiguous_missing_overlapping_or_duplicate_roles_before_writes(self):
+        holdout = self.make_source('HeldOut')
+        base = ['--input', str(self.source), str(holdout), '--output', str(self.output)]
+        invalid = [[], ['--train-circuits', 'ActualCircuit'], ['--ood-circuits', 'HeldOut'],
+                   ['--train-circuits', 'ActualCircuit', 'ActualCircuit', '--ood-circuits', 'HeldOut'],
+                   ['--train-circuits', 'ActualCircuit', '--ood-circuits', 'ActualCircuit'],
+                   ['--train-circuits', 'FolderName', '--ood-circuits', 'HeldOut'],
+                   ['--train-circuits', 'ActualCircuit', '--ood-circuits', 'HeldOut', 'Absent']]
+        for options in invalid:
+            with self.subTest(options=options), patch.object(runner.subprocess, 'run') as child:
+                with self.assertRaises(ValueError):
+                    runner.main(base + options)
+                child.assert_not_called()
+                self.assertFalse(self.output.exists())
+        self.runtime.assert_not_called()
+
+    def test_ood_rejects_duplicate_directories_and_source_identities(self):
+        holdout = self.make_source('HeldOut')
+        duplicate = self.make_source('ActualCircuit')
+        for directories in ([self.source, self.source, holdout], [self.source, duplicate, holdout]):
+            with self.subTest(directories=directories), self.assertRaisesRegex(ValueError, 'unique|distinct'):
+                runner.source_plan(directories, ['ActualCircuit'], ['HeldOut'])
+        self.assertFalse(self.output.exists())
+
+    def test_imported_ood_circuit_is_excluded_from_all_id_splits(self):
+        from device_jepa.adapter import adapt_analog_agent, combine_datasets
+        from device_jepa.data import build_manifest
+        second = self.make_source('SecondID')
+        holdout = self.make_source('HeldOut')
+        # Give the synthetic fixtures distinct topologies; copying an identical
+        # design under a new circuit name is correctly rejected as leakage.
+        for directory, name, old, new in ((second, 'SecondID', 'IBIAS OUT VSS', 'IBIAS IN VSS'),
+                                          (holdout, 'HeldOut', 'RLOAD OUT VDD', 'RLOAD OUT VSS')):
+            netlist = directory / (name + '.sp')
+            netlist.write_text(netlist.read_text().replace(old, new))
+        membership, count, label = runner.source_plan(
+            [self.source, second, holdout], ['ActualCircuit', 'SecondID'], ['HeldOut'])
+        self.assertEqual((count, label), (9, 'HeldOut_OOD'))
+        dataset = combine_datasets([adapt_analog_agent(path) for path in (self.source, second, holdout)])
+        config = {**membership, 'split_ratios': [.6, .2, .2], 'split_seed': 17, 'finetune_label_fraction': 1.0}
+        manifest = build_manifest(dataset, config=config)
+        by_id = {sample['sample_id']: sample['circuit_id'] for sample in dataset['samples']}
+        heldout_ids = {sid for sid, circuit in by_id.items() if circuit == 'HeldOut'}
+        self.assertEqual(set(manifest['ood']), heldout_ids)
+        self.assertEqual(len(heldout_ids), 3)
+        for split in ('train', 'val', 'test', 'labeled_train'):
+            self.assertTrue(manifest[split])
+            self.assertFalse(set(manifest[split]) & heldout_ids)
+
+    def test_runtime_failure_prevents_import_and_output_creation(self):
+        self.runtime.side_effect = ValueError('CUDA unavailable')
+        with patch.object(runner.subprocess, 'run') as child, self.assertRaisesRegex(ValueError, 'CUDA'):
+            runner.main(self.args)
+        child.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_ood_launcher_preview_and_submit_forward_roles_models_and_gpu(self):
+        fake = self.root/'sbatch'
+        captured = self.root/'submitted'
+        fake.write_text('#!/usr/bin/env bash\nprintf "%s\\0" "$@" > "$JEPA_TEST_CAPTURE"\nprintf "123456\\n"\n')
+        fake.chmod(0o755)
+        env = {**os.environ, 'PATH': str(self.root)+os.pathsep+os.environ['PATH'],
+               'JEPA_TEST_CAPTURE': str(captured), 'JEPA_LOG_DIR': str(self.root/'logs'),
+               'JEPA_RESULTS_ROOT': str(self.root/'results'), 'RAW_ROOT': str(self.root/'raw data'),
+               'OOD_CIRCUIT': 'HeldOut', 'CONFIG': 'runs/configs/with spaces.json', 'DRY_RUN': '1'}
+        command = ['bash', str(ROOT/'scripts/run/train_ood.sh')]
+        result = subprocess.run(command+['--dry-run'], env=env, cwd=self.root,
+                                capture_output=True, text=True, check=True)
+        args = shlex.split(result.stdout)
+        self.assertEqual(args[args.index('--train-circuits')+1:args.index('--ood-circuits')],
+                         ['5t_ota', 'Opamp0', 'Opamp1'])
+        self.assertEqual(args[args.index('--ood-circuits')+1:args.index('--config')], ['HeldOut'])
+        self.assertEqual(len(args[args.index('--models')+1:args.index('--max-table-rows')]), 7)
+        self.assertEqual(args[args.index('--input')+1:args.index('--train-circuits')],
+                         [str(self.root/'raw data'/name) for name in ('5t_ota', 'Opamp0', 'Opamp1', 'HeldOut')])
+        self.assertFalse(captured.exists())
+        self.assertFalse((self.root/'logs').exists())
+        self.assertFalse((self.root/'results').exists())
+        for flag, code in (('--help', 0), ('--bad-option', 2)):
+            result = subprocess.run(command+[flag], env=env, cwd=self.root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, code)
+            self.assertFalse(captured.exists())
+        result = subprocess.run(command, env=env, cwd=self.root, capture_output=True, text=True, check=True)
+        args = captured.read_text().rstrip('\0').split('\0')
+        self.assertIn('--gres=gpu:1', args)
+        self.assertIn('--cpus-per-task=8', args)
+        self.assertEqual(args[args.index('--config')+1], 'runs/configs/with spaces.json')
+        self.assertEqual(args[-2:], ['--device', 'cuda'])
+        self.assertTrue(result.stdout.endswith('123456\n'))
+        self.assertFalse((self.root/'results').exists())
 
 
 if __name__ == '__main__':

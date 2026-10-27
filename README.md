@@ -46,6 +46,8 @@ python -m device_jepa smoke_real \
 
 大型原始数据可直接通过 `scripts/run/submit_raw_comparison.sh --input 原始电路目录 --max-table-rows none --device cuda` 提交；导入和所选模型训练均在计算节点执行，默认仍为预览，实际提交需设置 `DRY_RUN=0`。省略 `--output` 时，结果统一放在原仓库的 `runs/gpu_full/电路名_YYYYMMDD_HHMMSS/`，从 Git worktree 提交也使用此位置。该入口自动从 SQLite 读取单电路身份并生成独立实验配置，完整双电路示例及资源要求见 [运行说明](scripts/README.md#slurm)。
 
+单电路可用 `bash scripts/run/train_single_circuit.sh`；跨电路联合训练与 OOD 可用 `bash scripts/run/train_ood.sh`，后者自动在计算节点合并原始数据。两者均可在 Bash 文件开头设置模型、种子和配置，默认正式提交，加 `--dry-run` 预览。OOD 默认用 5t_ota/Opamp0/Opamp1 训练，留出整个 two_stage_folded_opamp；调整方法见 [OOD 运行说明](docs/OOD_RUN_ZH.md)。
+
 ## 数据处理流程
 
 ```bash

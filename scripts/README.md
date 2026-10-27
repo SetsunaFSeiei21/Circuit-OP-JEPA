@@ -170,11 +170,23 @@ disabling the source row limit does not provide out-of-core storage: canonical
 objects, state encoding and JSON still require dataset-sized memory. Capacity
 for the user's full 60,000-point sources must be measured in their jobs.
 
-Single-circuit results are ID experiments. For later joint training with an
-OOD circuit, import the chosen source directories together and use the original
-`submit_comparison.sh` with an explicit multi-circuit dataset config. The OOD
-circuit must be excluded from pretraining, fitted transforms, supervised
-training and checkpoint selection.
+Single-circuit results are ID experiments. For joint training with an OOD
+circuit, run `bash scripts/run/train_ood.sh` (or add `--dry-run` to preview).
+Edit `TRAIN_CIRCUITS`, `OOD_CIRCUITS`, `MODELS` and `SEEDS` in that file. Its
+default is all seven models, ID circuits 5t_ota/Opamp0/Opamp1 and the entire
+two_stage_folded_opamp circuit held out. The worker imports all raw directories,
+then uses the existing matched runner to evaluate both ID test and OOD. Results
+default to `runs/gpu_full/<heldout>_OOD_<date>/`, with CSV/Excel under
+`results/comparison/`. Logs remain under `hpc_logs/gpu_full/`.
+
+The underlying raw runner also accepts multiple `--input` directories together
+with explicit `--train-circuits` and `--ood-circuits`. Roles must be disjoint and
+exhaustively match the actual SQLite identities; ambiguous multiple inputs,
+duplicates and missing circuits fail before output creation. Single-input runs
+without these flags retain their independent ID behavior. Existing combined
+canonical data can still use `submit_comparison.sh --data ...` with its explicit
+multi-circuit config. OOD is excluded from pretraining, fitted transforms,
+supervised training and checkpoint selection. See [OOD instructions](../docs/OOD_RUN_ZH.md).
 
 ```bash
 # Preview only, without sbatch or directory creation:
