@@ -1,6 +1,6 @@
 # Model architecture and comparison protocol
 
-## Seven declared modes
+## Eight declared modes
 
 - `zerosim_pin`: independently implemented pin/port-node ZeroSim-style supervised reference.
 - `zerosim_device`: the same local input/decoder family with one token per physical device, supervised end to end.
@@ -9,12 +9,13 @@
 - `zerosim_device_op`: matched device supervised model with continuous device OP and observation masks at training **and inference**.
 - `zerosim_pin_op_only`: the corresponding pin OP backbone with all design-parameter inputs removed.
 - `zerosim_device_op_only`: the corresponding device OP backbone with all design-parameter inputs removed.
+- `jepa_zerosim_ema`: separate OP cross-attention target with an EMA structure/fusion trunk and independently trainable modality field embeddings, followed by frozen input-encoder probing. Performance inference does not read OP.
 
 The pin reference is a clean-room reimplementation, not imported official source, not an exact original-paper reproduction, and not a generic pin GNN relabeled as ZeroSim. It uses learned token/absolute-position embeddings, alternating local/global Transformer attention, own-parameter cross-attention in the last configured layers, a graph token, and a per-metric query Transformer decoder. Sources and deliberate differences are listed in THIRD_PARTY_NOTICES.md.
 
 All selected modes use the same canonical samples, grouped manifest, labeled_train subset and target transforms. Baselines optimize encoder+decoder on labels; JEPA additionally learns from OP on the full ID training partition. Matched experiments require equal maximum total epochs: JEPA pretraining plus decoder maxima equal each baseline's maximum. Independent validation early stopping may shorten actual runs. Equal labeled-data and total-epoch budgets do not imply equal total compute or inference information. The original `*_op` models are paired with their matching no-OP baseline; their extra projections/embeddings increase parameter count, so this is not a perfectly parameter-matched causal ablation. OP acquisition cost is unmeasured, not zero. Reports record pretraining/supervised time, optimizer counts and parameter counts separately. Multiple seeds must retain the same dataset/split/target preprocessing and a stable within-mode architecture and supervised training protocol.
 
-## Structure sharing boundary
+## Structure sharing boundary of `jepa_zerosim`
 
 For default encoder_layers=6 and cross_layers=4, the first two blocks precede the first design-parameter fusion. `StructureEncoder` owns this entire pure-structure prefix:
 
@@ -28,11 +29,19 @@ The remaining four input-side blocks retain self-attention and own-parameter cro
 
 The shared module reads only concrete type, coarse category, model identity, position, topology/terminal and external-port features. It cannot read parameters, OP, state labels or performance. The OP branch receives structure tokens concatenated with normalized selected electrical OP fields, their observation masks, and optional categorical check features/masks. One MLP is reused for every MOS device. No independent predictor remains: the input device representation aligns directly with the OP-branch output.
 
+## Separate EMA target in `jepa_zerosim_ema`
+
+This independently selected model retains the input-side `DeviceEncoder` and uses a second, unshared structure encoder plus the same depth of local/global self-attention and own-device cross-attention for its OP target. Matching pure-structure modules, fusion blocks, output normalization/projection and the null-input fallback start from the online weights and update once per successful optimizer step as `target = decay * target + (1 - decay) * online`. Their parameters are excluded from gradient optimization. Structural identity/position embeddings belong to that EMA trunk; design-parameter and OP field embeddings/projections are separate modality-specific trainable modules. Optional collector-state field embeddings/projections are trainable only on the target side.
+
+The target fusion forward retains autograd to its OP/state inputs: freezing its trunk does not detach the whole target representation. The existing two-branch MSE, variance and covariance objective therefore trains both modality-specific embeddings while the target trunk follows EMA. This is a hybrid alignment design, not the stop-gradient target of canonical I-JEPA. The target trunk stays in evaluation mode during pretraining; input-side dropout follows the existing training configuration. Neither branch receives performance labels during pretraining.
+
+`training.ema_decay` defaults to `0.99` for this model only. Checkpoints identify `separate-structure-ema_device-op-cross-attention_v1`, preserve EMA state and distinguish the model from legacy shared-structure checkpoints. Stage two freezes the complete online input encoder and trains the same metric-query decoder. It does not use OP, state features or the target branch for performance inference. Registry defaults remain the original five; the existing launcher arrays are not expanded. See [EMA design and usage](EMA_JEPA_ZH.md).
+
 ## Alignment objective and limitations
 
 The objective is symmetric device-wise MSE plus variance and off-diagonal covariance penalties on both branch outputs (VICReg-style anti-collapse regularization). Defaults are 25/25/1 with a standard-deviation floor of 1. At least two eligible observed MOS tokens are required per minibatch. Entirely missing OP vectors and non-target devices do not contribute.
 
-This is an explicit alignment prototype, not a canonical I-JEPA implementation. Sharing structure creates a genuine shortcut risk: the branches could agree on topology while underusing sizing/OP. Regularization addresses constant-vector collapse, not every shortcut. Meaningful research needs within-topology representation checks, OP pairing/shuffle ablations and downstream comparisons, not only decreasing alignment loss. The current smoke verifies mechanics, not scientific benefit.
+These are explicit alignment prototypes, not canonical I-JEPA implementations. In the original shared-structure variant, sharing creates a shortcut risk: the branches could agree on topology while underusing sizing/OP. Separating and EMA-updating the new target does not establish that every shortcut is removed. Regularization addresses constant-vector collapse, not every shortcut. Meaningful research needs within-topology representation checks, OP pairing/shuffle ablations and downstream comparisons, not only decreasing alignment loss. The current smoke verifies mechanics, not scientific benefit.
 
 ## Device graph and pin reference
 

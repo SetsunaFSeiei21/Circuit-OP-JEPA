@@ -31,6 +31,8 @@ METHODS = {
                                  uses_design_parameters=False, backbone_reference='zerosim_pin_op'),
     'zerosim_device_op_only': Method('baseline', 'device', True, 'Topology + DC OP only; no design-parameter inputs',
                                     uses_design_parameters=False, backbone_reference='zerosim_device_op'),
+    'jepa_zerosim_ema': Method('jepa', 'device', False,
+                             'Separate EMA structure/fusion OP target with trainable field embeddings, then frozen-encoder decoder'),
 }
 
 # This compatibility default is deliberately explicit, never tuple(METHODS).
@@ -40,6 +42,7 @@ DEFAULT_MODELS = ('zerosim_pin', 'zerosim_device', 'jepa_zerosim',
 LEGACY_MODES = ('zerosim_pin', 'zerosim_device', 'jepa_zerosim')
 MODES = tuple(METHODS)
 BASELINE_MODES = tuple(name for name, method in METHODS.items() if method.workflow == 'baseline')
+JEPA_MODES = tuple(name for name, method in METHODS.items() if method.workflow == 'jepa')
 PIN_MODES = tuple(name for name, method in METHODS.items() if method.node_granularity == 'pin')
 OP_MODES = tuple(name for name, method in METHODS.items() if method.requires_op_at_inference)
 OP_ONLY_MODES = tuple(name for name, method in METHODS.items() if not method.uses_design_parameters)

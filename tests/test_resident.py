@@ -16,6 +16,7 @@ from device_jepa.baselines import _collate, fit_pin_vocabulary, train_baseline
 from device_jepa.data import (_statistics, build_manifest, fit_preprocessor,
                               synthetic_dataset, transform_value)
 from device_jepa.model import FrozenPerformanceModel, ModelConfig, make_decoder
+from device_jepa.methods import JEPA_MODES
 from device_jepa.resident import (BatchProgress, ResidentDataset, _reserve,
                                   device_statistics, normalize, require_device, _prefix_sum)
 from device_jepa.states import apply_op_states
@@ -66,7 +67,7 @@ class ResidentParityTests(unittest.TestCase):
         self.check_modes('cuda')
 
     @unittest.skipUnless(torch.cuda.is_available(), 'CUDA hardware required')
-    def test_five_mode_cuda_training_evaluation_and_frozen_cache(self):
+    def test_all_registered_modes_cuda_training_evaluation_and_frozen_cache(self):
         from device_jepa.baselines import evaluate_baseline
         from device_jepa.training import pretrain, train_decoder, evaluate, load_checkpoint
         from device_jepa.comparison import compare_reports, MODES
@@ -80,8 +81,8 @@ class ResidentParityTests(unittest.TestCase):
             root=Path(tmp)
             for mode in MODES:
                 dest=root/mode
-                if mode=='jepa_zerosim':
-                    first=pretrain(data,manifest,config,dest,device='cuda')
+                if mode in JEPA_MODES:
+                    first=pretrain(data,manifest,config,dest,device='cuda',mode=mode)
                     checkpoint=train_decoder(data,first,config,dest,device='cuda')
                     self.assertGreater(load_checkpoint(checkpoint)['training_cost']['frozen_encoder_cache_bytes'],0)
                     reports.append(evaluate(data,checkpoint,device='cuda'))
@@ -228,7 +229,8 @@ class DeviceNormalizationTests(unittest.TestCase):
     def test_comparison_rejects_mixing_scalar_and_resident_runs(self):
         from device_jepa.comparison import compare_reports, MODES
         from test_comparison import report
-        reports=[report(mode) for mode in MODES]
+        from test_ema_comparison import EMA_MODE, ema_report
+        reports=[ema_report() if mode == EMA_MODE else report(mode) for mode in MODES]
         reports[0]['provenance']['tensor_pipeline']='device_resident_v1'
         with self.assertRaisesRegex(ValueError,'Tensor pipeline differs'):
             compare_reports(reports)

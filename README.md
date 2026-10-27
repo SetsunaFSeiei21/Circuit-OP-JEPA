@@ -1,6 +1,6 @@
 # Circuit-OP-JEPA
 
-器件级共享结构编码、OP 表示对齐，以及可按需选择的七个模式：
+器件级结构编码、OP 表示对齐，以及可按需选择的八个模式：
 
 - `zerosim_pin`：独立复现的 **pin-node ZeroSim-style** 监督基线，训练 encoder + metric-query decoder。
 - `zerosim_device`：器件节点 ZeroSim-style 监督基线，训练 encoder + decoder。
@@ -9,10 +9,11 @@
 - `zerosim_device_op`：在匹配的 device-node 监督基线上，加入逐器件电气 OP 与观测 mask；训练和推理均使用 OP。
 - `zerosim_pin_op_only`：沿用 `zerosim_pin_op` 的拓扑编码、融合层和 decoder，仅输入拓扑及 DC OP，移除设计参数输入分支。
 - `zerosim_device_op_only`：沿用 `zerosim_device_op` 的对应架构，仅输入拓扑及 DC OP，移除设计参数输入分支。
+- `jepa_zerosim_ema`：独立结构编码器与 OP 交叉注意力目标分支；目标结构/融合主干用 EMA，设计与 OP 字段 embedding 各自梯度更新，随后冻结输入 encoder 训练 decoder，性能推理不读取 OP。
 
 `zerosim_pin` 是本仓库的 clean-room 架构复现，不是直接导入官方代码，也不声称逐算子、权重或论文结果完全一致。各模式都用同一份原始样本、持久化划分、标签预算和目标归一化，JEPA 的额外预训练成本单独记录。两个 `*_op` 模式是加入 OP 的信息增强对照；两个 `*_op_only` 模式用于检验固定拓扑与 OP 后设计参数输入的作用。四个直接 OP 模型在训练和推理时均需要 OP。OP 采集成本未测量，报告标为 `not_measured`/`null`，不默认为零。
 
-默认名单仍为原有五个模型。只运行新增模型时传入 `--models zerosim_pin_op_only zerosim_device_op_only`；`--models all` 显式选择七个模型。
+默认名单仍为原有五个模型。新 EMA 模型须显式选择 `--models jepa_zerosim_ema`，或与原模型一起选择 `--models jepa_zerosim jepa_zerosim_ema`；`--models all` 显式选择八个模型。现有 Bash 启动脚本中的 `MODELS` 数组保持不变，使用新模型时自行加入名称。架构、更新规则和用法见 [EMA JEPA 说明](docs/EMA_JEPA_ZH.md)。
 
 实验汇总现在自动生成 `comparison/model_comparison.xlsx`，并排展示各模型 MAE、RMSE、R² 的均值 ± std。旧结果可用 `python scripts/run/export_results_excel.py --input 实验目录` 补导出，无需重新训练或安装额外依赖，见 [Excel 整理说明](docs/EXCEL_RESULTS_ZH.md)。
 
@@ -116,6 +117,8 @@ manifest 保存版本、样本集合、指纹和随机种子。再次运行只�
 - OP/输入统计使用 ID train，性能统计只使用 `labeled_train`。所有变换/尺度/字段顺序保存到 checkpoint，后续评估与冻结输入复用。
 
 ## 共享结构与两阶段
+
+本节描述原模型 `jepa_zerosim`；新增 `jepa_zerosim_ema` 的独立结构与 EMA 规则见 [EMA JEPA 说明](docs/EMA_JEPA_ZH.md)。
 
 默认 `encoder_layers=6, cross_layers=4`，切分点是 **第一次参数融合之前**：
 

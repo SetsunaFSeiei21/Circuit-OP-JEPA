@@ -236,7 +236,7 @@ class RawOrchestrationTests(unittest.TestCase):
         config = json.loads((self.output / 'config.json').read_text())
         self.assertEqual(config['dataset']['train_circuits'], ['ActualCircuit', 'SecondID'])
         self.assertEqual(config['dataset']['ood_circuits'], ['HeldOut'])
-        self.assertEqual(len(config['experiment']['models']), 7)
+        self.assertEqual(len(config['experiment']['models']), 8)
         self.assertEqual(calls[0][calls[0].index('--input')+1:calls[0].index('--config')],
                          [str(self.source), str(second), str(holdout)])
         self.assertEqual(calls[1][calls[1].index('--device')+1], 'cuda')

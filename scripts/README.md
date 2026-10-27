@@ -12,6 +12,7 @@ It does **not** run ngspice or resample circuits. Import existing simulation his
 - `zerosim_device_op`: the matched device-node supervised reference with the same additional continuous DC OP inputs.
 - `zerosim_pin_op_only`: the corresponding pin OP backbone using topology and continuous DC OP only, with the design-input branch removed.
 - `zerosim_device_op_only`: the corresponding device OP backbone with the same design-input removal.
+- `jepa_zerosim_ema`: a separately selected JEPA variant with an EMA structure/fusion OP cross-attention target and trainable modality field embeddings; performance inference uses the frozen online encoder and decoder only. See [EMA JEPA](../docs/EMA_JEPA_ZH.md).
 
 The original `*_op` models preserve design inputs, not restricted to W/L/M: configured named MOS, R/C and source parameters remain in the representation with their masks. All four direct OP models exclude discrete OP-state categories. The `*_op_only` models exclude all design values and masks, including R/C and source settings, and reject OP geometry fields `w_um/l_um/multiplicity`. They use the same remaining backbone and decoder; removing input embeddings/projections reduces parameter count. Raw design data remain necessary for grouped splits and provenance. See [model selection](../docs/MODEL_SELECTION_ZH.md). All four direct OP models **require DC OP at inference**; they are information-augmented ablations, not zero-simulation deployment alternatives at equal total cost. The original two baselines do not use OP as model input. JEPA uses OP only during pretraining and not performance inference.
 
@@ -66,6 +67,8 @@ Use `--models` to select exactly the methods to train, evaluate and aggregate.
 It overrides the JSON `experiment.models` list. Without either, comparison
 scripts retain the explicit original-five default; adding registered models does
 not grow that default. `--models all` explicitly opts into every registered model.
+There are now eight registered models. Existing convenience-launcher `MODELS`
+arrays are unchanged; add `jepa_zerosim_ema` explicitly to run the new variant.
 `--modes` remains a compatible alias. List names without data/GPU access or job
 submission using `bash scripts/run/submit_raw_comparison.sh --list-models`.
 The shared registry is `device_jepa/methods.py`; the resolved selection is saved
@@ -173,7 +176,7 @@ for the user's full 60,000-point sources must be measured in their jobs.
 Single-circuit results are ID experiments. For joint training with an OOD
 circuit, run `bash scripts/run/train_ood.sh` (or add `--dry-run` to preview).
 Edit `TRAIN_CIRCUITS`, `OOD_CIRCUITS`, `MODELS` and `SEEDS` in that file. Its
-default is all seven models, ID circuits 5t_ota/Opamp0/Opamp1 and the entire
+default is the original seven models, ID circuits 5t_ota/Opamp0/Opamp1 and the entire
 two_stage_folded_opamp circuit held out. The worker imports all raw directories,
 then uses the existing matched runner to evaluate both ID test and OOD. Results
 default to `runs/gpu_full/<heldout>_OOD_<date>/`, with CSV/Excel under

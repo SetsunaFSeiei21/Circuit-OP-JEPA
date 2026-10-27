@@ -1,0 +1,69 @@
+{
+  "date_utc": "2026-10-27",
+  "environment": {
+    "torch": "2.6.0+cpu",
+    "device": "cpu",
+    "cuda_available": false
+  },
+  "model": "jepa_zerosim_ema",
+  "unittest": {
+    "command": "python -m unittest discover -s tests",
+    "tests_run": 468,
+    "passed": 462,
+    "skipped": 6,
+    "failures": 0
+  },
+  "post_review_regression": {
+    "command": "PYTHONPATH=tests python -m unittest test_ema_pipeline test_pipeline",
+    "tests_run": 21,
+    "failures": 0
+  },
+  "smoke": {
+    "command": "python -m device_jepa smoke --models all --output <new-directory> --device cpu",
+    "synthetic": true,
+    "models": [
+      "zerosim_pin",
+      "zerosim_device",
+      "jepa_zerosim",
+      "zerosim_pin_op",
+      "zerosim_device_op",
+      "zerosim_pin_op_only",
+      "zerosim_device_op_only",
+      "jepa_zerosim_ema"
+    ],
+    "complete": true,
+    "strict_provenance": true,
+    "training_runs": 8,
+    "evaluation_splits": [
+      "test",
+      "ood"
+    ],
+    "csv_written": true,
+    "xlsx_valid_zip": true,
+    "encoder_frozen_verified": true,
+    "ema_selected_updates": 5,
+    "ema_total_updates": 5,
+    "parameters": {
+      "pretrain_total": 50880,
+      "pretrain_trainable": 25776,
+      "pretrain_ema": 25104,
+      "total": 39281,
+      "trainable": 13985,
+      "encoder": 25296
+    }
+  },
+  "verified_boundaries": [
+    "independent SE and fusion storage",
+    "OP trunk receives no parameter gradients",
+    "OP and state embeddings receive gradients through frozen fusion",
+    "EMA only after optimizer steps",
+    "selected checkpoint EMA state distinct from total executed cost",
+    "decoder preserves executed source EMA protocol and pretraining parameter counts",
+    "legacy JEPA and seven-model report compatibility"
+  ],
+  "limitations": [
+    "CPU and synthetic data only",
+    "CUDA and 300000-sample capacity not exercised",
+    "No real-data performance or OOD improvement claim"
+  ]
+}

@@ -73,7 +73,10 @@ def main(argv=None):
             dest = out/mode/f'seed_{seed}'
             common = ['--data', data, '--config', cfg, '--output', dest, '--device', args.device]
             if method.workflow == 'jepa':
-                run('pretrain', *common, '--manifest', manifest)
+                # Keep the legacy invocation stable while explicitly selecting
+                # independently registered JEPA architectures.
+                variant = [] if mode == 'jepa_zerosim' else ['--mode', mode]
+                run('pretrain', *variant, *common, '--manifest', manifest)
                 run('train_decoder', *common, '--pretrained', dest/'pretrain_best.pt')
             else:
                 run('train_baseline', '--mode', mode, *common, '--manifest', manifest)

@@ -73,7 +73,7 @@ def _information_contract(report):
                 op_eligibility=info.get('eligibility'), op_evaluation_coverage=info.get('evaluation_coverage'),
                 op_availability_requirement=('continuous DC OP for every inference sample (missing fields remain masked)'
                                              if required else ('DC OP during JEPA pretraining only; no OP at inference'
-                                                               if mode == 'jepa_zerosim' else 'no OP model input')),
+                                                               if method.workflow == 'jepa' else 'no OP model input')),
                 op_acquisition_cost_seconds=seconds, op_acquisition_cost_status=status,
                 op_acquisition_cost_scope=info.get('acquisition_cost_scope'))
 
@@ -255,12 +255,13 @@ def _executed_protocol_gaps(source):
 def _epoch_budget(provenance, gaps):
     """Separate planned maxima from executed epochs and selected weights."""
     mode, config = provenance['mode'], provenance['training_config']
-    if mode == 'jepa_zerosim':
+    is_jepa = method_spec(mode).workflow == 'jepa'
+    if is_jepa:
         supervised = config.get('decoder_epochs')
         source = provenance.get('pretrain_provenance') or {}
         pretrain = source.get('protocol', {}).get('training', {}).get('pretrain_epochs')
         if pretrain is None:
-            gaps.add('jepa_zerosim: missing executed pretraining epoch budget')
+            gaps.add(f'{mode}: missing executed pretraining epoch budget')
     else:
         pretrain = 0
         supervised = config.get('baseline_epochs')
@@ -269,14 +270,14 @@ def _epoch_budget(provenance, gaps):
             # that was silently coupled to the JEPA decoder setting.
             gaps.add(f'{mode}: missing explicit baseline_epochs; legacy epoch budget unverified')
     for key, value in (('pretrain_epochs', pretrain), ('supervised_epochs', supervised)):
-        minimum = 0 if key == 'pretrain_epochs' and mode != 'jepa_zerosim' else 1
+        minimum = 0 if key == 'pretrain_epochs' and not is_jepa else 1
         if value is not None and (type(value) is not int or value < minimum):
             raise ValueError(f'Invalid {mode} training budget: {key}')
-    if mode == 'jepa_zerosim' and supervised is None:
+    if is_jepa and supervised is None:
         raise ValueError('Incomplete JEPA decoder training budget')
     planned_pretrain, planned_supervised = pretrain, supervised
     planned_total = pretrain + supervised if pretrain is not None and supervised is not None else None
-    if mode == 'jepa_zerosim' and pretrain is not None:
+    if is_jepa and pretrain is not None:
         original = source.get('source_options', {}).get('training')
         if original is None:
             original = dict(source.get('protocol', {}).get('training', {}))
@@ -298,16 +299,58 @@ def _epoch_budget(provenance, gaps):
     return budget
 
 
+def _validate_jepa_method_protocol(provenance, source):
+    """Keep the EMA method distinct without imposing new fields on old JEPA."""
+    mode = provenance['mode']
+    is_ema = mode == 'jepa_zerosim_ema'
+    architecture = 'separate-structure-ema_device-op-cross-attention_v1'
+    if source is None:
+        if is_ema:
+            raise ValueError('EMA JEPA requires executed pretraining provenance')
+        return
+    protocol = source['protocol']
+    if protocol.get('mode', mode) != mode:
+        raise ValueError('Pretraining protocol mode differs from report mode')
+    if not is_ema:
+        if protocol.get('architecture') == architecture:
+            raise ValueError('EMA JEPA architecture cannot be reported as another mode')
+        return
+    if (provenance.get('backend') != mode or protocol.get('mode') != mode
+            or protocol.get('architecture') != architecture):
+        raise ValueError('EMA JEPA backend/mode/architecture identity is inconsistent')
+    options = source.get('source_options')
+    if not isinstance(options, dict) or not isinstance(options.get('training'), dict):
+        raise ValueError('EMA JEPA requires executed training source options')
+    decay = options['training'].get('ema_decay', 0.99)
+    if type(decay) not in (int, float) or not math.isfinite(decay) or not 0 <= decay < 1:
+        raise ValueError('Invalid executed EMA decay')
+    expected = dict(decay=float(decay), update_scope=['structure_encoder', 'fusion_blocks',
+                    'output_norm', 'output_projection', 'null_parameter'],
+                    update_timing='after_optimizer_step',
+                    gradient_policy='independent_input_embeddings_frozen_op_trunk')
+    actual = protocol.get('ema')
+    if (not isinstance(actual, dict) or type(actual.get('decay')) not in (int, float)
+            or actual != expected):
+        raise ValueError('Executed EMA protocol differs from the method contract or source options')
+    if 'ema' in provenance and provenance['ema'] != actual:
+        raise ValueError('Report EMA metadata differs from executed pretraining protocol')
+    if 'architecture' in provenance and provenance['architecture'] != architecture:
+        raise ValueError('Report architecture differs from executed EMA pretraining protocol')
+
+
 def compare_reports(reports, require_all_modes=True, expected_modes=None):
     if not reports:
         raise ValueError('No reports supplied')
     supplied_modes = {r['provenance']['mode'] for r in reports}
     # Preserve strict comparison of pre-existing three-mode result sets. Once
     # an original OP-input report is supplied, expect the original five.
-    # New cohorts should explicitly declare their selected modes.
+    # Preserve seven-model OP-only experiments as well. New cohorts should
+    # explicitly declare their selected modes.
     if expected_modes is None:
+        original_seven = (*DEFAULT_MODELS, 'zerosim_pin_op_only', 'zerosim_device_op_only')
         expected_modes = (LEGACY_MODES if supplied_modes <= set(LEGACY_MODES) else
-                          DEFAULT_MODELS if supplied_modes <= set(DEFAULT_MODELS) else MODES)
+                          DEFAULT_MODELS if supplied_modes <= set(DEFAULT_MODELS) else
+                          original_seven if supplied_modes <= set(original_seven) else MODES)
     expected_modes = tuple(expected_modes)
     if not expected_modes or len(expected_modes) != len(set(expected_modes)) or any(m not in MODES for m in expected_modes):
         raise ValueError('Expected modes must be a nonempty unique selection of supported modes')
@@ -347,15 +390,17 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
             if run_key in mode_seed_runs and mode_seed_runs[run_key] != run_identity:
                 raise ValueError('Different checkpoint run identities for the same mode/seed across splits')
             mode_seed_runs[run_key] = run_identity
-        if mode == 'jepa_zerosim':
+        if method_spec(mode).workflow == 'jepa':
             protocol = p.get('pretraining_protocol_digest')
             source = p.get('pretrain_provenance')
             if source is None:
-                provenance_gaps.add('jepa_zerosim: missing executed pretraining provenance')
+                _validate_jepa_method_protocol(p, source)
+                provenance_gaps.add(f'{mode}: missing executed pretraining provenance')
             elif not isinstance(source, dict) or not isinstance(source.get('protocol'), dict):
                 raise ValueError('Invalid executed pretraining provenance')
             else:
-                provenance_gaps.update('jepa_zerosim: ' + gap for gap in _executed_protocol_gaps(source))
+                _validate_jepa_method_protocol(p, source)
+                provenance_gaps.update(f'{mode}: ' + gap for gap in _executed_protocol_gaps(source))
                 actual_digest = hashlib.sha256(json.dumps(source['protocol'], sort_keys=True,
                     separators=(',', ':'), allow_nan=False).encode()).hexdigest()
                 if protocol != actual_digest or source.get('protocol_digest') != actual_digest:
@@ -366,7 +411,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                     if source.get(field) != p[field]:
                         raise ValueError('Pretraining data identity differs from evaluation provenance')
             if protocol is None:
-                provenance_gaps.add('jepa_zerosim: missing verified pretraining protocol')
+                provenance_gaps.add(f'{mode}: missing verified pretraining protocol')
             elif not isinstance(protocol, str) or not protocol.strip():
                 raise ValueError('pretraining_protocol_digest must be a nonempty string')
             else:
@@ -375,7 +420,7 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
                 pretraining_protocols[mode] = protocol
             for field in ('pretrain_seed', 'decoder_seed'):
                 if p.get(field) is None:
-                    provenance_gaps.add(f'jepa_zerosim: missing {field}')
+                    provenance_gaps.add(f'{mode}: missing {field}')
                 elif type(p[field]) is not int:
                     raise ValueError(f'{field} must be an integer')
             if p.get('decoder_seed', seed) != seed:
@@ -514,10 +559,12 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
             else:
                 acquisition_costs[acquisition_key] = {**acquisition, 'evaluation_splits': []}
             acquisition_costs[acquisition_key]['evaluation_splits'].append(split)
-    # Device supervised and JEPA must differ in optimization, not architecture.
+    # Match the online device encoder configuration across supervised and JEPA
+    # runs; a JEPA variant may use a different pretraining-only target branch.
     # The pin reproduction may differ only in node-budget and terminal-role bias.
-    if 'zerosim_device' in architectures and 'jepa_zerosim' in architectures:
-        if architectures['zerosim_device'] != architectures['jepa_zerosim']:
+    jepa_modes = [mode for mode in architectures if method_spec(mode).workflow == 'jepa']
+    for mode in jepa_modes:
+        if 'zerosim_device' in architectures and architectures['zerosim_device'] != architectures[mode]:
             raise ValueError('Model configuration differs between device and JEPA modes')
     for _, baseline_mode, op_mode in OP_PAIRS:
         if baseline_mode in architectures and op_mode in architectures and architectures[baseline_mode] != architectures[op_mode]:
@@ -525,8 +572,8 @@ def compare_reports(reports, require_all_modes=True, expected_modes=None):
     for reference, ablation in MATCHED_BACKBONES:
         if reference in architectures and ablation in architectures and architectures[reference] != architectures[ablation]:
             raise ValueError(f'Model configuration differs within design-input ablation {reference}/{ablation}')
-    if 'zerosim_device_op' in architectures and 'jepa_zerosim' in architectures:
-        if architectures['zerosim_device_op'] != architectures['jepa_zerosim']:
+    for mode in jepa_modes:
+        if 'zerosim_device_op' in architectures and architectures['zerosim_device_op'] != architectures[mode]:
             raise ValueError('Model configuration differs between device OP and JEPA modes')
     common_architectures = [{k: v for k, v in cfg.items() if k not in ('max_devices', 'terminal_bias')}
                             for cfg in architectures.values()]

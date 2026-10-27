@@ -18,9 +18,10 @@ from .data import (DEVICE_CATEGORY_VOCAB, INPUT_CONTRACT_VERSION, dataset_finger
                    partition_fingerprint, samples_for_split, verify_manifest, is_op_target,
                    _preprocessing_config, _statistics)
 from .model import DeviceEncoder, FrozenPerformanceModel, JEPAModel, ModelConfig, alignment_loss, make_decoder, masked_mse
+from .ema_model import EMAJEPAModel, EMA_MODE, EMA_ARCHITECTURE, ema_protocol, validate_ema_decay
 from .tensors import collate_samples, denormalize, to_device, evaluation_targets
 from .budgets import positive_epochs
-from .methods import OP_MODES, method_spec
+from .methods import JEPA_MODES, OP_MODES, method_spec
 from .early_stopping import (EarlyStopping, PRETRAIN_OBJECTIVE, SUPERVISED_OBJECTIVE,
                              early_stopping_config, executed_epochs)
 from .resident import PIPELINE, BatchProgress, ResidentDataset, require_device, deterministic_workspace
@@ -40,8 +41,12 @@ def seed_everything(seed, threads=1):
 
 
 def state_digest(module):
+    return _state_dict_digest(module.state_dict())
+
+
+def _state_dict_digest(state):
     digest = hashlib.sha256()
-    for name, tensor in sorted(module.state_dict().items()):
+    for name, tensor in sorted(state.items()):
         digest.update(name.encode())
         digest.update(str(tensor.dtype).encode())
         digest.update(str(tuple(tensor.shape)).encode())
@@ -84,6 +89,8 @@ def _check_options(options):
             raise ValueError(f"{k} must be positive")
     if options["loss"]["variance"] <= 0 or options["loss"]["covariance"] < 0:
         raise ValueError("Keep positive variance regularization to avoid collapse")
+    if 'ema_decay' in tr:
+        validate_ema_decay(tr['ema_decay'])
 
 
 def _check_dataset_options(options, manifest):
@@ -180,6 +187,8 @@ def _pretraining_provenance(source):
     }
     if 'early_stopping' in source:
         protocol['early_stopping'] = early_stopping_config(tr)
+    if source.get('mode') == EMA_MODE:
+        protocol.update(mode=EMA_MODE, ema=copy.deepcopy(source['ema']))
     return {"version": 1, "protocol": protocol, "protocol_digest": _json_digest(protocol),
             "seed": tr["seed"], "source_options": copy.deepcopy(options),
             "selected_epoch": source["epoch"], "selection": copy.deepcopy(source["selection"]),
@@ -188,7 +197,8 @@ def _pretraining_provenance(source):
             "input_op_fingerprint": source["input_op_fingerprint"],
             "partition_fingerprint": source["partition_fingerprint"],
             "source_dataset_fingerprint": source["manifest"]["dataset_fingerprint"],
-            "checkpoint_run_id": source.get("checkpoint_run_id")}
+            "checkpoint_run_id": source.get("checkpoint_run_id"),
+            **({"selected_ema_updates": source['ema_updates']} if source.get('mode') == EMA_MODE else {})}
 
 
 def _provenance(dataset, manifest, options, input_fingerprint=None):
@@ -207,10 +217,21 @@ def _provenance(dataset, manifest, options, input_fingerprint=None):
             "shared_structure_layers": options["model"]["encoder_layers"] - options["model"]["cross_layers"]}
 
 
-def pretrain(dataset, manifest, options, output, device="cpu"):
+def _jepa_provenance(provenance, mode, ema=None):
+    provenance.update(mode=mode, backend=EMA_MODE if mode == EMA_MODE else 'shared_structure_jepa_v2')
+    if mode == EMA_MODE:
+        provenance.update(architecture=EMA_ARCHITECTURE, shared_structure_layers=0,
+                          structure_layers=provenance['model_config']['encoder_layers'] - provenance['model_config']['cross_layers'],
+                          ema=copy.deepcopy(ema))
+    return provenance
+
+
+def pretrain(dataset, manifest, options, output, device="cpu", mode="jepa_zerosim"):
     """Only ID train design inputs/OP are used; validation sees OP, never labels."""
     started = time.perf_counter()
     optimizer_steps = 0
+    if mode not in JEPA_MODES:
+        raise ValueError(f'Pretraining requires a JEPA model, got {mode!r}')
     device = require_device(device)
     print(f"JEPA pretrain setup on {device}: validating dataset/manifest", flush=True)
     verify_manifest(dataset, manifest)
@@ -230,9 +251,12 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
         raise AssertionError("Stage 1 must not fit performance normalization")
     encoder = encoder_from_metadata(options["model"], preprocessing)
     preprocessing["op_state_features"] = list(state_features)
-    model = JEPAModel(encoder, len(preprocessing["feature_spec"]["op_names"]),
-                      len(preprocessing["op_state_features"])).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=tr["pretrain_lr"], weight_decay=tr["weight_decay"])
+    model_class = EMAJEPAModel if mode == EMA_MODE else JEPAModel
+    extra = {'ema_decay': tr.get('ema_decay', 0.99)} if mode == EMA_MODE else {}
+    model = model_class(encoder, len(preprocessing["feature_spec"]["op_names"]),
+                        len(preprocessing["op_state_features"]), **extra).to(device)
+    trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=tr["pretrain_lr"], weight_decay=tr["weight_decay"])
     train = samples_for_split(dataset, manifest, "train")
     val = samples_for_split(dataset, manifest, "val")
     # An all-OP-missing record is valid raw data but supplies no stage-1 target.
@@ -242,7 +266,8 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
     train_usable, val_usable = [s for s in train if observed(s)], [s for s in val if observed(s)]
     if not train_usable or not val_usable:
         raise ValueError("Both ID train and validation require some observed OP")
-    provenance = _provenance(dataset, manifest, options)
+    provenance = _jepa_provenance(_provenance(dataset, manifest, options), mode,
+                                  ema_protocol(model.ema_decay) if mode == EMA_MODE else None)
     cached = ResidentDataset(train_usable + val_usable, preprocessing, device,
                              include_op=True, include_op_states=True,
                              max_tokens=options['model']['max_devices'], label='JEPA pretrain data')
@@ -271,9 +296,11 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                     if phase == "train":
                         optimizer.zero_grad(set_to_none=True)
                         loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), tr["grad_clip"], error_if_nonfinite=True)
+                        torch.nn.utils.clip_grad_norm_(trainable_parameters, tr["grad_clip"], error_if_nonfinite=True)
                         optimizer.step()
                         optimizer_steps += 1
+                        if mode == EMA_MODE:
+                            model.update_ema()
                 weight = valid.sum()
                 count += weight
                 values = torch.stack([loss.detach(), detail['alignment_mse'], detail['variance'], detail['covariance']]).double()
@@ -296,12 +323,14 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                           "encoder_state": model.encoder.state_dict(),
                           "encoder_digest": state_digest(model.encoder),
                           "skipped_all_op_missing": {"train": len(train)-len(train_usable), "val": len(val)-len(val_usable)}}
+            if mode == EMA_MODE:
+                checkpoint.update(ema_updates=model.ema_updates, op_encoder_digest=state_digest(model.op_encoder))
             torch.save(checkpoint, output / "pretrain_best.pt")
         if stopping.should_stop:
             stopping.announce('JEPA pretrain')
             break
     selected = load_checkpoint(output / "pretrain_best.pt")
-    selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+    selected.update(mode=mode, backend=provenance['backend'],
                     early_stopping=stopping.summary(),
                     timings={"pretrain_seconds": time.perf_counter()-started, "supervised_seconds": 0.},
                     training_cost={"pretrain_optimizer_steps": optimizer_steps, "pretrain_examples": len(train_usable),
@@ -313,6 +342,11 @@ def pretrain(dataset, manifest, options, output, device="cpu"):
                                    "resident_data_bytes": cached.nbytes},
                     parameter_count={"pretrain_total": sum(p.numel() for p in model.parameters()),
                                      "encoder": sum(p.numel() for p in model.encoder.parameters())})
+    if mode == EMA_MODE:
+        model.verify_ema_state()
+        selected['training_cost']['pretrain_ema_updates'] = model.ema_updates
+        selected['parameter_count'].update(pretrain_trainable=sum(p.numel() for p in trainable_parameters),
+                                          pretrain_ema=sum(p.numel() for p in model.parameters() if not p.requires_grad))
     torch.save(selected, output / "pretrain_best.pt")
     _save_json(output / "pretrain_history.json", history)
     manifest_path = output / "manifest.json"
@@ -371,7 +405,51 @@ def load_checkpoint(path):
                 or pretraining.get("seed") != checkpoint.get("pretrain_seed")
                 or checkpoint.get("decoder_seed") != checkpoint["options"]["training"]["seed"]):
             raise ValueError("Checkpoint pretraining provenance integrity mismatch")
+    _validate_ema_checkpoint(checkpoint)
     return checkpoint
+
+
+def _validate_ema_checkpoint(checkpoint):
+    """Keep the new hybrid architecture distinct from legacy JEPA checkpoints."""
+    is_ema = checkpoint.get('mode') == EMA_MODE
+    if not is_ema:
+        if (checkpoint.get('architecture') == EMA_ARCHITECTURE or 'ema' in checkpoint
+                or (checkpoint.get('pretrain_provenance') or {}).get('protocol', {}).get('mode') == EMA_MODE):
+            raise ValueError('EMA checkpoint identity contradicts its model mode')
+        return
+    if (checkpoint.get('backend') != EMA_MODE or checkpoint.get('architecture') != EMA_ARCHITECTURE
+            or checkpoint.get('requires_op_at_inference') is not False
+            or checkpoint.get('shared_structure_layers') != 0):
+        raise ValueError('EMA checkpoint architecture or input contract mismatch')
+    pretraining = checkpoint.get('pretrain_provenance')
+    options = pretraining['source_options'] if pretraining else checkpoint['options']
+    expected = ema_protocol(options['training'].get('ema_decay', 0.99))
+    if checkpoint.get('ema') != expected:
+        raise ValueError('EMA checkpoint protocol differs from executed pretraining options')
+    updates = checkpoint.get('ema_updates')
+    if type(updates) is not int or updates < 1:
+        raise ValueError('EMA checkpoint must record its selected optimizer-step update count')
+    cost = checkpoint.get('training_cost', {})
+    if cost and (cost.get('pretrain_ema_updates') != cost.get('pretrain_optimizer_steps')
+                 or cost.get('pretrain_ema_updates', -1) < updates):
+        raise ValueError('EMA checkpoint update count contradicts executed optimizer steps')
+    if checkpoint['stage'] == 'pretrain':
+        state = checkpoint['model_state']
+        for prefix, expected_digest in (('encoder.', checkpoint['encoder_digest']),
+                                        ('op_encoder.', checkpoint.get('op_encoder_digest'))):
+            partial = {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
+            if not partial or _state_dict_digest(partial) != expected_digest:
+                raise ValueError('EMA checkpoint model state integrity mismatch')
+        if _state_dict_digest(checkpoint['encoder_state']) != checkpoint['encoder_digest']:
+            raise ValueError('EMA checkpoint exported encoder integrity mismatch')
+    elif checkpoint['stage'] == 'decoder':
+        if (not pretraining or pretraining['protocol'].get('mode') != EMA_MODE
+                or pretraining['protocol'].get('architecture') != EMA_ARCHITECTURE
+                or pretraining['protocol'].get('ema') != expected
+                or pretraining.get('selected_ema_updates') != updates):
+            raise ValueError('EMA decoder lost its source pretraining protocol')
+    else:
+        raise ValueError('Unsupported EMA checkpoint stage')
 
 
 def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
@@ -380,6 +458,9 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
     device = require_device(device)
     print(f"JEPA decoder setup on {device}: validating source checkpoint", flush=True)
     source = load_checkpoint(pretrain_checkpoint)
+    mode = source.get('mode', 'jepa_zerosim')
+    if mode not in JEPA_MODES:
+        raise ValueError('train_decoder requires a JEPA pretraining checkpoint')
     if source["stage"] != "pretrain":
         raise ValueError("train_decoder requires a stage-1 checkpoint")
     # Labels may be attached after OP pretraining, but no design/OP record,
@@ -441,7 +522,10 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
         raise AssertionError("Encoder parameters entered the stage-2 optimizer")
     split_rows = {"train": samples_for_split(dataset, manifest, "labeled_train"),
                   "val": samples_for_split(dataset, manifest, "val")}
-    provenance = _provenance(dataset, manifest, options, input_fingerprint)
+    provenance = _jepa_provenance(_provenance(dataset, manifest, options, input_fingerprint),
+                                  mode, source.get('ema'))
+    if mode == EMA_MODE:
+        provenance['ema_updates'] = source['ema_updates']
     cached = ResidentDataset(split_rows['train'] + split_rows['val'], prep, device,
                              include_performance=True, performance_metric_mask=selected_metric_mask,
                              max_tokens=options['model']['max_devices'], label='JEPA decoder data')
@@ -517,7 +601,7 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
             stopping.announce('JEPA decoder')
             break
     selected = load_checkpoint(output / "decoder_best.pt")
-    selected.update(mode="jepa_zerosim", backend="shared_structure_jepa_v2",
+    selected.update(mode=mode, backend=provenance['backend'],
                     early_stopping=stopping.summary(),
                     timings={"pretrain_seconds": source["timings"]["pretrain_seconds"],
                              "supervised_seconds": time.perf_counter()-started},
@@ -533,7 +617,9 @@ def train_decoder(dataset, pretrain_checkpoint, options, output, device="cpu"):
                                    "planned_supervised_epochs": tr['decoder_epochs'],
                                    "planned_total_epochs": pretrain_provenance['protocol']['training']['pretrain_epochs'] + tr['decoder_epochs'],
                                    "labeled_train_examples": len(split_rows["train"])},
-                    parameter_count={"total": sum(p.numel() for p in model.parameters()),
+                    parameter_count={**{key: value for key, value in source.get('parameter_count', {}).items()
+                                        if key.startswith('pretrain_')},
+                                     "total": sum(p.numel() for p in model.parameters()),
                                      "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
                                      "encoder": sum(p.numel() for p in model.encoder.parameters())})
     torch.save(selected, output / "decoder_best.pt")
@@ -615,14 +701,14 @@ def report_provenance(source, dataset, rows):
     mode = source.get("mode", "jepa_zerosim")
     uses_op_input = mode in OP_MODES
     uses_design = method_spec(mode).uses_design_parameters
-    uses_op = uses_op_input or mode == "jepa_zerosim"
+    uses_op = uses_op_input or mode in JEPA_MODES
     op_information = {
         "training_use": "input" if uses_op_input else "pretraining_target" if uses_op else "none",
         "inference_use": "input" if uses_op_input else "none",
         "source": "dataset_dc_operating_point" if uses_op else None,
         "feature_names": prep["feature_spec"]["op_names"] if uses_op else [],
-        "state_features": prep.get("op_state_features", []) if mode == "jepa_zerosim" else [],
-        "state_config": copy.deepcopy(source["options"].get("op_state", {"features": []})) if mode == "jepa_zerosim" else {},
+        "state_features": prep.get("op_state_features", []) if mode in JEPA_MODES else [],
+        "state_config": copy.deepcopy(source["options"].get("op_state", {"features": []})) if mode in JEPA_MODES else {},
         "eligibility": "is_op_target; MOS by default; current adapter has no passive/source OP",
         "scaler_fitted_sample_ids": prep["fit_ids"]["op"] if uses_op else [],
         "acquisition_cost_seconds": None,
@@ -681,6 +767,9 @@ def report_provenance(source, dataset, rows):
             "model_config": source["model_config"],
             "pretrain_source": source.get("source_pretrain_digest")}) if source.get("checkpoint_run_id") else None,
     }
+    if mode == EMA_MODE:
+        provenance.update(architecture=source['architecture'], ema=copy.deepcopy(source['ema']),
+                          selected_ema_updates=source['ema_updates'])
     return {"mode": mode, "backend": backend, "seed": provenance["seed"],
             "requires_op_at_inference": uses_op_input, "op_information": op_information,
             "uses_design_parameters": uses_design,

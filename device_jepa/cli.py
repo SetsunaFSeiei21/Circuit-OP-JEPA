@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .data import build_manifest, load_dataset, synthetic_dataset, verify_manifest
-from .methods import BASELINE_MODES, add_model_arguments, method_spec, select_models
+from .methods import BASELINE_MODES, JEPA_MODES, add_model_arguments, method_spec, select_models
 
 
 def _write(path, value):
@@ -72,6 +72,8 @@ def main(argv=None):
         command.add_argument("--device", default="cpu")
         if name == "pretrain":
             command.add_argument("--manifest", required=True)
+            command.add_argument("--mode", "--model", choices=JEPA_MODES, default="jepa_zerosim",
+                                 help="JEPA variant; defaults to the original shared-structure model")
         else:
             command.add_argument("--pretrained", required=True)
     baseline = commands.add_parser("train_baseline", help="Clean-room supervised pin/device ZeroSim-style baseline")
@@ -177,7 +179,7 @@ def main(argv=None):
             # Preserve the historical JEPA-only smoke artifact paths.
             destination = output if models == ['jepa_zerosim'] else output / mode / f"seed_{config['training']['seed']}"
             if method.workflow == 'jepa':
-                p = pretrain(dataset, manifest, config, destination, args.device)
+                p = pretrain(dataset, manifest, config, destination, args.device, mode=mode)
                 checkpoint = train_decoder(dataset, p, config, destination, args.device)
                 evaluator = evaluate
             else:
@@ -205,7 +207,7 @@ def main(argv=None):
     print(f"Loading canonical dataset for {args.command}: {args.data}", flush=True)
     dataset = load_dataset(args.data)
     if args.command == "pretrain":
-        print(pretrain(dataset, _read(args.manifest), _read(args.config), args.output, args.device))
+        print(pretrain(dataset, _read(args.manifest), _read(args.config), args.output, args.device, mode=args.mode))
     elif args.command == "train_baseline":
         from .baselines import train_baseline
         print(train_baseline(dataset, _read(args.manifest), _read(args.config), args.output, mode=args.mode, device=args.device))

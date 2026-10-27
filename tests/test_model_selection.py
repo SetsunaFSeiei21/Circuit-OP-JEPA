@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from device_jepa.cli import main as cli
 from device_jepa.data import synthetic_dataset
-from device_jepa.methods import (METHODS, DEFAULT_MODELS, Method, add_model_arguments,
+from device_jepa.methods import (METHODS, DEFAULT_MODELS, JEPA_MODES, Method, add_model_arguments,
                                  select_models)
 from device_jepa.states import apply_op_states
 
@@ -71,7 +71,10 @@ class ModelSelectionTests(unittest.TestCase):
         baseline_calls = [c for c in calls if c[0] == 'train_baseline']
         self.assertEqual([c[c.index('--mode') + 1] for c in baseline_calls],
                          [m for _ in seeds for m in selected if METHODS[m].workflow == 'baseline'])
-        self.assertEqual(sum(c[0] == 'pretrain' for c in calls), len(seeds) if 'jepa_zerosim' in selected else 0)
+        pretrain_calls = [c for c in calls if c[0] == 'pretrain']
+        self.assertEqual([c[c.index('--mode') + 1] if '--mode' in c else 'jepa_zerosim'
+                          for c in pretrain_calls],
+                         [m for _ in seeds for m in selected if METHODS[m].workflow == 'jepa'])
         evaluations = [c for c in calls if c[0] == 'evaluate']
         self.assertEqual(len(evaluations), len(seeds) * len(selected))
         for c in evaluations:
@@ -89,6 +92,20 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_cli_subset_overrides_config_across_multiple_seeds(self):
         self.run_experiment(['jepa_zerosim', 'zerosim_device'], seeds=(17, 29))
+
+    def test_both_jepa_variants_keep_separate_stages_and_reports(self):
+        self.run_experiment(list(JEPA_MODES), from_config=True)
+
+    def test_ema_registration_preserves_defaults_and_epoch_budget(self):
+        from device_jepa.budgets import comparison_epoch_budget
+        self.assertEqual(JEPA_MODES, ('jepa_zerosim', 'jepa_zerosim_ema'))
+        self.assertNotIn('jepa_zerosim_ema', DEFAULT_MODELS)
+        self.assertEqual(select_models({}), list(DEFAULT_MODELS))
+        self.assertFalse(METHODS['jepa_zerosim_ema'].requires_op_at_inference)
+        budgets = comparison_epoch_budget(self.config, [*JEPA_MODES, 'zerosim_device'])
+        self.assertEqual(budgets['jepa_zerosim_ema'], budgets['jepa_zerosim'])
+        self.assertEqual(budgets['jepa_zerosim_ema']['total_epochs'],
+                         budgets['zerosim_device']['total_epochs'])
 
     def test_configured_op_pair_generates_only_its_own_pair_table(self):
         result = self.run_experiment(['zerosim_device', 'zerosim_device_op'], from_config=True)
@@ -144,6 +161,25 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(result['expected_modes'], ['zerosim_device_op'])
         self.assertFalse(list(output.rglob('pretrain_best.pt')))
         self.assertFalse(list(output.rglob('decoder_best.pt')))
+
+    def test_direct_smoke_selects_ema_pretraining_and_report(self):
+        from device_jepa.training import pretrain
+        path = self.root / 'ema-smoke-config.json'
+        path.write_text(json.dumps(self.config))
+        output = self.root / 'ema-smoke'
+        data = json.loads(self.data_path.read_text())
+        with patch('device_jepa.cli.synthetic_dataset', return_value=data), \
+             patch('device_jepa.training.pretrain', wraps=pretrain) as fit, \
+             contextlib.redirect_stdout(io.StringIO()):
+            cli(['smoke', '--config', str(path), '--output', str(output),
+                 '--models', 'jepa_zerosim_ema'])
+        self.assertEqual(fit.call_count, 1)
+        self.assertEqual(fit.call_args.kwargs['mode'], 'jepa_zerosim_ema')
+        result = json.loads((output / 'comparison/comparison.json').read_text())
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['expected_modes'], ['jepa_zerosim_ema'])
+        self.assertFalse((output / 'jepa_zerosim').exists())
+        self.assertTrue((output / 'jepa_zerosim_ema/seed_17/decoder_best.pt').exists())
 
 
 if __name__ == '__main__':

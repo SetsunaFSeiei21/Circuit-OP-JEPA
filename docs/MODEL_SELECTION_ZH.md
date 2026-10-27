@@ -74,6 +74,7 @@ python -m device_jepa --list-models
 | `zerosim_device_op` | device 节点监督训练，输入连续 OP | 是 |
 | `zerosim_pin_op_only` | pin 节点监督训练，仅拓扑 + 连续 OP | 是 |
 | `zerosim_device_op_only` | device 节点监督训练，仅拓扑 + 连续 OP | 是 |
+| `jepa_zerosim_ema` | 独立结构/融合主干的 EMA OP 对齐预训练，再冻结 encoder 训练 decoder | 否 |
 
 长期使用同一名单时，在训练 JSON 中添加顶层字段（`model` 仍用于设置网络结构参数）：
 
@@ -117,9 +118,24 @@ MODELS=(zerosim_pin_op_only zerosim_device_op_only)
 MODELS=(zerosim_pin_op zerosim_pin_op_only zerosim_device_op zerosim_device_op_only)
 ```
 
-严格汇总校验同组骨干超参数一致，并在报告和成本表记录 `uses_design_parameters=false`。现有 OP/no-OP 成对表只表达“增加 OP”的对照，OP-only 结果进入常规汇总，不混入这张成对表。默认仍选原五个模型；`--models all` 现在选择全部七个。
+严格汇总校验同组骨干超参数一致，并在报告和成本表记录 `uses_design_parameters=false`。现有 OP/no-OP 成对表只表达“增加 OP”的对照，OP-only 结果进入常规汇总，不混入这张成对表。默认仍选原五个模型；`--models all` 现在选择全部八个。
 
 输入隔离、剩余权重一致性、checkpoint 重载和汇总契约测试见 `tests/test_op_only.py`；CPU 短流程及验证范围见 [verification/op_only/results.json](../verification/op_only/results.json)。这不代表已验证 GPU 吞吐、完整 60,000 点训练容量或预测收益。
+
+## 独立 EMA JEPA 模型
+
+`jepa_zerosim_ema` 是单独注册的模型，不替换 `jepa_zerosim`。两种模型都采用预训练 + 冻结 encoder 的 decoder 训练，性能推理均不使用 OP；新模型将 OP 侧 MLP 改为 own-device 交叉注意力融合，目标 SE 与融合主干通过 EMA 更新，模态字段 embedding 各自梯度更新。详细边界见 [EMA JEPA 说明](EMA_JEPA_ZH.md)。
+
+在 `train_single_circuit.sh` 或 `train_ood.sh` 中按需修改：
+
+```bash
+MODELS=(jepa_zerosim jepa_zerosim_ema)
+# 只运行新增模型则用 MODELS=(jepa_zerosim_ema)。
+```
+
+启动器原有数组没有自动加入新模型。底层入口直接接受 `--models jepa_zerosim_ema`；独立预训练入口用 `python -m device_jepa pretrain --mode jepa_zerosim_ema ...`，不指定 `--mode` 时仍运行原模型。`train_decoder` 与 `evaluate` 根据 checkpoint 恢复实际模型类别。
+
+两个 JEPA 变体都使用 `training.pretrain_epochs` 和 `training.decoder_epochs`，以及相同的验证选模、早停与等总 epoch 预算规则。新模型只额外读取 `training.ema_decay`，省略时为 `0.99`。各变体的 checkpoint、测试报告、训练成本和 Excel 结果按模型名分别保存，不混入 OP/no-OP 成对表。
 
 ## smoke 与结果汇总
 
