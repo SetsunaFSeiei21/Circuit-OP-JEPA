@@ -16,14 +16,17 @@ export JEPA_CONDA_ENV="${JEPA_CONDA_ENV-newbase}"
 export JEPA_CONDA_HOME="${JEPA_CONDA_HOME:-/share/software/anaconda3}"
 
 ARGS=()
+RUNNER="$HERE/run.py"
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
         --submit) DRY_RUN=0 ;;
+        --diagnose) RUNNER="$HERE/diagnose.py" ;;
         -h|--help)
             echo 'Usage: bash experiments/branch_probe/submit.sh [--dry-run | --submit] --data FILE --pretrained PRETRAIN_BEST [run.py options]'
             echo 'Default: preview only. --submit or DRY_RUN=0 submits one job.'
             echo 'Resource/account/environment settings may be overridden through environment variables.'
+            echo 'Use --diagnose for diagnose.py options, or submit_diagnostics.sh.'
             exit 0 ;;
         *) ARGS+=("$arg") ;;
     esac
@@ -41,7 +44,7 @@ if (( SLURM_GPUS > 0 )); then OPTIONS+=(--gres="gpu:$SLURM_GPUS"); fi
 if [[ -n "$SLURM_ACCOUNT" ]]; then OPTIONS+=(--account="$SLURM_ACCOUNT"); fi
 if [[ -n "$SLURM_PARTITION" ]]; then OPTIONS+=(--partition="$SLURM_PARTITION"); fi
 COMMAND=(sbatch "${OPTIONS[@]}" "$PROJECT_ROOT/scripts/run/slurm_run.sh"
-    "${JEPA_PYTHON:-python}" "$HERE/run.py" "${ARGS[@]}")
+    "${JEPA_PYTHON:-python}" "$RUNNER" "${ARGS[@]}")
 printf '%q ' "${COMMAND[@]}"; printf '\n'
 if [[ "$DRY_RUN" == 1 ]]; then exit 0; fi
 command -v sbatch >/dev/null || { echo 'sbatch unavailable; run run.py directly on an allocated compute node.' >&2; exit 1; }

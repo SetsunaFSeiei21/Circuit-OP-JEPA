@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-28",
+  "validation_device": "cpu",
+  "torch": "2.6.0+cpu",
+  "unittest": {
+    "command": "python -m unittest discover -s experiments/branch_probe -p 'test_*.py' -v",
+    "passed": 32,
+    "failed": 0,
+    "diagnostic_tests": 14,
+    "existing_branch_probe_tests": 18
+  },
+  "checks": [
+    "Fixed device identity alone has positive pooled variance but zero across-design variance",
+    "Within-device and between-device variance decomposition",
+    "Train-only feature scaling with a floor for floating-point noise",
+    "Primal and dual ridge recover known linear signals with missing labels",
+    "Constant features reduce to the observed train mean",
+    "MLP learns a known signal and repeats deterministically",
+    "Original and EMA checkpoints complete diagnostics without source mutation",
+    "No test/OOD samples used for fitting or evaluation",
+    "Inactive extreme validation labels are excluded before tensor conversion",
+    "Label-independent subsampling and fixed-topology checks",
+    "Nonempty outputs and invalid options rejected before writes",
+    "Stats-only mode skips readout fitting",
+    "Actual diagnostic CLI completes and rejects overwriting its results",
+    "Slurm shell syntax and preview preserve arguments"
+  ],
+  "slurm_submitted": false,
+  "limitations": [
+    "No actual CUDA execution",
+    "No access to the user HPC checkpoint or dataset",
+    "Synthetic checks validate mechanics, not real-circuit performance"
+  ]
+}
