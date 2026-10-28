@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-28",
+  "validation_device": "cpu",
+  "torch": "2.6.0+cpu",
+  "unittest": {
+    "command": "python -m unittest discover -s experiments/branch_probe -p 'test_*.py'",
+    "passed": 18,
+    "failed": 0
+  },
+  "cli_smoke": {
+    "source_modes": [
+      "jepa_zerosim",
+      "jepa_zerosim_ema"
+    ],
+    "synthetic": true,
+    "decoder_seeds": [
+      17,
+      29
+    ],
+    "branches": [
+      "design",
+      "op"
+    ],
+    "splits": [
+      "val",
+      "test",
+      "ood"
+    ],
+    "decoder_epochs": 2,
+    "same_source_per_pair": true,
+    "json_csv_excel_verified": true
+  },
+  "slurm": {
+    "syntax_check": "passed",
+    "dry_run": "passed",
+    "submitted": false
+  },
+  "limitations": [
+    "No actual CUDA execution",
+    "No real-data performance claim",
+    "Decoder-seed variation conditional on one fixed pretraining checkpoint per experiment"
+  ],
+  "output_root": "experiments/branch_probe/results",
+  "log_root": "experiments/branch_probe/logs"
+}
