@@ -2,6 +2,22 @@
 
 本目录用于比较 OP 信息怎样转移到仅接收拓扑与设计参数的模型。代码、运行结果和日志分别在本目录、`results/` 和 `logs/`；不会另建一份仓库，也不会改写已有生产实验。
 
+## 在 bash 中设置电路、模型和种子
+
+单电路直接编辑 `experiments/op_transfer/train_single_circuit.sh` 开头的 `CIRCUIT`、`MODELS` 和 `SEEDS`，然后运行：
+
+```bash
+bash experiments/op_transfer/train_single_circuit.sh
+```
+
+OOD 直接编辑 `experiments/op_transfer/train_ood.sh` 开头的 `TRAIN_CIRCUITS`、`OOD_CIRCUITS`、`MODELS` 和 `SEEDS`，然后运行：
+
+```bash
+bash experiments/op_transfer/train_ood.sh
+```
+
+两个脚本均默认提交完整数据的 GPU 作业；可加 `--dry-run` 仅预览。原始数据目录 `RAW_ROOT` 和配置路径 `CONFIG` 也写在脚本开头。batch size、各阶段 epoch 和模型结构参数在 `CONFIG` 指定的 JSON 中设置。脚本自动完成导入和新训练，不需要填写旧实验目录。结果、日志和 Excel 的位置与下面的 raw 入口相同。
+
 ## 直接指定电路和模型重新训练
 
 无需准备旧实验目录。原始数据放在 `runs/raw/full_data/<电路名>/`，包含 `sampling_history.sqlite3` 和对应 `.sp` 网表，然后执行：
