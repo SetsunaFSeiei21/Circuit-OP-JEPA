@@ -1,0 +1,53 @@
+{
+  "scope": "CPU mechanism and regression tests; no real circuit accuracy/GPU throughput claim",
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.6.0+cpu",
+    "cuda_available": false
+  },
+  "suites": [
+    {
+      "command": "python -m unittest discover -s experiments/op_transfer -p 'test_*.py' -q",
+      "run": 47,
+      "passed": 47,
+      "skipped": 0
+    },
+    {
+      "command": "python -m unittest discover -s tests -p 'test_*.py' -q",
+      "run": 468,
+      "passed": 462,
+      "skipped": 6
+    },
+    {
+      "command": "python -m unittest experiments.branch_probe.test_probe experiments.branch_probe.test_diagnostics experiments.branch_probe.test_ablation -q",
+      "run": 42,
+      "passed": 42,
+      "skipped": 0
+    }
+  ],
+  "total": {
+    "run": 557,
+    "passed": 551,
+    "skipped": 6
+  },
+  "covered": [
+    "All 13 selected modes complete training and test/OOD reporting",
+    "Frozen teacher and design-only deployment boundaries",
+    "Exact state-dict checkpoint replay",
+    "Train-only scaler and unseen topology fallback",
+    "Missing OP/labels and unsupported heldout 1e100 fields",
+    "Model selection/order does not alter initialization",
+    "Heldout outcomes do not alter selected training states",
+    "Actual shared-stage costs deduplicated",
+    "Conditional variance and detached residual gradients",
+    "Global per-field OP validation and JEPA loss decomposition",
+    "No-overwrite guards and Slurm preview",
+    "Excel mean/sample-std and undefined single-seed std"
+  ],
+  "not_verified": [
+    "CUDA execution",
+    "A800 timing or memory capacity",
+    "60000/300000-sample full runs",
+    "Scientific performance gains of new transfer methods"
+  ]
+}

@@ -182,6 +182,8 @@ smoke 配置使用小模型与极少 epoch。0.4.0 的 checkpoint/preprocessing 
 
 ## 代码说明与建议审查顺序
 
+新增独立 [OP transfer 实验](experiments/op_transfer/README.md)：可分别选择标准化 JEPA 读出、同器件目标消融、冻结 OP 教师直接蒸馏、预测 OP 级联及双编码器对照。入口为 `experiments/op_transfer/run.py` / `submit.sh`；复用已有 canonical 数据和 manifest，结果与日志留在该实验目录，完成后自动生成 `summary.xlsx`。这些实验使用独立模型名称和阶段预算，不改变原生产模式；实际收益仍需真实数据验证。
+
 见 [docs/review_order.md](docs/review_order.md)。重点顺序：adapter → states → data/split/normalization → tensors → shared model → 两阶段冻结 → baselines → comparison → scripts。
 
 ## 边界

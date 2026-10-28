@@ -6,3 +6,6 @@ runs/
 .pytest_cache/
 build/
 dist/
+experiments/op_transfer/results/
+experiments/op_transfer/logs/
+private_change_notes/

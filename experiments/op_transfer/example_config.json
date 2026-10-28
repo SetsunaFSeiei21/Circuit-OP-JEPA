@@ -1,0 +1,80 @@
+{
+  "model": {
+    "dim": 128,
+    "heads": 8,
+    "encoder_layers": 6,
+    "cross_layers": 3,
+    "ffn_dim": 512,
+    "decoder_layers": 2,
+    "decoder_ffn_dim": 2048,
+    "dropout": 0.1,
+    "max_devices": 200,
+    "terminal_bias": true
+  },
+  "loss": {
+    "invariance": 25.0,
+    "variance": 25.0,
+    "covariance": 1.0,
+    "variance_floor": 1.0
+  },
+  "training": {
+    "seed": 17,
+    "batch_size": 32,
+    "pretrain_epochs": 30,
+    "decoder_epochs": 50,
+    "baseline_epochs": 80,
+    "pretrain_lr": 0.0001,
+    "decoder_lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip": 1.0,
+    "torch_threads": 1,
+    "progress_every": 100,
+    "early_stopping": {
+      "enabled": true,
+      "patience": 10,
+      "min_delta": 0.0,
+      "min_epochs": 1
+    }
+  },
+  "dataset": {
+    "train_circuits": [
+      "two_stage_folded_opamp"
+    ],
+    "ood_circuits": [],
+    "split_ratios": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "split_seed": 17,
+    "finetune_label_fraction": 1.0
+  },
+  "normalization": {
+    "weighting": "equal_circuit",
+    "op_fields": null,
+    "parameters": {},
+    "op": {},
+    "performance": {}
+  },
+  "op_transfer": {
+    "epochs": {
+      "teacher": 30,
+      "student": 30,
+      "op_predictor": 30,
+      "readout": 50,
+      "dual": 50,
+      "jepa": 30
+    },
+    "batch_size": 32,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip": 1.0,
+    "latent_floor": 0.0001,
+    "patience": 10,
+    "progress_every": 100,
+    "op_aux_weight": 1.0,
+    "ema_decay": 0.99,
+    "variance_floor": 1.0,
+    "torch_threads": 1
+  }
+}
