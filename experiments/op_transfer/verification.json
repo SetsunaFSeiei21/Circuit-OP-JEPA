@@ -8,8 +8,8 @@
   "suites": [
     {
       "command": "python -m unittest discover -s experiments/op_transfer -p 'test_*.py' -q",
-      "run": 47,
-      "passed": 47,
+      "run": 58,
+      "passed": 58,
       "skipped": 0
     },
     {
@@ -26,8 +26,8 @@
     }
   ],
   "total": {
-    "run": 557,
-    "passed": 551,
+    "run": 568,
+    "passed": 562,
     "skipped": 6
   },
   "covered": [
@@ -42,7 +42,8 @@
     "Conditional variance and detached residual gradients",
     "Global per-field OP validation and JEPA loss decomposition",
     "No-overwrite guards and Slurm preview",
-    "Excel mean/sample-std and undefined single-seed std"
+    "Excel mean/sample-std and undefined single-seed std",
+    "Raw circuit-name entry: read-only sources, selected models, fresh import/split, ID/OOD roles, Slurm dispatch and failure statuses"
   ],
   "not_verified": [
     "CUDA execution",

@@ -2,6 +2,42 @@
 
 本目录用于比较 OP 信息怎样转移到仅接收拓扑与设计参数的模型。代码、运行结果和日志分别在本目录、`results/` 和 `logs/`；不会另建一份仓库，也不会改写已有生产实验。
 
+## 直接指定电路和模型重新训练
+
+无需准备旧实验目录。原始数据放在 `runs/raw/full_data/<电路名>/`，包含 `sampling_history.sqlite3` 和对应 `.sp` 网表，然后执行：
+
+```bash
+bash experiments/op_transfer/submit.sh --submit \
+  --circuit two_stage_folded_opamp \
+  --models design_supervised op_oracle op_distill predicted_op dual_distill dual_design_control \
+  --seeds 17 29 43 --device cuda
+```
+
+修改 `--circuit` 选择电路，修改 `--models` 选择模型。默认使用本目录 `example_config.json`；`--config` 可指定其他配置，电路角色由命令覆盖配置中的示例电路。此命令使用完整数据，从头训练；导入、创建新划分、必要前置阶段、性能训练、测试和 Excel 汇总都在作业内自动执行。新划分使用配置的 `split_seed`，相同数据与种子可复现划分；无需旧 checkpoint 或 manifest。默认资源仍是 1 GPU、8 CPU。
+
+原始目录不在默认位置时加 `--raw-root /path/to/full_data`。`--max-table-rows` 默认 `none`，可显式设置导入安全上限。几何单位仍由原有严格 importer 检查，不修改原始网表或自动猜测单位。`--max-train/val/test` 仅限制训练/评估子集，不减少原始数据导入量。
+
+直接指定 ID/OOD 电路也可：
+
+```bash
+bash experiments/op_transfer/submit.sh --submit \
+  --train-circuits 5t_ota Opamp0 Opamp1 two_stage_opamp_otaf \
+  --ood-circuits two_stage_folded_opamp \
+  --models op_distill predicted_op dual_distill \
+  --seeds 17 29 43 --device cuda
+```
+
+电路名须与各目录及 SQLite 中的 `circuit_name` 一致，ID 与 OOD 不可重叠。多个 `--train-circuits` 不带 `--ood-circuits` 时运行联合 ID 比较。把 `--submit` 改为 `--dry-run` 可只查看作业命令；已分配计算资源时可直接执行 `python experiments/op_transfer/run_raw.py` 加相同实验参数。
+
+该入口输出为 `experiments/op_transfer/results/<电路名或OOD名>_<UTC时间>_<编号>/`：
+
+- `data.json`、`config.json`、`raw_run.json`：新导入数据、本次配置、导入/训练状态。
+- `results/summary.xlsx`：最终 Excel。
+- `results/seed_<seed>/<model>/`：模型 checkpoint 和 test/OOD 指标。
+- 作业 stdout/stderr 仍在 `experiments/op_transfer/logs/<时间编号>/`。
+
+下面的 `--data` 用法是复用已经导入的 canonical 数据的可选入口；直接选电路时使用上面的命令即可。
+
 ## 模型选择
 
 `--models` 只运行所选结果及其必要前置训练。例如只选 `op_distill` 时仍须训练教师；只选 `predicted_op` 时仍须训练 OP 预测器。前置阶段可在同一 seed 的相关变体间复用，其成本单独记录。
