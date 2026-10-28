@@ -139,4 +139,46 @@ bash experiments/branch_probe/submit_diagnostics.sh --submit \
 
 只想快速看表示时加 `--stats-only`，会跳过全部读出训练。新结果仍在本目录 `results/<新时间戳>/`，日志在 `logs/`；不会覆盖正式实验或第一步诊断。结果不进入正式模型排行榜。
 
-解释时先看两端的 `within_device_std_rms` 与 `between_device_std_rms`：前者极小、后者明显非零符合“保留器件差异、忽略设计差异”的现象。再看原始 OP 对照能否预测性能，以及简单读出是否优于常数基线。冻结表示方差非零不保证含有性能信息；所有读出都差也不能单凭此实验断定 OP 本身无效。先使用验证集定位，修复完成后再做独立 test/OOD 评估。
+解释时先看两端的 `within_device_std_rms` 与 `between_device_std_rms`：前者极小、后者明显非零说明器件之间的差异主导了总方差，不能据此断定设计信息消失；幅度很小的变化也可能包含可预测信息。再看原始 OP 对照能否预测性能，以及简单读出是否优于常数基线。冻结表示方差非零不保证含有性能信息；所有读出都差也不能单凭此实验断定 OP 本身无效。先使用验证集定位，修复完成后再做独立 test/OOD 评估。
+
+## 第三步：读出器 × 标准化的 2×2 对照
+
+若简单读出有效，不能直接把改善归因于标准化：第二步同时改变了读出架构、学习率、样本数等。`ablate.py` 固定其他训练设置，对设计端、OP 端各运行下面四组，每个 decoder seed 共训练 **8 个读出器**，不重新训练 encoder。
+
+| 读出器 | raw | standardized |
+| --- | --- | --- |
+| attention | 原始器件 latent | 训练集逐器件、逐坐标中心化并缩放 |
+| MLP | 固定器件顺序展平 latent | 同一标准化结果再展平 |
+
+attention 直接使用 repo 的 `MetricQueryDecoder` 和源 checkpoint 的 decoder 层数、宽度、head 数及 dropout。与第一步一样，只读相同 eligible 器件 token，不读 graph token；这是原 decoder **架构**的诊断，不是完整正式训练协议的复现。MLP 为 `Flatten → Linear(hidden=128) → GELU → Linear(metrics)`。两者参数量不同，保留各自结构并报告参数量。
+
+```bash
+RUN="$PWD/runs/gpu_full/two_stage_folded_opamp_20261028_150115"
+bash experiments/branch_probe/submit_ablation.sh --submit \
+  --data "$RUN/data.json" \
+  --pretrained "$RUN/results/jepa_zerosim_ema/seed_17/pretrain_best.pt" \
+  --circuit two_stage_folded_opamp \
+  --max-train-samples 4096 --max-val-samples 1024 \
+  --sample-seed 17 --seeds 17 \
+  --epochs 50 --batch-size 256 --lr 0.001 \
+  --patience 0 --device cuda
+```
+
+`--dry-run` 仅预览，`--submit` 提交。已分配 GPU 时可直接调用 `python experiments/branch_probe/ablate.py` 并传入同样的 Python 参数。默认仍为 8 CPU / 1 GPU，日志、结果分别位于本文件夹的 `logs/`、`results/<新时间戳>/`。
+
+所有组统一：选定的 4096 train / 1024 val 子集、性能标签及 mask、AdamW（lr=0.001、weight_decay=0.0001）、batch=256、梯度裁剪=1、50 epochs、验证归一化 MSE 选最佳 checkpoint。同一 seed、同一种 head 在两端和两种缩放下使用相同初始化；所有组使用相同 minibatch 顺序。两端特征只提取一次并冻结缓存，标准化只拟合所选训练子集。保存均值、尺度与 target scaler，验证集不参与拟合。
+
+默认 `--patience 0` **不早停，但仍选择验证最优轮**，从而保证实际训练轮数和更新步数相等。显式设置 `--patience 10` 会启用统一早停规则，此时只有最大训练预算相同，实际轮数可能不同。每组每轮输出 batch 进度及验证误差。
+
+`--sample-seed` 只控制固定子集；`--seeds 17 29 43` 控制三次读出训练，共 24 个读出器，子集保持不变。跨 seed 标准差仍只是**给定预训练 checkpoint 下的读出波动**。
+
+输出：
+
+- `run.json`：样本 ID、来源哈希、设置、完成状态、初始化及训练预算配对检查。
+- `preprocessing.json`、`feature_scalers.pt`：公共目标尺度，以及两端按固定器件顺序拟合的特征均值和尺度。
+- `readouts.json` / `readouts.csv`：每个 seed、每组 train/val 的 MAE、RMSE、R²、预测标准差等；`train_mean.json` 是常数对照。
+- `summary.json` / `summary.csv`：按指标分别汇总 mean/std；一个 seed 的 std 留空，不伪装为 0。
+- `paired_deltas.csv`：同端、同 head、同 seed 的 standardized − raw；MAE/RMSE 为负表示改善。
+- `seed_<seed>/<design|op>/<attention|mlp>/<raw|standardized>/`：`head_best.pt`、`history.json`、`report.json`。保存的 head 权重需与本次公共变换文件、器件顺序和原 encoder checkpoint 一起使用。
+
+这里的标准化包括减去每个器件的均值，可能同时改变 attention 可用的器件身份线索；它检验的是**中心化与缩放的整体效果**，不能仅归因于数值放大。没有额外给 attention 添加位置或器件 ID embedding。展平 MLP 利用了固定槽位，因此不能据此推断跨拓扑 OOD 收益，也不能单凭此对照证明 JEPA 预训练优于随机 encoder。结果仅用于 ID 验证诊断，不读 test/OOD 标签用于拟合、选模或评分。

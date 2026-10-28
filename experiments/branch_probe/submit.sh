@@ -22,11 +22,13 @@ for arg in "$@"; do
         --dry-run) DRY_RUN=1 ;;
         --submit) DRY_RUN=0 ;;
         --diagnose) RUNNER="$HERE/diagnose.py" ;;
+        --ablate) RUNNER="$HERE/ablate.py" ;;
         -h|--help)
             echo 'Usage: bash experiments/branch_probe/submit.sh [--dry-run | --submit] --data FILE --pretrained PRETRAIN_BEST [run.py options]'
             echo 'Default: preview only. --submit or DRY_RUN=0 submits one job.'
             echo 'Resource/account/environment settings may be overridden through environment variables.'
             echo 'Use --diagnose for diagnose.py options, or submit_diagnostics.sh.'
+            echo 'Use --ablate for ablate.py options, or submit_ablation.sh.'
             exit 0 ;;
         *) ARGS+=("$arg") ;;
     esac

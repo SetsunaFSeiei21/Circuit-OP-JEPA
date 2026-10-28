@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-28",
+  "validation_device": "cpu",
+  "torch": "2.6.0+cpu",
+  "unittest": {
+    "command": "python -m unittest discover -s experiments/branch_probe -p 'test_*.py' -v",
+    "passed": 42,
+    "failed": 0,
+    "new_ablation_tests": 10,
+    "existing_tests": 32
+  },
+  "checks": [
+    "Original and EMA pretrained checkpoints complete all eight cells per decoder seed",
+    "Source checkpoint bytes remain unchanged; frozen encoders verified during extraction",
+    "Matched head initialization, minibatch order and fixed-budget optimizer steps across cells",
+    "Feature scaling uses train only, preserves device slots and matches prior diagnostic scaling",
+    "Both readout architectures recover synthetic signal; restored selected weights reproduce predictions",
+    "Subset and target scaling are independent of decoder seeds",
+    "Default fixed epochs and optional early stopping preserve exact validation best selection",
+    "Inactive extreme validation labels are masked before conversion",
+    "Per-seed summaries use sample standard deviation and paired differences",
+    "CLI execution, overwrite refusal, Slurm syntax and argument-preserving preview"
+  ],
+  "slurm_submitted": false,
+  "limitations": [
+    "No actual CUDA execution",
+    "No access to the user HPC checkpoint or dataset",
+    "Fixed-topology ID diagnostic; no test or OOD performance claim",
+    "Synthetic tests validate mechanics, not real-circuit predictive improvement"
+  ]
+}
