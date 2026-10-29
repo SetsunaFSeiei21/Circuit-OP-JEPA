@@ -70,7 +70,7 @@ class TransferEngineTests(unittest.TestCase):
         self.assertEqual({row["mode"] for row in results}, set(engine.MODELS))
         self.assertEqual(len(results), len(engine.MODELS) * 2)
         for result in results:
-            self.assertEqual(result["report"]["requires_measured_op"], result["mode"] == "op_oracle")
+            self.assertEqual(result["report"]["requires_measured_op"], result["mode"] in engine.MEASURED_OP_MODELS)
             self.assertTrue(self.checkpoint(result["mode"]).is_file())
             self.assertGreater(result["report"]["count"], 0)
         summary = json.loads((self.output / "summary.json").read_text())
@@ -84,6 +84,8 @@ class TransferEngineTests(unittest.TestCase):
         self.assertEqual(ids.count("seed_17/teacher"), 1)
         self.assertEqual(ids.count("seed_17/op_predictor"), 1)
         self.assertEqual(ids.count("seed_17/distillation"), 1)
+        self.assertEqual(ids.count("seed_17/design_op_teacher"), 1)
+        self.assertEqual(ids.count("seed_17/student_predicted_op"), 1)
         self.assertEqual(costs["optimizer_steps_deduplicated"],
                          sum(row["optimizer_steps"] for row in costs["unique_stages"]))
         for mode in ("op_distill", "op_distill_finetune", "dual_distill"):
@@ -96,7 +98,7 @@ class TransferEngineTests(unittest.TestCase):
         # exactly the same result if arbitrary measured OP/labels are supplied.
         rows = self.data["samples"][-3:]
         for mode in engine.MODELS:
-            if mode == "op_oracle":
+            if mode in engine.MEASURED_OP_MODELS:
                 continue
             with self.subTest(mode=mode):
                 model, payload = engine.load_model(self.checkpoint(mode))
@@ -215,7 +217,7 @@ class TransferEngineTests(unittest.TestCase):
         outputs = [self.root / "heldout_original", self.root / "heldout_mutated"]
         for path, output in zip((self.data_path, mutated_path), outputs):
             quiet_run(path, self.config_path, output,
-                       ["design_supervised", "op_oracle", "op_distill"], [17, 29], "cpu")
+                       ["design_supervised", "op_oracle", "op_distill", "student_predicted_op"], [17, 29], "cpu")
         a, b = (json.loads((output / "stages.json").read_text())["unique_stages"] for output in outputs)
         self.assertEqual({stage["stage_id"]: stage["selected_state_digest"] for stage in a},
                          {stage["stage_id"]: stage["selected_state_digest"] for stage in b})
@@ -235,15 +237,15 @@ class TransferEngineTests(unittest.TestCase):
         path = self.root / "design_only_inputs.json"
         path.write_text(json.dumps(data))
         original = path.read_bytes()
-        for mode in ("op_distill", "predicted_op", "op_predictor"):
+        for mode in ("op_distill", "predicted_op", "op_predictor", "student_predicted_op"):
             output = self.root / f"{mode}_predictions.json"
             with contextlib.redirect_stdout(io.StringIO()):
                 result = predict(self.output / f"seed_17/{mode}/checkpoint.pt", path,
-                                 output, device="cpu", include_predicted_op=mode == "predicted_op")
+                                 output, device="cpu", include_predicted_op=mode in {"predicted_op", "student_predicted_op"})
             self.assertFalse(result["requires_measured_op"])
             self.assertEqual(len(result["predictions"]), 3)
             self.assertEqual(path.read_bytes(), original)
-            if mode in ("predicted_op", "op_predictor"):
+            if mode in ("predicted_op", "op_predictor", "student_predicted_op"):
                 self.assertIn("predicted_op", result["predictions"][0])
                 device = result["predictions"][0]["predicted_op"][0]
                 self.assertIn("physical", device)
@@ -263,6 +265,69 @@ class TransferEngineTests(unittest.TestCase):
                     parts=epoch[phase]['loss_components']
                     weighted=sum(v for k,v in parts.items() if k.startswith('weighted_'))
                     self.assertAlmostEqual(weighted,epoch[phase]['loss'],delta=1e-5)
+
+    def test_predicted_student_provenance_scaling_and_teacher_free_checkpoint(self):
+        from device_jepa.training import state_digest
+        audit = json.loads((self.output / 'seed_17/student_predicted_op/distillation.json').read_text())
+        for subject in ('teacher', 'predictor'):
+            self.assertEqual(audit[f'{subject}_digest_before'], audit[f'{subject}_digest_after'])
+        for part in ('encoder', 'decoder'):
+            self.assertEqual(audit[f'initial_student_{part}_digest'], audit[f'teacher_{part}_digest'])
+        cohort = json.loads((self.output / 'cohort.json').read_text())
+        stage = self.output / 'seed_17/stages/student_predicted_op'
+        scales = torch.load(stage / 'scales.pt', weights_only=True)
+        self.assertEqual(scales['fit_sample_ids'], sorted(cohort['train']))
+        self.assertEqual(audit['scaler_fit_samples'], len(cohort['train']))
+        self.assertTrue(scales['loss_only'])
+        model, payload = engine.load_model(self.checkpoint('student_predicted_op'))
+        predictor, _ = engine.load_model(self.checkpoint('op_predictor'))
+        self.assertEqual(state_digest(model.predictor), state_digest(predictor))
+        self.assertEqual(payload['recipe']['kind'], 'cascade')
+        self.assertIsNone(payload['recipe']['downstream']['scaler'])
+        self.assertEqual(payload['stage_ids'], ['seed_17/design_op_teacher', 'seed_17/op_predictor',
+                                              'seed_17/student_predicted_op'])
+        self.assertFalse(any('teacher' in key for key in payload['state_dict']))
+
+    def test_predicted_student_selects_performance_only_and_logs_training_components(self):
+        stage = self.output / 'seed_17/stages/student_predicted_op'
+        history = json.loads((stage / 'history.json').read_text())
+        for epoch in history:
+            parts = epoch['train']['loss_components']
+            self.assertAlmostEqual(parts['weighted_performance'] + parts['weighted_alignment'],
+                                   epoch['train']['loss'], delta=2e-5)
+        model, saved = engine.load_model(self.checkpoint('student_predicted_op'))
+        rows = samples_for_split(self.data, saved['manifest'], 'val')
+        batch = collate_samples(rows, saved['preprocessing'], include_op=False,
+                                include_performance=True, include_op_states=False)
+        with torch.no_grad():
+            prediction = model(batch)
+            expected = float(engine.masked_mse(prediction, batch['performance'].to(prediction.dtype),
+                                               batch['performance_mask']))
+        self.assertAlmostEqual(history[0]['val']['loss'], expected, delta=2e-5)
+
+    def test_predicted_student_only_trains_required_stages_and_order_is_stable(self):
+        from device_jepa.training import state_digest
+        output = self.root / 'predicted_student_only'
+        result = quiet_run(self.data_path, self.config_path, output,
+                           ['student_predicted_op'], [17], 'cpu')
+        self.assertEqual([s['stage_id'] for s in result['stages']],
+                         ['seed_17/design_op_teacher', 'seed_17/op_predictor', 'seed_17/student_predicted_op'])
+        self.assertFalse((output / 'seed_17/design_op_oracle').exists())
+        alone, _ = engine.load_model(output / 'seed_17/student_predicted_op/checkpoint.pt')
+        together, _ = engine.load_model(self.checkpoint('student_predicted_op'))
+        self.assertEqual(state_digest(alone), state_digest(together))
+
+    def test_student_loss_weights_validate_before_output(self):
+        for key, values in {'student_alignment_weight': [-1, float('nan'), True],
+                            'student_performance_weight': [0, -1, float('inf'), True]}.items():
+            for value in values:
+                config = copy.deepcopy(self.config)
+                config['op_transfer'][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    engine.settings(config)
+        config = copy.deepcopy(self.config)
+        config['op_transfer']['student_alignment_weight'] = 0.
+        self.assertEqual(engine.settings(config)['student_alignment_weight'], 0.)
 
     def test_op_validation_uses_global_equal_field_mse(self):
         from experiments.op_transfer.losses import masked_field_mse

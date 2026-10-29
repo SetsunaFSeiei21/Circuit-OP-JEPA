@@ -37,7 +37,7 @@ def summary_rows(results):
             raise ValueError(f'Duplicate model/seed/split result: {identity}')
         seen.add(identity)
         requires_op = report.get('requires_measured_op')
-        if type(requires_op) is not bool or requires_op != (mode == 'op_oracle'):
+        if type(requires_op) is not bool or requires_op != (mode in ('op_oracle', 'design_op_oracle')):
             raise ValueError('Measured OP input contract disagrees with the model name')
         for metric, values in report['metrics'].items():
             if not isinstance(metric, str) or not metric or not isinstance(values, dict):

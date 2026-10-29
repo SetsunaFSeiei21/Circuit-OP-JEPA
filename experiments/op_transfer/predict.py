@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 def inference_dataset(data, preprocessing, *, measured_op=False):
     """Remove unused outcomes BEFORE validation, permitting outcome-free inputs.
 
-    Design models accept ordinary canonical datasets with omitted/empty OP and
+    Design models, including student_predicted_op, accept ordinary canonical datasets with omitted/empty OP and
     performance dictionaries. Supplied OP values, missingness, state or failure
     metadata cannot enter their inference path, even if those outcomes are NaN.
     """
@@ -148,7 +148,7 @@ def predict(checkpoint, data_path, output, *, device="cpu", batch_size=None,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--data", required=True, help="canonical design input JSON; OP/performance may be omitted")
+    parser.add_argument("--data", required=True, help="canonical inputs; performance may be omitted; op_oracle/design_op_oracle require measured OP")
     parser.add_argument("--output", required=True, help="new prediction JSON file")
     parser.add_argument("--device", default="cuda", choices=("cpu", "cuda"))
     parser.add_argument("--batch-size", type=int)

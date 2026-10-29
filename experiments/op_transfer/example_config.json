@@ -61,6 +61,7 @@
       "teacher": 30,
       "student": 30,
       "op_predictor": 30,
+      "student_predicted_op": 50,
       "readout": 50,
       "dual": 50,
       "jepa": 30
@@ -73,6 +74,8 @@
     "patience": 10,
     "progress_every": 100,
     "op_aux_weight": 1.0,
+    "student_alignment_weight": 1.0,
+    "student_performance_weight": 1.0,
     "ema_decay": 0.99,
     "variance_floor": 1.0,
     "torch_threads": 1

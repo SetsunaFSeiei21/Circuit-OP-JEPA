@@ -14,7 +14,11 @@ MODELS=(
   predicted_op
   dual_distill
   dual_design_control
+  design_op_oracle
+  student_predicted_op
 )
+# Focused cascade comparison: retain design_supervised, predicted_op,
+# design_op_oracle and student_predicted_op above.
 SEEDS=(17 29 43)
 CONFIG="$HERE/example_config.json"
 RAW_ROOT="$PROJECT_ROOT/runs/raw/full_data"

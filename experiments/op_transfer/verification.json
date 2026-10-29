@@ -8,8 +8,8 @@
   "suites": [
     {
       "command": "python -m unittest discover -s experiments/op_transfer -p 'test_*.py' -q",
-      "run": 58,
-      "passed": 58,
+      "run": 73,
+      "passed": 73,
       "skipped": 0
     },
     {
@@ -26,12 +26,12 @@
     }
   ],
   "total": {
-    "run": 568,
-    "passed": 562,
+    "run": 583,
+    "passed": 577,
     "skipped": 6
   },
   "covered": [
-    "All 13 selected modes complete training and test/OOD reporting",
+    "All 15 selected modes complete training and test/OOD reporting",
     "Frozen teacher and design-only deployment boundaries",
     "Exact state-dict checkpoint replay",
     "Train-only scaler and unseen topology fallback",
@@ -43,7 +43,13 @@
     "Global per-field OP validation and JEPA loss decomposition",
     "No-overwrite guards and Slurm preview",
     "Excel mean/sample-std and undefined single-seed std",
-    "Raw circuit-name entry: read-only sources, selected models, fresh import/split, ID/OOD roles, Slurm dispatch and failure statuses"
+    "Raw circuit-name entry: read-only sources, selected models, fresh import/split, ID/OOD roles, Slurm dispatch and failure statuses",
+    "Predicted-OP student: true-OP/design teacher architecture, copied encoder and decoder initialization, fixed whole-teacher and predictor",
+    "Shared train-teacher latent scales used only in loss; graph/device alignment masks and missing targets; zero-alignment control",
+    "Student validation selects unweighted performance only; cached teacher targets match direct targets; no validation teacher input",
+    "Teacher-free student cascade replay and standalone prediction with missing/polluted OP and labels",
+    "Student dependency order stability, cost deduplication, initialization/freeze provenance and heldout mutation invariance",
+    "New reference/student input contracts in Excel; both editable launcher dry-runs include new models without job submission"
   ],
   "not_verified": [
     "CUDA execution",

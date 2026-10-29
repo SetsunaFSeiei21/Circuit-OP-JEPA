@@ -27,6 +27,7 @@ from device_jepa.tensors import denormalize
 from device_jepa.training import _metrics, seed_everything, state_digest
 from .losses import (LatentScaler, grouped_alignment_loss, masked_field_mse,
                      residual_alignment_loss)
+from .distillation import PredictedOPDistillation
 from .models import (DualEncoderModel, OPPredictor, PredictedOPCascade, ReadoutModel,
     decoder, describe_model, design_encoder, design_input, fit_op_support, freeze,
     op_encoder, op_input, rebuild_model)
@@ -34,8 +35,11 @@ from .models import (DualEncoderModel, OPPredictor, PredictedOPCascade, ReadoutM
 MODELS = ('design_supervised', 'op_oracle', 'jepa_standardized', 'jepa_grouped',
           'jepa_residual', 'jepa_op_aux', 'op_distill', 'op_distill_finetune',
           'predicted_op', 'predicted_op_joint', 'dual_distill',
-          'dual_predicted_op', 'dual_design_control')
-DEFAULT_EPOCHS = dict(teacher=30, student=30, op_predictor=30, readout=50, dual=50, jepa=30)
+          'dual_predicted_op', 'dual_design_control', 'design_op_oracle',
+          'student_predicted_op')
+MEASURED_OP_MODELS = frozenset({'op_oracle', 'design_op_oracle'})
+DEFAULT_EPOCHS = dict(teacher=30, student=30, op_predictor=30, readout=50, dual=50,
+                     jepa=30, student_predicted_op=50)
 
 
 def write_json(path, value):
@@ -45,7 +49,8 @@ def write_json(path, value):
 def settings(config):
     tr, raw = config.get('training', {}), config.get('op_transfer', {})
     allowed = {'epochs', 'batch_size', 'lr', 'weight_decay', 'grad_clip', 'latent_floor',
-               'patience', 'progress_every', 'op_aux_weight', 'ema_decay', 'variance_floor', 'torch_threads'}
+               'patience', 'progress_every', 'op_aux_weight', 'ema_decay', 'variance_floor', 'torch_threads',
+               'student_alignment_weight', 'student_performance_weight'}
     if set(raw) - allowed:
         raise ValueError(f'Unknown op_transfer settings: {sorted(set(raw)-allowed)}')
     if set(raw.get('epochs', {})) - set(DEFAULT_EPOCHS):
@@ -55,7 +60,8 @@ def settings(config):
         weight_decay=tr.get('weight_decay', 1e-4), grad_clip=tr.get('grad_clip', 1.),
         latent_floor=1e-4, patience=10, progress_every=100, op_aux_weight=1.,
         ema_decay=.99, variance_floor=config.get('loss', {}).get('variance_floor', 1.),
-        torch_threads=tr.get('torch_threads', 1))
+        torch_threads=tr.get('torch_threads', 1), student_alignment_weight=1.,
+        student_performance_weight=1.)
     result.update({k: v for k, v in raw.items() if k != 'epochs'})
     for key, value in {**result['epochs'], **{k: result[k] for k in
             ('batch_size', 'progress_every', 'torch_threads')}}.items():
@@ -63,11 +69,12 @@ def settings(config):
             raise ValueError(f'{key} must be a positive integer')
     if type(result['patience']) is not int or result['patience'] < 0:
         raise ValueError('patience must be a nonnegative integer; 0 disables early stopping')
-    for key in ('lr', 'grad_clip', 'latent_floor', 'op_aux_weight', 'variance_floor', 'weight_decay', 'ema_decay'):
+    for key in ('lr', 'grad_clip', 'latent_floor', 'op_aux_weight', 'variance_floor', 'weight_decay', 'ema_decay',
+                'student_alignment_weight', 'student_performance_weight'):
         value = result[key]
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError(f'{key} must be finite and nonnegative')
-        if key not in ('weight_decay', 'ema_decay') and value == 0:
+        if key not in ('weight_decay', 'ema_decay', 'student_alignment_weight') and value == 0:
             raise ValueError(f'{key} must be positive')
     if not result['ema_decay'] < 1:
         raise ValueError('ema_decay must be <1')
@@ -178,6 +185,8 @@ class DataContext:
 
 
 def fit_scaler(ctx, encoder, options, source='design'):
+    if source not in {'design', 'op', 'design_op'}:
+        raise ValueError('Latent scale source must be design, op or design_op')
     scaler = LatentScaler(options['latent_floor'])
     was_training = encoder.training
     encoder.eval()
@@ -185,8 +194,9 @@ def fit_scaler(ctx, encoder, options, source='design'):
         sum(math.ceil(len(v)/options['batch_size']) for v in ctx.groups['train'].values()),
         options['progress_every'])
     with torch.no_grad():
-        for step,batch in enumerate(ctx.batches('train', options['batch_size'], op=source == 'op'),1):
-            memory, padding = encoder(design_input(batch) if source == 'design' else op_input(batch))
+        for step,batch in enumerate(ctx.batches('train', options['batch_size'], op=source != 'design'),1):
+            inputs = design_input(batch) if source == 'design' else op_input(batch, use_design=source == 'design_op')
+            memory, padding = encoder(inputs)
             scaler.update(memory, padding, batch['_group_keys'])
             progress.update(step)
     encoder.train(was_training)
@@ -205,14 +215,18 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     model.to(ctx.device)
     frozen_features = {}
     cache_readout = isinstance(model, ReadoutModel) and model.frozen
-    cache_teacher = isinstance(model, DistillationPair)
+    cache_cascade_teacher = isinstance(model, PredictedOPDistillation)
+    cache_teacher = isinstance(model, DistillationPair) or cache_cascade_teacher
     if cache_readout or cache_teacher:
         # Encode each frozen branch once per stage, not once per epoch.
         model.eval()
         with torch.no_grad():
-            for split in ('train', 'val'):
+            # The cascade student selects on performance only; no validation
+            # teacher targets are computed or cached for its alignment loss.
+            for split in (('train',) if cache_cascade_teacher else ('train', 'val')):
                 cache = ctx.cache(split, op)
-                enc = model.encoder if cache_readout else model.teacher
+                enc = (model.encoder if cache_readout else
+                       model.teacher.encoder if cache_cascade_teacher else model.teacher)
                 table = torch.zeros(len(cache.rows), cache.max_nodes+1, enc.cfg.dim,
                                     device=ctx.device)
                 padding_table = torch.ones(table.shape[:2], dtype=torch.bool, device=ctx.device)
@@ -222,6 +236,8 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
                 for step,batch in enumerate(ctx.batches(split, options['batch_size'], op=op),1):
                     if cache_readout:
                         memory, padding = model.memory(batch)
+                    elif cache_cascade_teacher:
+                        memory, padding = model.teacher_memory(batch)
                     else:
                         memory,padding=model.teacher(op_input(batch))
                         memory=model.teacher_scaler.transform(memory,padding,batch['_group_keys'])
@@ -257,7 +273,7 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
             for step, batch in enumerate(ctx.batches(phase, options['batch_size'],
                     seed=seed+epoch if phase == 'train' else None, op=op, repeated=repeated), 1):
                 with torch.set_grad_enabled(phase == 'train'):
-                    if frozen_features:
+                    if phase in frozen_features:
                         table, pads = frozen_features[phase]
                         n = batch['device_mask'].shape[1]+1
                         prefix = '_frozen' if cache_readout else '_teacher'
@@ -450,7 +466,7 @@ def save_final(path, model, ctx, mode, seed, stage_ids, options):
         state_dict=_cpu_state(model), model_config=ctx.config['model'], preprocessing=ctx.prep,
         stage_ids=stage_ids, selected_sample_ids={k: ctx.selection[k] for k in ('train','val','test','ood','labeled_train')},
         manifest=ctx.full_manifest, options=options,
-        inference_requires_op=mode == 'op_oracle')
+        inference_requires_op=mode in MEASURED_OP_MODELS)
     torch.save(payload, path / 'checkpoint.pt')
 
 
@@ -518,7 +534,8 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
     write_json(output / 'config.json', config)
     write_json(output / 'manifest.json', manifest)
     run = dict(status='running', models=models, seeds=seeds, device=str(device), options=options,
-        dataset_fingerprint=dataset_fingerprint(dataset), measured_op_at_inference=['op_oracle'])
+        dataset_fingerprint=dataset_fingerprint(dataset),
+        measured_op_at_inference=[mode for mode in models if mode in MEASURED_OP_MODELS])
     write_json(output / 'run.json', run)
     ctx = DataContext(dataset, manifest, config, device,
                       dict(train=max_train,val=max_val,test=max_test), output)
@@ -526,6 +543,9 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
         teacher='supervised OP-only, exact ID-val best, entire encoder frozen, no EMA',
         student='direct encoder output alignment, no predictor; fixed train-only branch scales',
         cascade='train/val/test/OOD all predicted OP; normalized units shared with downstream encoder',
+        student_predicted_op='design+true-OP performance teacher; copy encoder and decoder; frozen teacher/predictor; '
+            'shared train-teacher latent scales in alignment loss only; graph/device alignment + performance; '
+            'validation selects only unweighted performance MSE; deployed cascade has no teacher',
         op_mask='training field support + topology only; no measured test OP missingness',
         dual='feature concatenation plus linear fusion; matched architecture design-only control',
         scaler='same circuit/topology/device train stats; unseen device uses global train-device stats',
@@ -533,7 +553,7 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
         loss_ablation='grouped replaces pooled regularizers; residual builds on grouped; OP auxiliary builds on pooled',
         compute='separate stage epoch budgets and actual optimizer steps; no equal-compute claim',
         op_training_predictions='in-sample predictions; no cross-fitted/OOF claim',
-        inference_diagnostics='real OP allowed only for op_oracle reference or separate OP scoring'))
+        inference_diagnostics='real OP allowed only for op_oracle/design_op_oracle references or separate OP scoring'))
     stages, results = [], []
     original_output = ctx.output
     for seed in seeds:
@@ -579,6 +599,16 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
                         write_json(ctx.output/'op_predictor'/f'{split}_op.json',report)
             return shared['predictor']
 
+        def design_op_teacher():
+            if 'design_op_teacher' not in shared:
+                seed_everything(seed, options['torch_threads'])
+                model = ReadoutModel(op_encoder(config['model'], ctx.prep, use_design=True),
+                                     head(), source='design_op').to(device)
+                shared['design_op_teacher'], dep = stage(model, 'design_op_teacher', 'teacher', op=True)
+                dependencies['design_op_teacher'] = [dep]
+                freeze(shared['design_op_teacher'])
+            return shared['design_op_teacher']
+
         def student():
             if 'student' not in shared:
                 source = teacher().encoder
@@ -602,6 +632,9 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
             if mode == 'op_oracle':
                 model = teacher()
                 deps = dependencies['teacher'][:]
+            elif mode == 'design_op_oracle':
+                model = design_op_teacher()
+                deps = dependencies['design_op_teacher'][:]
             elif mode == 'design_supervised':
                 model, dep = stage(ReadoutModel(new_design(),head()),mode,'readout')
                 deps=[dep]
@@ -615,6 +648,50 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
                 model = ReadoutModel(enc,head(),scaler=scaled,frozen=not finetune)
                 model, dep = stage(model,mode,'readout')
                 deps=dependencies['student']+[dep]
+            elif mode == 'student_predicted_op':
+                source = design_op_teacher()
+                predictor = copy.deepcopy(op_predictor())
+                before_teacher, before_predictor = state_digest(source), state_digest(predictor)
+                downstream = copy.deepcopy(source).requires_grad_(True)
+                initial_encoder = state_digest(downstream.encoder)
+                initial_decoder = state_digest(downstream.decoder)
+                scaler = fit_scaler(ctx, source.encoder, options, 'design_op')
+                cascade = PredictedOPCascade(predictor, downstream).to(device)
+                pair = PredictedOPDistillation(cascade, source, scaler).to(device)
+                scales = dict(teacher_scaler=scaler.state_dict(),
+                              fit_sample_ids=sorted(ctx.selection['train']),
+                              shared_teacher_student_scale=True, loss_only=True)
+                def distillation_objective(m, b):
+                    return m.objective(b, alignment_weight=options['student_alignment_weight'],
+                                       performance_weight=options['student_performance_weight'])
+                pair, dep = stage(pair, mode, 'student_predicted_op', distillation_objective,
+                                  op=True, checkpoint_extra=lambda m: scales)
+                after_teacher, after_predictor = state_digest(source), state_digest(pair.student.predictor)
+                if before_teacher != after_teacher or before_predictor != after_predictor:
+                    raise AssertionError('Frozen design+OP teacher or OP predictor changed during student training')
+                model = pair.student
+                deps = dependencies['design_op_teacher'] + dependencies['predictor'] + [dep]
+                torch.save(scales, ctx.output / 'stages' / mode / 'scales.pt')
+                audit = dict(teacher_mode='design_op_oracle', teacher_stage_ids=dependencies['design_op_teacher'],
+                    predictor_stage_ids=dependencies['predictor'],
+                    teacher_digest_before=before_teacher, teacher_digest_after=after_teacher,
+                    predictor_digest_before=before_predictor, predictor_digest_after=after_predictor,
+                    initial_student_encoder_digest=initial_encoder,
+                    teacher_encoder_digest=state_digest(source.encoder),
+                    initial_student_decoder_digest=initial_decoder,
+                    teacher_decoder_digest=state_digest(source.decoder),
+                    initialization='copy supervised teacher encoder and decoder; optimizer starts fresh',
+                    teacher_frozen=True, predictor_frozen=True, ema=False,
+                    alignment_weight=options['student_alignment_weight'],
+                    performance_weight=options['student_performance_weight'],
+                    alignment='equal mean of graph and eligible-device scaled MSE; no trainable projection',
+                    eligible_devices='nonpadding and observed/predicted OP field intersection; graph if any eligible device',
+                    validation_selection='unweighted masked performance MSE; no teacher alignment',
+                    scaler_fit_samples=scaler.fitted_samples,
+                    deployment='predicted OP cascade only; no teacher or alignment scaler')
+                (ctx.output / mode).mkdir(parents=True)
+                write_json(ctx.output / mode / 'distillation.json', audit)
+                del pair
             elif mode in ('predicted_op','predicted_op_joint'):
                 predictor=copy.deepcopy(op_predictor())
                 seed_everything(seed,options['torch_threads'])
@@ -656,7 +733,7 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
             directory=ctx.output/mode
             save_final(directory,model,ctx,mode,seed,deps,options)
             for split in ('test','ood'):
-                report=evaluate_model(ctx,model,split,options,measured_op=mode=='op_oracle')
+                report=evaluate_model(ctx,model,split,options,measured_op=mode in MEASURED_OP_MODELS)
                 if report is not None:
                     write_json(directory/f'{split}.json',report)
                     results.append(dict(mode=mode,seed=seed,stage_ids=deps,report=report))
