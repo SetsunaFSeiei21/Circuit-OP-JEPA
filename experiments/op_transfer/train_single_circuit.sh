@@ -5,20 +5,28 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
 # ===== Experiment settings: edit these for your next run. =====
-CIRCUIT="two_stage_folded_opamp"
+CIRCUIT="Opamp1"
+# MODELS=(
+#   design_supervised
+#   op_oracle
+#   op_distill
+#   predicted_op
+#   dual_distill
+#   dual_design_control
+#   design_op_oracle
+#   student_predicted_op
+# )
 MODELS=(
   design_supervised
   op_oracle
-  op_distill
-  predicted_op
-  dual_distill
-  dual_design_control
   design_op_oracle
+  predicted_op
   student_predicted_op
 )
 # Focused cascade comparison: retain design_supervised, predicted_op,
 # design_op_oracle and student_predicted_op above.
-SEEDS=(17 29 43)
+# SEEDS=(17 29 43)
+SEEDS=(17)
 CONFIG="$HERE/example_config.json"
 RAW_ROOT="$PROJECT_ROOT/runs/raw/full_data"
 DEVICE="cuda"
