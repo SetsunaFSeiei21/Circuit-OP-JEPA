@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 def inference_dataset(data, preprocessing, *, measured_op=False):
     """Remove unused outcomes BEFORE validation, permitting outcome-free inputs.
 
-    Design models, including student_predicted_op, accept ordinary canonical datasets with omitted/empty OP and
+    Design models, including both student_predicted_op variants, accept datasets with omitted/empty OP and
     performance dictionaries. Supplied OP values, missingness, state or failure
     metadata cannot enter their inference path, even if those outcomes are NaN.
     """

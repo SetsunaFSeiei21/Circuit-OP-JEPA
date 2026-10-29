@@ -18,7 +18,7 @@ bash experiments/op_transfer/train_ood.sh
 
 两个脚本均默认提交完整数据的 GPU 作业；可加 `--dry-run` 仅预览。原始数据目录 `RAW_ROOT` 和配置路径 `CONFIG` 也写在脚本开头。batch size、各阶段 epoch 和模型结构参数在 `CONFIG` 指定的 JSON 中设置。脚本自动完成导入和新训练，不需要填写旧实验目录。结果、日志和 Excel 的位置与下面的 raw 入口相同。
 
-两个 bash 脚本默认保留此前六个模型，并新增 `design_op_oracle` 和 `student_predicted_op`，共八个结果模型。若这次只验证“预测 OP 的教师补偿”，可以把脚本中的数组改为：
+模型选择以两个 bash 脚本各自的 `MODELS` 为准，新增的分阶段学生也已加入其中。单电路脚本保留用户设置的 `Opamp1`、seed 17 和原五个对照模型；OOD 脚本保留自己的电路与种子设置。若只验证“预测 OP 的教师补偿”，可使用：
 
 ```bash
 MODELS=(
@@ -26,10 +26,13 @@ MODELS=(
   predicted_op
   design_op_oracle
   student_predicted_op
+  student_predicted_op_distill
 )
 ```
 
 只想运行新学生时也可写 `MODELS=(student_predicted_op)`；必要的真实 OP 教师和 OP 预测器会自动训练，无需手工指定 checkpoint。依赖阶段不等于额外选择了性能结果模型。
+
+只运行分阶段学生则写 `MODELS=(student_predicted_op_distill)`，它独立从同一教师初始化，不依赖已经完成的 `student_predicted_op` 训练。
 
 ## 直接指定电路和模型重新训练
 
@@ -85,6 +88,7 @@ bash experiments/op_transfer/submit.sh --submit \
 | `predicted_op` | 先训练设计→OP 预测器并冻结，再训练接收预测 OP 的性能网络 | 拓扑＋设计参数 |
 | `predicted_op_joint` | 级联网络联合微调，同时保留真实 OP 辅助损失 | 拓扑＋设计参数 |
 | `student_predicted_op` | 冻结 OP 预测器；教师权重初始化同结构级联学生，用真实 OP 教师表示与性能标签联合监督学生 | 拓扑＋设计参数 |
+| `student_predicted_op_distill` | 教师权重初始化；先仅蒸馏 encoder，再冻结 encoder、仅训练 decoder | 拓扑＋设计参数 |
 | `dual_distill` | 直接设计分支＋蒸馏得到的设计分支，融合读出 | 拓扑＋设计参数 |
 | `dual_predicted_op` | 直接设计分支＋OP 预测器的设计编码分支，融合读出 | 拓扑＋设计参数 |
 | `dual_design_control` | 相同双编码器及融合结构，但没有 OP 引导 | 拓扑＋设计参数 |
@@ -117,7 +121,38 @@ h_T=E_T(G,x,o),\qquad \hat{o}=P(G,x),\qquad h_S=E_S(G,x,\hat{o})
 
 冻结教师的训练目标在设备上缓存，避免每轮重复编码教师。逐轮 `history.json` 同时记录性能、原始/缩放后的对齐及加权项，可检查大 loss 是否来自尺度；损失大小不等于梯度贡献。最终 `student_predicted_op/checkpoint.pt` 只保存冻结的 OP 预测器、学生编码器和学生读出头，不需要载入教师或训练对齐尺度即可预测。
 
-建议先保持原 `predicted_op` 与新学生的下游 epoch、batch size、数据划分一致，再查看 `stages.json` 报告教师预训练的额外成本。新学生默认最多训练 50 轮，教师和 OP 预测器分别最多 30 轮；早停按各阶段验证目标独立执行，因此不能声称整条路线与单阶段基线等计算量。
+建议先保持原 `predicted_op` 与新学生的下游 epoch、batch size、数据划分一致，再查看 `stages.json` 报告教师预训练的额外成本。当前 `example_config.json` 显式设置教师 60、OP 预测器 30、联合学生 60 轮；未写这些键时的代码回退值仍分别为 30、30、50。早停按各阶段验证目标独立执行，因此不能声称整条路线与单阶段基线等计算量。
+
+## 分阶段学生：student_predicted_op_distill
+
+这是一项独立消融，保留 `student_predicted_op` 的联合训练行为。教师仍为 `design_op_oracle`（拓扑＋设计参数＋真实 OP），OP 预测器仍为共享的 `op_predictor`；二者各自训练后完全冻结。学生的 encoder 和 decoder 都复制验证最优教师的权重，包括 embedding，不共享参数存储。
+
+1. **Encoder 阶段**：冻结 OP 预测器、教师和学生 decoder，只更新学生 encoder。输入始终为拓扑＋设计参数＋预测 OP，目标仅为教师的 graph/device 表示对齐 MSE，不使用性能损失，也不调用 decoder。对齐规则和固定的训练集教师尺度与联合版本相同。该阶段可使用有有效 OP 但没有性能标签的 ID 训练样本；无可用对齐目标的 batch 跳过。
+2. **阶段切换**：恢复验证对齐损失最优的学生 encoder，完全冻结它并保持 eval 模式；清除旧梯度。decoder 保留复制教师时的权重，在第一阶段没有更新，随后解冻。两个阶段使用独立优化器。
+3. **Decoder 阶段**：仅更新学生 decoder，优化有效标签的归一化性能 MSE。固定 OP 预测器和 encoder 的 train/val 特征在 GPU 上一次缓存，避免每轮重复前向。该阶段不需要教师或真实 OP 输入，不重新拟合任何统计量。
+
+**选模与早停**：encoder 阶段监控验证集表示对齐损失，因此会使用验证集真实 OP 作为冻结教师的目标；验证集不参与归一化统计拟合。decoder 阶段监控验证集性能 MSE，完全不读取真实 OP 作为模型输入。两阶段各自应用 `op_transfer.patience`，每次阶段切换与最终测试都恢复该阶段 val-best。test/OOD 不用于拟合或选模。若 train 或 val 整个划分没有可用对齐目标，则明确报错，不静默退化为联合训练或性能监督。
+
+两个独立轮数键在 `op_transfer.epochs` 中，均默认 60；可单独改成 30/60 等组合：
+
+```json
+"predicted_op_distill_encoder": 60,
+"predicted_op_distill_decoder": 60
+```
+
+它们不读取 `student`、`student_predicted_op`、`readout` 或 `training.decoder_epochs`。`student_alignment_weight` 和 `student_performance_weight` 只控制联合版本，分阶段版本的各阶段都是单一、未加权的目标，不受这两个权重影响。
+
+按当前示例配置，该模型的完整预算为教师 60＋OP 预测器 30＋encoder 60＋decoder 60＝210 轮上限，不等同于单阶段基线的 60 轮。与其他模型同一 seed 共用前置教师和 OP 预测器，`stages.json` 对共享成本去重。模型间不共享已经蒸馏或联合训练后的学生权重。
+
+raw 入口的输出在 `experiments/op_transfer/results/<本次实验>/results/` 内：
+
+- `seed_<seed>/stages/predicted_op_distill_encoder/`：encoder 阶段 `best.pt`、`history.json`、`cost.json` 和训练集 `scales.pt`。
+- `seed_<seed>/stages/predicted_op_distill_decoder/`：decoder 阶段 `best.pt`、`history.json`、`cost.json`。
+- `seed_<seed>/student_predicted_op_distill/`：可部署的 `checkpoint.pt`、`test.json`、存在 OOD 时的 `ood.json` 和 `distillation.json` 审计记录。
+- `distillation.json` 记录复制教师的初始化、第一阶段 decoder 未改变、第二阶段 encoder 未改变、教师和 OP 预测器全程未改变的摘要，以及各阶段目标/配置键。
+- 同一实验的 `summary.xlsx` 自动增加该模型；日志仍在 `experiments/op_transfer/logs/`。
+
+最终 checkpoint 仅包含 OP 预测器、冻结的学生 encoder 和训练好的 decoder，沿用原有级联模型加载与 `predict.py` 推理，无需教师、真实 OP 或对齐尺度。没有额外的 latent predictor，不做 EMA；OP 数值预测器始终固定。
 
 `jepa_residual` 相对 `jepa_standardized` 改变了不止一个因素；应先比较 `jepa_standardized → jepa_grouped`，再比较 `jepa_grouped → jepa_residual`。所有变体均为待验证的实验，不承诺自动优于直接监督基线。
 

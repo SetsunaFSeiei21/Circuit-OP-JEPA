@@ -32,6 +32,7 @@ class CliTests(unittest.TestCase):
         assert 'predicted_op_joint' in output
         assert 'dual_design_control' in output
         assert 'student_predicted_op' in output
+        assert 'student_predicted_op_distill' in output
         assert 'design_op_oracle' in output
 
 

@@ -54,14 +54,18 @@ class SummaryTests(unittest.TestCase):
             summary_rows([bad])
 
     def test_distilled_cascade_and_design_op_teacher_input_contracts(self):
-        rows = summary_rows([record(mode='student_predicted_op'), record(mode='design_op_oracle')])
+        rows = summary_rows([record(mode='student_predicted_op'), record(mode='design_op_oracle'),
+                             record(mode='student_predicted_op_distill')])
         student = next(row for row in rows if row['mode'] == 'student_predicted_op')
         teacher = next(row for row in rows if row['mode'] == 'design_op_oracle')
         self.assertFalse(student['requires_op_at_inference'])
         self.assertTrue(student['uses_design_parameters'])
         self.assertTrue(teacher['requires_op_at_inference'])
         self.assertTrue(teacher['uses_design_parameters'])
-        for mode in ('student_predicted_op', 'design_op_oracle'):
+        sequential = next(row for row in rows if row['mode'] == 'student_predicted_op_distill')
+        self.assertFalse(sequential['requires_op_at_inference'])
+        self.assertTrue(sequential['uses_design_parameters'])
+        for mode in ('student_predicted_op', 'design_op_oracle', 'student_predicted_op_distill'):
             invalid = record(mode=mode)
             invalid['report']['requires_measured_op'] = not invalid['report']['requires_measured_op']
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'input contract'):
@@ -71,11 +75,13 @@ class SummaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root/'results.json').write_text(json.dumps([
-                record(mode='student_predicted_op'), record(mode='design_op_oracle')]))
+                record(mode='student_predicted_op'), record(mode='design_op_oracle'),
+                record(mode='student_predicted_op_distill')]))
             path = export_results(root)
             with ZipFile(path) as archive:
                 detail = archive.read('xl/worksheets/sheet2.xml').decode()
                 self.assertIn('student_predicted_op', detail)
+                self.assertIn('student_predicted_op_distill', detail)
                 self.assertIn('design_op_oracle', detail)
 
     def test_xlsx_export_retains_full_precision_and_missing_std(self):

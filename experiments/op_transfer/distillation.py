@@ -76,6 +76,45 @@ class PredictedOPDistillation(nn.Module):
             memory, padding = self.teacher.encoder(op_input(batch, use_design=True))
             return self.teacher_scaler.transform(memory, padding, batch['_group_keys']), padding
 
+    def _alignment(self, batch, prepared, memory, padding):
+        """Direct encoder alignment; deliberately independent of performance labels."""
+        valid = (batch['device_mask'] & ~padding[:, 1:] & batch['op_target_mask']
+                 & (batch['op_mask'] & prepared['op_mask']).any(-1))
+        graph_valid = valid.any(-1) & ~padding[:, 0]
+        if not bool(valid.any()):
+            return None
+        if '_teacher_memory' in batch:
+            target, target_padding = batch['_teacher_memory'], batch['_teacher_padding']
+        else:
+            target, target_padding = self.teacher_memory(batch)
+        if memory.shape != target.shape or not torch.equal(padding, target_padding):
+            raise ValueError('Teacher/student graph and device tokens must match')
+        target = target.detach()
+        scaled = self.teacher_scaler.transform(memory, padding, batch['_group_keys'])
+        device_delta = scaled[:, 1:][valid] - target[:, 1:][valid]
+        graph_delta = scaled[:, 0][graph_valid] - target[:, 0][graph_valid]
+        if not bool(torch.isfinite(device_delta).all() & torch.isfinite(graph_delta).all()):
+            raise ValueError('Nonfinite eligible teacher/student alignment features')
+        device_loss = device_delta.square().mean()
+        graph_loss = graph_delta.square().mean()
+        alignment = (device_loss + graph_loss) / 2
+        # The common teacher scale recovers raw differences without another cache.
+        raw_sse = memory.new_zeros(())
+        for key, index in _groups(batch['_group_keys'], valid):
+            if not index.shape[0]:
+                continue
+            delta = (scaled[index[:, 0], index[:, 1]+1]
+                     - target[index[:, 0], index[:, 1]+1])
+            scale = self.teacher_scaler.scale_for_key(key, delta)
+            raw_sse = raw_sse + (delta * scale).square().sum()
+        raw_device_loss = raw_sse / (valid.sum() * memory.shape[-1])
+        return alignment, int(valid.sum()), {
+            'device_alignment_mse': device_loss.detach(),
+            'graph_alignment_mse': graph_loss.detach(),
+            'alignment_mse': alignment.detach(),
+            'raw_device_alignment_mse': raw_device_loss.detach(),
+        }
+
     def objective(self, batch, *, alignment_weight=1., performance_weight=1.):
         for name, value, allow_zero in (('alignment_weight', alignment_weight, True),
                                         ('performance_weight', performance_weight, False)):
@@ -96,48 +135,42 @@ class PredictedOPDistillation(nn.Module):
             return performance, weight, {'perf_mse': performance.detach()}
 
         zero = performance.new_zeros(())
-        device_loss = graph_loss = raw_device_loss = alignment = zero
+        alignment = zero
+        detail = dict.fromkeys(('device_alignment_mse', 'graph_alignment_mse',
+                                'alignment_mse', 'raw_device_alignment_mse'), zero)
         if alignment_weight > 0:
-            valid = (batch['device_mask'] & ~padding[:, 1:] & batch['op_target_mask']
-                     & (batch['op_mask'] & prepared['op_mask']).any(-1))
-            graph_valid = valid.any(-1) & ~padding[:, 0]
-            if bool(valid.any()):
-                if '_teacher_memory' in batch:
-                    target, target_padding = batch['_teacher_memory'], batch['_teacher_padding']
-                else:
-                    target, target_padding = self.teacher_memory(batch)
-                if memory.shape != target.shape or not torch.equal(padding, target_padding):
-                    raise ValueError('Teacher/student graph and device tokens must match')
-                target = target.detach()
-                scaled = self.teacher_scaler.transform(memory, padding, batch['_group_keys'])
-                device_delta = scaled[:, 1:][valid] - target[:, 1:][valid]
-                graph_delta = scaled[:, 0][graph_valid] - target[:, 0][graph_valid]
-                if not bool(torch.isfinite(device_delta).all() & torch.isfinite(graph_delta).all()):
-                    raise ValueError('Nonfinite eligible teacher/student alignment features')
-                device_loss = device_delta.square().mean()
-                graph_loss = graph_delta.square().mean()
-                alignment = (device_loss + graph_loss) / 2
-                # Both branches use the SAME means and scales: multiplying the
-                # scaled difference by the scale recovers the raw difference.
-                # This diagnostic needs no second, raw frozen-feature cache.
-                raw_sse = zero
-                for key, index in _groups(batch['_group_keys'], valid):
-                    if not index.shape[0]:
-                        continue
-                    delta = (scaled[index[:, 0], index[:, 1]+1]
-                             - target[index[:, 0], index[:, 1]+1])
-                    scale = self.teacher_scaler.scale_for_key(key, delta)
-                    raw_sse = raw_sse + (delta * scale).square().sum()
-                raw_device_loss = raw_sse / (valid.sum() * memory.shape[-1])
+            aligned = self._alignment(batch, prepared, memory, padding)
+            if aligned is not None:
+                alignment, _, detail = aligned
 
         weighted_performance = performance_weight * performance
         weighted_alignment = alignment_weight * alignment
         return weighted_performance + weighted_alignment, weight, {
+            **detail,
             'perf_mse': performance.detach(),
-            'device_alignment_mse': device_loss.detach(),
-            'graph_alignment_mse': graph_loss.detach(),
-            'alignment_mse': alignment.detach(),
             'weighted_performance': weighted_performance.detach(),
             'weighted_alignment': weighted_alignment.detach(),
-            'raw_device_alignment_mse': raw_device_loss.detach(),
         }
+
+
+class PredictedOPEncoderDistillation(PredictedOPDistillation):
+    """Encoder-only stage; train AND validation select on teacher alignment.
+
+    The copied performance decoder is frozen and never evaluated here. Measured
+    OP supplies train/validation teacher targets, never student forward inputs.
+    No performance labels or joint-student loss weights affect this objective.
+    """
+
+    def __init__(self, student, teacher, teacher_scaler):
+        super().__init__(student, teacher, teacher_scaler)
+        freeze(self.student.downstream.decoder)
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.student.downstream.decoder.eval()
+        return self
+
+    def objective(self, batch):
+        prepared = self.student.predicted_batch(batch)
+        memory, padding = self.student.downstream.encoder(op_input(prepared, use_design=True))
+        return self._alignment(batch, prepared, memory, padding)

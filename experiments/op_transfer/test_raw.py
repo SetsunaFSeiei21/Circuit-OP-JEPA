@@ -78,7 +78,7 @@ class RawTransferTests(unittest.TestCase):
 
     def test_single_circuit_imports_fresh_data_then_only_selected_models(self):
         before=snapshot(self.raw)
-        commands=self.invoke(self.args('--models','op_distill','predicted_op',
+        commands=self.invoke(self.args('--models','op_distill','student_predicted_op_distill',
             '--seeds','17','29','--max-train','32','--max-val','8','--max-test','8'))
         self.assertEqual(len(commands),2)
         saved=json.loads((self.output/'config.json').read_text())
@@ -92,7 +92,7 @@ class RawTransferTests(unittest.TestCase):
         self.assertEqual(second[second.index('--output')+1],str(self.output/'results'))
         self.assertIn(str(self.experiment/'run.py'),second)
         index=second.index('--models')+1
-        self.assertEqual(second[index:index+2],['op_distill','predicted_op'])
+        self.assertEqual(second[index:index+2],['op_distill','student_predicted_op_distill'])
         self.assertNotIn('--manifest',second)
         self.assertEqual(second[second.index('--max-train')+1],'32')
         self.assertEqual(second[second.index('--max-val')+1],'8')

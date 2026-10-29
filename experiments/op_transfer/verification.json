@@ -8,8 +8,8 @@
   "suites": [
     {
       "command": "python -m unittest discover -s experiments/op_transfer -p 'test_*.py' -q",
-      "run": 73,
-      "passed": 73,
+      "run": 79,
+      "passed": 79,
       "skipped": 0
     },
     {
@@ -26,12 +26,12 @@
     }
   ],
   "total": {
-    "run": 583,
-    "passed": 577,
+    "run": 589,
+    "passed": 583,
     "skipped": 6
   },
   "covered": [
-    "All 15 selected modes complete training and test/OOD reporting",
+    "All 16 selected modes complete training and test/OOD reporting",
     "Frozen teacher and design-only deployment boundaries",
     "Exact state-dict checkpoint replay",
     "Train-only scaler and unseen topology fallback",
@@ -49,7 +49,12 @@
     "Student validation selects unweighted performance only; cached teacher targets match direct targets; no validation teacher input",
     "Teacher-free student cascade replay and standalone prediction with missing/polluted OP and labels",
     "Student dependency order stability, cost deduplication, initialization/freeze provenance and heldout mutation invariance",
-    "New reference/student input contracts in Excel; both editable launcher dry-runs include new models without job submission"
+    "New reference/student input contracts in Excel; both editable launcher dry-runs include new models without job submission",
+    "Sequential predicted-OP student encoder stage has no decoder calls or performance-label dependence; only encoder receives gradients",
+    "Encoder validation selects alignment using fixed teacher targets; decoder validation selects performance with no measured OP input",
+    "Decoder-only stage preserves frozen encoder/predictor state and eval behavior; cached/direct features and losses match",
+    "Independent encoder/decoder epoch budgets, dependency order stability, initialization/freeze audits, deployment replay and heldout mutation invariance",
+    "New sequential model accepted by raw/CLI model selection, Excel export and both actual Slurm dry-run launchers"
   ],
   "not_verified": [
     "CUDA execution",

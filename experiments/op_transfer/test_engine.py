@@ -86,6 +86,8 @@ class TransferEngineTests(unittest.TestCase):
         self.assertEqual(ids.count("seed_17/distillation"), 1)
         self.assertEqual(ids.count("seed_17/design_op_teacher"), 1)
         self.assertEqual(ids.count("seed_17/student_predicted_op"), 1)
+        self.assertEqual(ids.count("seed_17/predicted_op_distill_encoder"), 1)
+        self.assertEqual(ids.count("seed_17/predicted_op_distill_decoder"), 1)
         self.assertEqual(costs["optimizer_steps_deduplicated"],
                          sum(row["optimizer_steps"] for row in costs["unique_stages"]))
         for mode in ("op_distill", "op_distill_finetune", "dual_distill"):
@@ -217,7 +219,8 @@ class TransferEngineTests(unittest.TestCase):
         outputs = [self.root / "heldout_original", self.root / "heldout_mutated"]
         for path, output in zip((self.data_path, mutated_path), outputs):
             quiet_run(path, self.config_path, output,
-                       ["design_supervised", "op_oracle", "op_distill", "student_predicted_op"], [17, 29], "cpu")
+                       ["design_supervised", "op_oracle", "op_distill", "student_predicted_op",
+                        "student_predicted_op_distill"], [17, 29], "cpu")
         a, b = (json.loads((output / "stages.json").read_text())["unique_stages"] for output in outputs)
         self.assertEqual({stage["stage_id"]: stage["selected_state_digest"] for stage in a},
                          {stage["stage_id"]: stage["selected_state_digest"] for stage in b})
@@ -237,7 +240,8 @@ class TransferEngineTests(unittest.TestCase):
         path = self.root / "design_only_inputs.json"
         path.write_text(json.dumps(data))
         original = path.read_bytes()
-        for mode in ("op_distill", "predicted_op", "op_predictor", "student_predicted_op"):
+        for mode in ("op_distill", "predicted_op", "op_predictor", "student_predicted_op",
+                     "student_predicted_op_distill"):
             output = self.root / f"{mode}_predictions.json"
             with contextlib.redirect_stdout(io.StringIO()):
                 result = predict(self.output / f"seed_17/{mode}/checkpoint.pt", path,
@@ -315,6 +319,57 @@ class TransferEngineTests(unittest.TestCase):
         self.assertFalse((output / 'seed_17/design_op_oracle').exists())
         alone, _ = engine.load_model(output / 'seed_17/student_predicted_op/checkpoint.pt')
         together, _ = engine.load_model(self.checkpoint('student_predicted_op'))
+        self.assertEqual(state_digest(alone), state_digest(together))
+
+    def test_sequential_student_freeze_audit_and_replay(self):
+        mode = 'student_predicted_op_distill'
+        audit = json.loads((self.output / f'seed_17/{mode}/distillation.json').read_text())
+        self.assertEqual(audit['training_scheme'], 'encoder_then_decoder')
+        self.assertEqual(audit['initial_student_decoder_digest'], audit['decoder_digest_after_encoder'])
+        self.assertEqual(audit['encoder_digest_before_decoder'], audit['encoder_digest_after_decoder'])
+        for subject in ('teacher', 'predictor'):
+            self.assertEqual(audit[f'{subject}_digest_before'], audit[f'{subject}_digest_after'])
+        self.assertFalse(audit['joint_student_weights_used'])
+        model, payload = engine.load_model(self.checkpoint(mode))
+        self.assertTrue(model.downstream.frozen)
+        self.assertTrue(all(not p.requires_grad for p in model.downstream.encoder.parameters()))
+        self.assertTrue(all(p.requires_grad for p in model.downstream.decoder.parameters()))
+        self.assertEqual(payload['stage_ids'], ['seed_17/design_op_teacher', 'seed_17/op_predictor',
+                                              'seed_17/predicted_op_distill_encoder',
+                                              'seed_17/predicted_op_distill_decoder'])
+        encoder = json.loads((self.output / 'seed_17/stages/predicted_op_distill_encoder/history.json').read_text())
+        for epoch in encoder:
+            for phase in ('train', 'val'):
+                detail = epoch[phase]['loss_components']
+                self.assertAlmostEqual(detail['alignment_mse'], epoch[phase]['loss'], delta=1e-5)
+                self.assertNotIn('perf_mse', detail)
+        stage = torch.load(self.output/'seed_17/stages/predicted_op_distill_encoder/best.pt', weights_only=True)
+        self.assertEqual(stage['stage_metadata']['fit_sample_ids'],
+                         sorted(json.loads((self.output/'cohort.json').read_text())['train']))
+
+    def test_sequential_student_stage_budgets_are_independent_and_order_stable(self):
+        from device_jepa.training import state_digest
+        config = copy.deepcopy(self.config)
+        config['op_transfer']['epochs'].update(predicted_op_distill_encoder=2,
+                                              predicted_op_distill_decoder=3)
+        path = self.root/'sequential_budget.json'
+        path.write_text(json.dumps(config))
+        output = self.root/'sequential_budget'
+        result = quiet_run(self.data_path, path, output, ['student_predicted_op_distill'], [17], 'cpu')
+        self.assertEqual({s['stage_id']:s['epochs'] for s in result['stages']}, {
+            'seed_17/design_op_teacher':1, 'seed_17/op_predictor':1,
+            'seed_17/predicted_op_distill_encoder':2, 'seed_17/predicted_op_distill_decoder':3})
+        self.assertFalse((output/'seed_17/student_predicted_op').exists())
+        for key in ('predicted_op_distill_encoder', 'predicted_op_distill_decoder'):
+            for value in (0, -1, True, 1.5):
+                bad = copy.deepcopy(config)
+                bad['op_transfer']['epochs'][key] = value
+                with self.subTest(key=key,value=value), self.assertRaises(ValueError):
+                    engine.settings(bad)
+        output = self.root/'sequential_alone'
+        quiet_run(self.data_path, self.config_path, output, ['student_predicted_op_distill'], [17], 'cpu')
+        alone, _ = engine.load_model(output/'seed_17/student_predicted_op_distill/checkpoint.pt')
+        together, _ = engine.load_model(self.checkpoint('student_predicted_op_distill'))
         self.assertEqual(state_digest(alone), state_digest(together))
 
     def test_student_loss_weights_validate_before_output(self):

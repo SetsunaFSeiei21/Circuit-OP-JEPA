@@ -206,6 +206,10 @@ class PredictedOPCascade(nn.Module):
             result["_group_keys"] = batch["_group_keys"]
         return result
 
+    def memory(self, batch):
+        """Cacheable predicted-OP features when the downstream encoder is frozen."""
+        return self.downstream.memory(self.predicted_batch(batch))
+
     def forward(self, batch):
         return self.downstream(self.predicted_batch(batch))
 

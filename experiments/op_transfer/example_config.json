@@ -62,6 +62,8 @@
       "student": 60,
       "op_predictor": 30,
       "student_predicted_op": 60,
+      "predicted_op_distill_encoder": 60,
+      "predicted_op_distill_decoder": 60,
       "readout": 60,
       "dual": 50,
       "jepa": 30

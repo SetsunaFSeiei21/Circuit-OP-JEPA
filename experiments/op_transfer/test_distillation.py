@@ -9,11 +9,11 @@ from device_jepa.data import build_manifest, fit_preprocessor, samples_for_split
 from device_jepa.model import ModelConfig, masked_mse
 from device_jepa.tensors import collate_samples
 from device_jepa.training import seed_everything, state_digest
-from experiments.op_transfer.distillation import PredictedOPDistillation
+from experiments.op_transfer.distillation import PredictedOPDistillation, PredictedOPEncoderDistillation
 from experiments.op_transfer.losses import LatentScaler
 from experiments.op_transfer.models import (
     OPPredictor, PredictedOPCascade, ReadoutModel, decoder, design_encoder,
-    fit_op_support, op_encoder, op_input,
+    fit_op_support, freeze, op_encoder, op_input,
 )
 
 
@@ -186,6 +186,97 @@ class PredictedOPDistillationTests(unittest.TestCase):
                            ('performance_weight', 0.), ('performance_weight', float('inf'))):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 model.objective(batch, **{key: value})
+
+
+class EncoderOnlyDistillationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        PredictedOPDistillationTests.setUpClass()
+
+    def make(self, *, dropout=0.):
+        pair, batch = PredictedOPDistillationTests().make(dropout=dropout)
+        return PredictedOPEncoderDistillation(pair.student, pair.teacher, pair.teacher_scaler), batch
+
+    def test_encoder_stage_only_updates_encoder_without_calling_decoder(self):
+        model, batch = self.make(dropout=.3)
+        frozen = (model.teacher, model.student.predictor, model.student.downstream.decoder)
+        before = [state_digest(part) for part in frozen]
+        encoder_before = state_digest(model.student.downstream.encoder)
+        batch.pop('performance')
+        batch.pop('performance_mask')
+        model.train()
+        self.assertTrue(model.student.downstream.encoder.training)
+        self.assertTrue(all(not part.training for part in frozen))
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.001)
+        with patch.object(model.student.downstream.decoder, 'forward', side_effect=AssertionError('decoder called')):
+            loss, count, detail = model.objective(batch)
+        self.assertGreater(count, 0)
+        torch.testing.assert_close(loss.detach(), (detail['device_alignment_mse']+detail['graph_alignment_mse'])/2)
+        loss.backward()
+        for part in frozen:
+            self.assertTrue(all(not p.requires_grad and p.grad is None for p in part.parameters()))
+        self.assertTrue(any(p.grad is not None and bool(p.grad.abs().sum())
+                            for p in model.student.downstream.encoder.parameters()))
+        optimizer.step()
+        self.assertEqual(before, [state_digest(part) for part in frozen])
+        self.assertNotEqual(encoder_before, state_digest(model.student.downstream.encoder))
+
+    def test_validation_aligns_teacher_without_any_performance_labels(self):
+        model, batch = self.make()
+        model.eval()
+        expected = model.objective(batch)
+        batch['performance'] = torch.full_like(batch['performance'], float('nan'))
+        batch['performance_mask'].zero_()
+        with patch.object(model.student.downstream.decoder, 'forward', side_effect=AssertionError('decoder called')):
+            actual = model.objective(batch)
+        torch.testing.assert_close(actual[0], expected[0], rtol=0, atol=0)
+        self.assertNotIn('perf_mse', actual[2])
+        batch['_teacher_memory'], batch['_teacher_padding'] = model.teacher_memory(batch)
+        with patch.object(model, 'teacher_memory', side_effect=AssertionError('cache bypassed')):
+            cached = model.objective(batch)
+            torch.testing.assert_close(cached[0], expected[0], rtol=0, atol=0)
+            batch['_teacher_memory'] = batch['_teacher_memory'] + 100
+            changed = model.objective(batch)
+        self.assertNotEqual(float(changed[0]), float(expected[0]))
+
+    def test_missing_alignment_targets_skip_without_supervised_fallback(self):
+        model, batch = self.make()
+        batch['op_mask'].zero_()
+        for train in (True, False):
+            model.train(train)
+            with patch.object(model, 'teacher_memory', side_effect=AssertionError('no target')):
+                self.assertIsNone(model.objective(batch))
+
+    def test_decoder_stage_only_updates_head_and_cached_features_match(self):
+        from experiments.op_transfer.engine import performance_objective
+        pair, batch = self.make(dropout=.3)
+        model = pair.student
+        model.downstream.frozen = True
+        freeze(model.downstream.encoder)
+        model.downstream.decoder.requires_grad_(True)
+        # Stage boundary clears old gradients; only the head is optimized now.
+        model.zero_grad(set_to_none=True)
+        frozen = (model.predictor, model.downstream.encoder)
+        before = [state_digest(part) for part in frozen]
+        head_before = state_digest(model.downstream.decoder)
+        model.train()
+        self.assertTrue(model.downstream.decoder.training)
+        self.assertTrue(all(not part.training for part in frozen))
+        batch.pop('op'); batch.pop('op_mask'); batch.pop('op_target_mask')
+        a = model.memory(batch)
+        b = model.memory(batch)
+        self.assertFalse(a[0].requires_grad)
+        torch.testing.assert_close(a[0], b[0], rtol=0, atol=0)
+        cached = dict(batch, _frozen_memory=a[0], _frozen_padding=a[1])
+        model.eval()
+        torch.testing.assert_close(performance_objective(model,batch)[0],
+                                   performance_objective(model,cached)[0], rtol=0, atol=0)
+        model.train()
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.001)
+        performance_objective(model,cached)[0].backward()
+        optimizer.step()
+        self.assertEqual(before, [state_digest(part) for part in frozen])
+        self.assertNotEqual(head_before, state_digest(model.downstream.decoder))
 
 
 if __name__ == '__main__':

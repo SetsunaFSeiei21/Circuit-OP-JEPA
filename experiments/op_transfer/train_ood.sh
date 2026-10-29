@@ -16,6 +16,7 @@ MODELS=(
   dual_design_control
   design_op_oracle
   student_predicted_op
+  student_predicted_op_distill
 )
 # Focused cascade comparison: retain design_supervised, predicted_op,
 # design_op_oracle and student_predicted_op above.

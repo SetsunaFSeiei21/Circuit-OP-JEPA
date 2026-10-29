@@ -27,7 +27,7 @@ from device_jepa.tensors import denormalize
 from device_jepa.training import _metrics, seed_everything, state_digest
 from .losses import (LatentScaler, grouped_alignment_loss, masked_field_mse,
                      residual_alignment_loss)
-from .distillation import PredictedOPDistillation
+from .distillation import PredictedOPDistillation, PredictedOPEncoderDistillation
 from .models import (DualEncoderModel, OPPredictor, PredictedOPCascade, ReadoutModel,
     decoder, describe_model, design_encoder, design_input, fit_op_support, freeze,
     op_encoder, op_input, rebuild_model)
@@ -36,10 +36,11 @@ MODELS = ('design_supervised', 'op_oracle', 'jepa_standardized', 'jepa_grouped',
           'jepa_residual', 'jepa_op_aux', 'op_distill', 'op_distill_finetune',
           'predicted_op', 'predicted_op_joint', 'dual_distill',
           'dual_predicted_op', 'dual_design_control', 'design_op_oracle',
-          'student_predicted_op')
+          'student_predicted_op', 'student_predicted_op_distill')
 MEASURED_OP_MODELS = frozenset({'op_oracle', 'design_op_oracle'})
 DEFAULT_EPOCHS = dict(teacher=30, student=30, op_predictor=30, readout=50, dual=50,
-                     jepa=30, student_predicted_op=50)
+                     jepa=30, student_predicted_op=50,
+                     predicted_op_distill_encoder=60, predicted_op_distill_decoder=60)
 
 
 def write_json(path, value):
@@ -214,18 +215,22 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     start = time.perf_counter()
     model.to(ctx.device)
     frozen_features = {}
-    cache_readout = isinstance(model, ReadoutModel) and model.frozen
+    cache_cascade_readout = (isinstance(model, PredictedOPCascade) and not model.joint
+                             and model.downstream.frozen)
+    cache_readout = (isinstance(model, ReadoutModel) and model.frozen) or cache_cascade_readout
     cache_cascade_teacher = isinstance(model, PredictedOPDistillation)
+    encoder_only = isinstance(model, PredictedOPEncoderDistillation)
     cache_teacher = isinstance(model, DistillationPair) or cache_cascade_teacher
     if cache_readout or cache_teacher:
         # Encode each frozen branch once per stage, not once per epoch.
         model.eval()
         with torch.no_grad():
-            # The cascade student selects on performance only; no validation
-            # teacher targets are computed or cached for its alignment loss.
-            for split in (('train',) if cache_cascade_teacher else ('train', 'val')):
+            # The joint student selects performance only. Encoder-only distillation
+            # instead selects validation alignment, using fixed train-fit scales.
+            for split in (('train',) if cache_cascade_teacher and not encoder_only else ('train', 'val')):
                 cache = ctx.cache(split, op)
-                enc = (model.encoder if cache_readout else
+                enc = (model.downstream.encoder if cache_cascade_readout else
+                       model.encoder if cache_readout else
                        model.teacher.encoder if cache_cascade_teacher else model.teacher)
                 table = torch.zeros(len(cache.rows), cache.max_nodes+1, enc.cfg.dim,
                                     device=ctx.device)
@@ -351,8 +356,11 @@ def performance_objective(model, batch):
     mask = batch['performance_mask']
     if not bool(mask.any()):
         return None
-    prediction = (model.decoder(batch['_frozen_memory'], batch['_frozen_padding'])
-                  if '_frozen_memory' in batch else model(batch))
+    if '_frozen_memory' in batch:
+        readout = model.downstream.decoder if isinstance(model, PredictedOPCascade) else model.decoder
+        prediction = readout(batch['_frozen_memory'], batch['_frozen_padding'])
+    else:
+        prediction = model(batch)
     return masked_mse(prediction, batch['performance'].to(prediction.dtype), mask), int(mask.sum())
 
 
@@ -546,6 +554,10 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
         student_predicted_op='design+true-OP performance teacher; copy encoder and decoder; frozen teacher/predictor; '
             'shared train-teacher latent scales in alignment loss only; graph/device alignment + performance; '
             'validation selects only unweighted performance MSE; deployed cascade has no teacher',
+        student_predicted_op_distill='same teacher/predictor and copied initialization as joint student; '
+            'encoder-only alignment followed by frozen-encoder decoder-only performance training; '
+            'encoder selects validation alignment (measured OP targets), decoder selects validation performance; '
+            'scales fit ID train only; deployed cascade has no teacher or measured OP input',
         op_mask='training field support + topology only; no measured test OP missingness',
         dual='feature concatenation plus linear fusion; matched architecture design-only control',
         scaler='same circuit/topology/device train stats; unseen device uses global train-device stats',
@@ -648,7 +660,8 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
                 model = ReadoutModel(enc,head(),scaler=scaled,frozen=not finetune)
                 model, dep = stage(model,mode,'readout')
                 deps=dependencies['student']+[dep]
-            elif mode == 'student_predicted_op':
+            elif mode in ('student_predicted_op', 'student_predicted_op_distill'):
+                sequential = mode == 'student_predicted_op_distill'
                 source = design_op_teacher()
                 predictor = copy.deepcopy(op_predictor())
                 before_teacher, before_predictor = state_digest(source), state_digest(predictor)
@@ -657,23 +670,58 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
                 initial_decoder = state_digest(downstream.decoder)
                 scaler = fit_scaler(ctx, source.encoder, options, 'design_op')
                 cascade = PredictedOPCascade(predictor, downstream).to(device)
-                pair = PredictedOPDistillation(cascade, source, scaler).to(device)
+                wrapper = PredictedOPEncoderDistillation if sequential else PredictedOPDistillation
+                pair = wrapper(cascade, source, scaler).to(device)
                 scales = dict(teacher_scaler=scaler.state_dict(),
                               fit_sample_ids=sorted(ctx.selection['train']),
                               shared_teacher_student_scale=True, loss_only=True)
                 def distillation_objective(m, b):
                     return m.objective(b, alignment_weight=options['student_alignment_weight'],
                                        performance_weight=options['student_performance_weight'])
-                pair, dep = stage(pair, mode, 'student_predicted_op', distillation_objective,
-                                  op=True, checkpoint_extra=lambda m: scales)
+                phase_audit = {}
+                if sequential:
+                    encoder_stage = 'predicted_op_distill_encoder'
+                    decoder_stage = 'predicted_op_distill_decoder'
+                    pair, encoder_dep = stage(pair, encoder_stage, encoder_stage, lambda m,b: m.objective(b),
+                                              op=True, checkpoint_extra=lambda m: scales)
+                    copied_decoder = state_digest(pair.student.downstream.decoder)
+                    if copied_decoder != initial_decoder:
+                        raise AssertionError('Copied decoder changed during encoder-only distillation')
+                    model = pair.student
+                    model.downstream.frozen = True
+                    freeze(model.downstream.encoder)
+                    model.downstream.decoder.requires_grad_(True)
+                    model.zero_grad(set_to_none=True)
+                    encoder_before_readout = state_digest(model.downstream.encoder)
+                    model, decoder_dep = stage(model, decoder_stage, decoder_stage)
+                    encoder_after_readout = state_digest(model.downstream.encoder)
+                    if encoder_before_readout != encoder_after_readout:
+                        raise AssertionError('Distilled encoder changed during decoder-only training')
+                    student_deps = [encoder_dep, decoder_dep]
+                    phase_audit = dict(
+                        encoder_epoch_key=encoder_stage, decoder_epoch_key=decoder_stage,
+                        encoder_objective='unweighted mean of device and graph alignment MSE; no performance labels',
+                        encoder_selection='validation alignment MSE; measured OP teacher targets; train-fit scales fixed',
+                        decoder_objective='masked normalized performance MSE; no teacher or measured OP inputs',
+                        decoder_selection='validation performance MSE',
+                        decoder_frozen_in_encoder_stage=True, encoder_frozen_in_decoder_stage=True,
+                        decoder_digest_after_encoder=copied_decoder,
+                        encoder_digest_before_decoder=encoder_before_readout,
+                        encoder_digest_after_decoder=encoder_after_readout)
+                else:
+                    pair, dep = stage(pair, mode, 'student_predicted_op', distillation_objective,
+                                      op=True, checkpoint_extra=lambda m: scales)
+                    model = pair.student
+                    student_deps = [dep]
                 after_teacher, after_predictor = state_digest(source), state_digest(pair.student.predictor)
                 if before_teacher != after_teacher or before_predictor != after_predictor:
                     raise AssertionError('Frozen design+OP teacher or OP predictor changed during student training')
-                model = pair.student
-                deps = dependencies['design_op_teacher'] + dependencies['predictor'] + [dep]
-                torch.save(scales, ctx.output / 'stages' / mode / 'scales.pt')
+                deps = dependencies['design_op_teacher'] + dependencies['predictor'] + student_deps
+                torch.save(scales, ctx.output / 'stages' / (encoder_stage if sequential else mode) / 'scales.pt')
                 audit = dict(teacher_mode='design_op_oracle', teacher_stage_ids=dependencies['design_op_teacher'],
                     predictor_stage_ids=dependencies['predictor'],
+                    training_scheme='encoder_then_decoder' if sequential else 'joint_encoder_decoder',
+                    student_stage_ids=student_deps,
                     teacher_digest_before=before_teacher, teacher_digest_after=after_teacher,
                     predictor_digest_before=before_predictor, predictor_digest_after=after_predictor,
                     initial_student_encoder_digest=initial_encoder,
@@ -682,13 +730,15 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
                     teacher_decoder_digest=state_digest(source.decoder),
                     initialization='copy supervised teacher encoder and decoder; optimizer starts fresh',
                     teacher_frozen=True, predictor_frozen=True, ema=False,
-                    alignment_weight=options['student_alignment_weight'],
-                    performance_weight=options['student_performance_weight'],
+                    alignment_weight=1. if sequential else options['student_alignment_weight'],
+                    performance_weight=1. if sequential else options['student_performance_weight'],
+                    joint_student_weights_used=not sequential,
                     alignment='equal mean of graph and eligible-device scaled MSE; no trainable projection',
                     eligible_devices='nonpadding and observed/predicted OP field intersection; graph if any eligible device',
-                    validation_selection='unweighted masked performance MSE; no teacher alignment',
+                    validation_selection=('encoder: alignment MSE; decoder: performance MSE' if sequential else
+                                          'unweighted masked performance MSE; no teacher alignment'),
                     scaler_fit_samples=scaler.fitted_samples,
-                    deployment='predicted OP cascade only; no teacher or alignment scaler')
+                    deployment='predicted OP cascade only; no teacher or alignment scaler', **phase_audit)
                 (ctx.output / mode).mkdir(parents=True)
                 write_json(ctx.output / mode / 'distillation.json', audit)
                 del pair

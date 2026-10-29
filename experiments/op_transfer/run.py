@@ -14,7 +14,7 @@ MODEL_NAMES = (
     'design_supervised', 'op_oracle', 'jepa_standardized', 'jepa_grouped',
     'jepa_residual', 'jepa_op_aux', 'op_distill', 'op_distill_finetune',
     'predicted_op', 'predicted_op_joint', 'dual_distill', 'dual_predicted_op',
-    'dual_design_control', 'design_op_oracle', 'student_predicted_op',
+    'dual_design_control', 'design_op_oracle', 'student_predicted_op', 'student_predicted_op_distill',
 )
 DEFAULT_MODELS = (
     'design_supervised', 'op_oracle', 'op_distill', 'predicted_op',
