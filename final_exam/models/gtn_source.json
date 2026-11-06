@@ -1,0 +1,45 @@
+{
+  "model": "gtn",
+  "implementation_status": "independent_paper_based_device_level_adaptation",
+  "paper": {
+    "title": "Graph-Transformer-based Surrogate Model for Accelerated Converter Circuit Topology Design",
+    "authors": ["Shaoze Fan", "Haoshu Lu", "Shun Zhang", "Ningyuan Cao", "Xin Zhang", "Jing Li"],
+    "venue": "DAC 2024",
+    "doi": "10.1145/3649329.3656258",
+    "author_pdf": "https://shunzh.github.io/pdfs/fan-dac-2024.pdf",
+    "institutional_record": "https://researchwith.njit.edu/en/publications/graph-transformer-based-surrogate-model-for-accelerated-converter/",
+    "sections": ["4.1", "4.3", "4.4", "5.1"]
+  },
+  "source_search": {
+    "original_author_repository_verified": false,
+    "upstream_commit": null,
+    "code_copied": false,
+    "scope": "Author PDF and institutional publication record were inspected; public title/author/GitHub searches did not locate a verifiable original code release. ZeroSim's public repository does not include its GTN comparison implementation.",
+    "excluded_unrelated_repository": "GiantCarl/GTSM is a solid-mechanics surrogate by different authors and is not this GTN."
+  },
+  "retained_mechanisms": [
+    "Separate multihead attention over connected neighbors and each incident minimum-basis circuit loop (paper equations 1, 2, 3).",
+    "Learned candidate-weighted summation over neighbor and loop messages (paper equation 4).",
+    "Repeated independently parameterized GTN layers with ReLU activation.",
+    "Mean pooling and the original two-hidden-layer regression head with widths 64 and 16.",
+    "An optional neighbor-only warmup API scales the published 450/700 ratio; loops_enabled is saved in state_dict. The common-budget runner uses both branches from epoch one and does not enable this optional schedule."
+  ],
+  "device_level_adaptations": [
+    "Learned tokens represent complete devices; the paper used devices plus net/terminal vertices for two-terminal converters.",
+    "Terminal-pair equality channels reconstruct a device/net bipartite graph only for minimum-cycle-basis discovery. This avoids false circuit loops from a clique of devices on one shared net.",
+    "Minimum-basis loops are projected onto device tokens. Duplicate device memberships are removed, and one-device terminal ties are not loop tokens.",
+    "D/G/S/B and other terminal-pair identities enter neighbor attention through a learned per-head edge bias. External named ports enter the common device input features.",
+    "Four-terminal transistor incidence loops are topological loops, not an explicit transistor conduction model or exact enforcement of Kirchhoff laws.",
+    "Hidden size, head count and GTN layer count follow the saved common model configuration rather than the original converter setting dim=48, heads=4, layers=4, head-key-dim=6.",
+    "Only topology and design features are supplied; no real OP, OP missingness, or performance labels are input features.",
+    "Minimum-cycle-basis preprocessing uses NetworkX on CPU once per resident topology; attention, merging, optimization, and minibatch mask gathering run on the selected Torch device.",
+    "The implementation is not claimed to reproduce the original paper's converter benchmark numbers."
+  ],
+  "training_integration": {
+    "prepare": "encoder.prepare_resident(store)",
+    "batch": "ResidentDataset.batches automatically gathers static gtn_loop_membership_by_device [B,N,L]; design_input must retain that field. add_resident_loop_membership is an optional explicit alternative.",
+    "epoch": "Optional: encoder.set_epoch(one_based_epoch, maximum_epochs). Not called by the common-budget comparison runner; both branches are active from epoch one.",
+    "early_stopping": "If enabling the optional warmup manually, do not count neighbor-only epochs against patience; reset best-checkpoint tracking when loop aggregation first activates.",
+    "fallback": "For standalone collated batches, full topology tensors are copied to CPU and loop masks are cached. Use resident precomputation for production training."
+  }
+}

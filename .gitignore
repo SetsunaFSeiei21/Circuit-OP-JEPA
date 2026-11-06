@@ -9,3 +9,8 @@ dist/
 experiments/op_transfer/results/
 experiments/op_transfer/logs/
 private_change_notes/
+
+# final_exam source/configs are versioned; experiment artifacts stay local.
+final_exam/*/results/
+final_exam/*/logs/
+final_exam/*/hpc_logs/

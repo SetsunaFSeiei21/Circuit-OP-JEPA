@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Export final-exam results to auditable MAE, RMSE and R2 workbooks.
+
+Only the Python standard library is required. Complete exports validate the
+planned model/seed/split matrix and effective configurations before writing.
+"""
+import argparse
+from collections import defaultdict
+import json
+import math
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_number, _write_workbook
+from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
+
+
+ORACLES = frozenset(('op_oracle', 'design_op_oracle'))
+
+
+def _read_json(path):
+    try:
+        return json.loads(path.read_text(encoding='utf-8-sig'))
+    except (ValueError, OSError) as exc:
+        raise ValueError(f'Cannot read JSON {path}: {exc}') from exc
+
+
+def _resolve_source(source):
+    path = Path(source).expanduser().resolve()
+    if path.is_dir():
+        candidates = (path / 'results.json', path / 'training' / 'results.json')
+        path = next((item for item in candidates if item.is_file()), path / 'results.json')
+    if not path.is_file():
+        raise ValueError(f'No results.json found at {path}')
+    return path
+
+
+def _circuit_identity(record, config):
+    report = record['report']
+    circuit = record.get('circuit', report.get('circuit'))
+    if circuit is not None:
+        if not isinstance(circuit, str) or not circuit.strip():
+            raise ValueError('Circuit identity must be a nonempty string')
+        return circuit
+    role = 'ood_circuits' if report.get('split') == 'ood' else 'train_circuits'
+    circuits = config.get('dataset', {}).get(role, [])
+    if isinstance(circuits, list) and len(circuits) == 1 and isinstance(circuits[0], str):
+        return circuits[0]
+    return 'ALL_SELECTED_CIRCUITS'
+
+
+def summary_rows(results, config=None):
+    """Aggregate matching seeds, retaining circuit and split identities."""
+    if not isinstance(results, list) or not results:
+        raise ValueError('Expected a nonempty results.json list')
+    groups = defaultdict(list)
+    for record in results:
+        if not isinstance(record, dict) or not isinstance(record.get('report'), dict):
+            raise ValueError('Each result must contain a report object')
+        groups[_circuit_identity(record, config or {})].append(record)
+    rows = []
+    for circuit, members in sorted(groups.items()):
+        # Reuse the existing finite-value, count, seed and OP-input validation.
+        for row in _aggregate_rows(members):
+            row.update(circuit=circuit, backend='final_exam',
+                       scope='pooled' if circuit == 'ALL_SELECTED_CIRCUITS' else 'circuit')
+            row['seed_ids'] = sorted(record['seed'] for record in members
+                                     if record['mode'] == row['mode']
+                                     and record['report']['split'] == row['split'])
+            rows.append(row)
+    return rows
+
+
+def _validate_plan(results, run, *, allow_incomplete, finalizing):
+    if not isinstance(run, dict):
+        raise ValueError('run.json must contain an object')
+    models, seeds = run.get('models'), run.get('seeds')
+    splits = run.get('evaluation_splits')
+    if (not isinstance(models, list) or not models
+            or any(not isinstance(mode, str) or not mode for mode in models)
+            or len(set(models)) != len(models)):
+        raise ValueError('run.json must declare distinct selected models')
+    if (not isinstance(seeds, list) or not seeds
+            or any(type(seed) is not int or seed < 0 for seed in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise ValueError('run.json must declare distinct nonnegative integer seeds')
+    if (not isinstance(splits, list) or not splits or len(set(splits)) != len(splits)
+            or any(split not in ('test', 'ood') for split in splits)):
+        raise ValueError('run.json must declare test/OOD evaluation_splits')
+    expected = {(mode, seed, split) for mode in models for seed in seeds for split in splits}
+    actual = {(record['mode'], record['seed'], record['report']['split']) for record in results}
+    schemas = {}
+    for record in results:
+        report = record['report']
+        key = (record.get('circuit', report.get('circuit', run.get('circuit'))), report['split'])
+        schema = frozenset(report['metrics'])
+        if key in schemas and schemas[key] != schema:
+            raise ValueError('Metric schema differs across compared models')
+        schemas[key] = schema
+    unexpected = actual - expected
+    if unexpected:
+        raise ValueError(f'Results outside the declared experiment: {sorted(unexpected)}')
+    missing = expected - actual
+    accepted_statuses = {'complete'}
+    if finalizing:
+        accepted_statuses.add('ready_to_export')
+    complete = not missing and run.get('status') in accepted_statuses
+    if not complete and not allow_incomplete:
+        raise ValueError(f'Incomplete experiment: status={run.get("status")!r}, '
+                         f'missing model/seed/split results={sorted(missing)}')
+    # Keep measured-OP references visibly separate at the right of each table.
+    ordered_models = [mode for mode in models if mode not in ORACLES]
+    ordered_models.extend(mode for mode in models if mode in ORACLES)
+    return ordered_models, complete, sorted(missing)
+
+
+def _validate_stages(payload, results):
+    stages = payload.get('unique_stages') if isinstance(payload, dict) else None
+    if not isinstance(stages, list):
+        raise ValueError('stages.json must contain unique_stages')
+    identities = set()
+    for stage in stages:
+        if not isinstance(stage, dict) or not isinstance(stage.get('stage_id'), str) or not stage['stage_id']:
+            raise ValueError('Each training cost needs a stage_id')
+        if stage['stage_id'] in identities:
+            raise ValueError(f'Duplicate stage cost: {stage["stage_id"]}')
+        identities.add(stage['stage_id'])
+        for field in ('seconds', 'optimizer_steps'):
+            value = stage.get(field)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f'Stage {stage["stage_id"]}: invalid {field}')
+            if field != 'seconds' and int(value) != value:
+                raise ValueError(f'Stage {stage["stage_id"]}: {field} must be integral')
+        budget_unit = stage.get('budget_unit', 'epochs')
+        if budget_unit == 'epochs':
+            for field in ('epochs', 'planned_epochs'):
+                value = stage.get(field)
+                if type(value) is not int or value < 0:
+                    raise ValueError(f'Stage {stage["stage_id"]}: invalid {field}')
+            if stage['epochs'] > stage['planned_epochs']:
+                raise ValueError('Actual stage epochs exceed the configured budget')
+        elif budget_unit == 'boosting_rounds_per_metric':
+            if any(stage.get(field, 0) is not None for field in ('epochs', 'planned_epochs')):
+                raise ValueError('Boosting-round stages must leave epoch fields null')
+            planned = stage.get('planned_boosting_rounds')
+            rounds = stage.get('boosting_rounds')
+            if type(planned) is not int or planned < 1:
+                raise ValueError('planned_boosting_rounds must be a positive integer')
+            if not isinstance(rounds, dict) or not rounds:
+                raise ValueError('boosting_rounds must contain actual rounds per trained metric')
+            for metric, count in rounds.items():
+                if (not isinstance(metric, str) or not metric or type(count) is not int
+                        or not 1 <= count <= planned):
+                    raise ValueError('Invalid actual boosting rounds or rounds exceed the configured budget')
+        else:
+            raise ValueError(f'Unsupported stage budget unit: {budget_unit}')
+    for record in results:
+        dependencies = record.get('stage_ids')
+        if (not isinstance(dependencies, list) or not dependencies
+                or any(not isinstance(item, str) for item in dependencies)
+                or len(set(dependencies)) != len(dependencies)):
+            raise ValueError('Each result needs distinct nonempty stage_ids')
+        absent = set(dependencies) - identities
+        if absent:
+            raise ValueError(f'Missing costs for dependent stages: {sorted(absent)}')
+    return stages
+
+
+def _flatten(value, prefix=''):
+    if isinstance(value, dict) and value:
+        for key in sorted(value):
+            yield from _flatten(value[key], f'{prefix}.{key}' if prefix else key)
+    else:
+        yield prefix, value
+
+
+def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
+    sheet = Sheet('Configuration', [26, 15, 38, 54, 80], freeze_rows=4, freeze_columns=2)
+    sheet.note('Effective experiment and per-model configurations', 1, 34)
+    sheet.note('Saved values include overrides. Refer to the source paths for the full JSON.')
+    sheet.note('Results describe the saved run; changing these cells does not retrain models.')
+    sheet.add([Cell(value, 3) for value in ('Model / document', 'Seed', 'Source', 'Setting', 'Value')], 32)
+    documents = [('experiment', None, directory / 'config.json', config),
+                 ('run metadata', None, directory / 'run.json', run)]
+    missing = []
+    for mode, seed in sorted({(record['mode'], record['seed']) for record in results}):
+        path = directory / f'seed_{seed}' / mode / 'config.json'
+        if not path.is_file():
+            missing.append(str(path))
+            sheet.add([mode, seed, str(path), 'MISSING EFFECTIVE CONFIGURATION', None])
+            continue
+        value = _read_json(path)
+        if not isinstance(value, dict) or not value:
+            raise ValueError(f'Effective configuration must be a nonempty object: {path}')
+        documents.append((mode, seed, path, value))
+    if missing and not allow_incomplete:
+        raise ValueError(f'Missing per-model effective configurations: {missing}')
+    for label, seed, path, value in documents:
+        for key, setting in _flatten(value):
+            sheet.add([label, seed, str(path), key, setting], 30)
+    sheet.filter_range = f'A4:E{len(sheet.rows)}'
+    return sheet, missing
+
+
+def _statistics_sheet(rows):
+    fields = ('circuit', 'split', 'mode', 'metric', 'scale', 'requires_op_at_inference',
+              'uses_design_parameters', 'seed_ids', 'num_seeds', 'count_per_seed',
+              *(score + suffix for score in SCORES for suffix in ('_defined_seeds', '_mean', '_std')))
+    sheet = Sheet('Statistics', [30] * len(fields), freeze_rows=4, freeze_columns=4)
+    sheet.note('Exact aggregated values in original physical units', 1, 34)
+    sheet.note('Standard deviation uses ddof=1 and is blank when fewer than two scores are defined.')
+    sheet.note('Mean/std cells in comparison sheets link to this worksheet. R2 is dimensionless.')
+    sheet.add([Cell(field, 3) for field in fields], 44)
+    for item in rows:
+        sheet.add([Cell(item.get(field), 11 if field.endswith(('_mean', '_std')) else 5)
+                   for field in fields])
+    sheet.filter_range = f'A4:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet, fields
+
+
+def _score_cell(row, score, divisor, fields, source_row, style, decimals):
+    if row is None or row[score + '_mean'] is None:
+        return Cell('n/a', style)
+    average, average_format = _format_number(row[score + '_mean'] / divisor, decimals)
+    deviation = row[score + '_std']
+    mean_ref = f"'Statistics'!{_column(fields.index(score + '_mean') + 1)}{source_row}"
+    std_ref = f"'Statistics'!{_column(fields.index(score + '_std') + 1)}{source_row}"
+    deviation_format = _format_number(deviation / divisor, decimals)[1] if deviation is not None else average_format
+    formatted_mean = f'TEXT({mean_ref}/{divisor},"{average_format}")'
+    formula = (f'IF(ISNUMBER({mean_ref}),{formatted_mean}&'
+               f'IF(ISNUMBER({std_ref})," ± "&TEXT({std_ref}/{divisor},"{deviation_format}"),""),"n/a")')
+    text = average
+    if deviation is not None:
+        text += ' ± ' + _format_number(deviation / divisor, decimals)[0]
+    defined = row[score + '_defined_seeds']
+    if defined < row['num_seeds']:
+        suffix = f' [{defined}/{row["num_seeds"]} seeds]'
+        text += suffix
+        formula += f'&"{suffix}"'
+    return Cell(text, style, formula)
+
+
+def _comparison_sheets(rows, models, fields, complete, decimals):
+    indexed = {(row['circuit'], row['split'], row['metric'], row['mode']): (index + 5, row)
+               for index, row in enumerate(rows)}
+    metric_order = {metric: index for index, metric in enumerate(METRICS)}
+    identities = sorted({key[:3] for key in indexed},
+                        key=lambda key: (key[0], key[1], metric_order.get(key[2], len(METRICS)), key[2]))
+    sheets = []
+    for score in SCORES:
+        name = 'R2' if score == 'r2' else score.upper()
+        sheet = Sheet(name, [26, 12, 25, 16, *([30] * len(models)), 16], freeze_rows=7, freeze_columns=4)
+        sheet.note(f'{name} model comparison', 1, 34)
+        sheet.note('STATUS: ' + ('COMPLETE' if complete else 'INCOMPLETE — provisional results, no ranking'), 4, 30)
+        sheet.note('Mean ± sample std over seeds. One seed displays the mean alone; its std remains blank.')
+        sheet.note('Higher R2 is better; lower MAE/RMSE is better. UGF errors are displayed in MHz.')
+        sheet.note('Green marks the best unrounded mean within matching inference-input groups and matched seeds/counts.', height=32)
+        sheet.note('TRUE OP REFERENCE requires measured OP at inference. Highlighting is not a significance test.', height=30)
+        labels = [mode + ('\nTRUE OP REFERENCE' if mode in ORACLES else '') for mode in models]
+        sheet.add([Cell(value, 3) for value in ('Circuit', 'Split', 'Metric', 'Unit', *labels, 'Labels / seed')], 64)
+        for circuit, split, metric in identities:
+            label, unit, divisor = METRICS.get(metric, (metric, 'dataset unit', 1))
+            if score == 'r2':
+                unit, divisor = 'dimensionless', 1
+            found = [indexed.get((circuit, split, metric, mode)) for mode in models]
+            best_modes = set()
+            groups = defaultdict(list)
+            for mode, entry in zip(models, found):
+                if entry:
+                    row = entry[1]
+                    groups[(row['requires_op_at_inference'], row['uses_design_parameters'])].append((mode, row))
+            for members in groups.values():
+                counts = {(tuple(row['seed_ids']), row['count_per_seed'], row[score + '_defined_seeds'])
+                          for _, row in members}
+                eligible = (complete and len(members) > 1 and len(counts) == 1
+                            and all(row[score + '_mean'] is not None
+                                    and row[score + '_defined_seeds'] == row['num_seeds'] for _, row in members))
+                if eligible:
+                    values = [row[score + '_mean'] for _, row in members]
+                    best = max(values) if score == 'r2' else min(values)
+                    best_modes.update(mode for mode, row in members if row[score + '_mean'] == best)
+            cells = [circuit, split, label, unit]
+            for mode, entry in zip(models, found):
+                source_row, row = entry if entry else (None, None)
+                cells.append(_score_cell(row, score, divisor, fields, source_row,
+                                         9 if mode in best_modes else 7, decimals))
+            counts = {entry[1]['count_per_seed'] for entry in found if entry}
+            cells.append(next(iter(counts)) if len(counts) == 1 else 'varies')
+            sheet.add(cells, 32)
+        sheet.filter_range = f'A7:{_column(len(sheet.widths))}{len(sheet.rows)}'
+        sheets.append(sheet)
+    return sheets
+
+
+def _per_seed_sheet(results, config):
+    fields = ('circuit', 'split', 'model', 'seed', 'metric', 'count', 'mae', 'rmse', 'r2',
+              'normalized_rmse', 'requires_measured_op', 'stage_ids')
+    sheet = Sheet('PerSeed', [27, 12, 34, 12, 28, 14, 24, 24, 24, 24, 24, 70],
+                  freeze_rows=4, freeze_columns=4)
+    sheet.note('Per-seed physical-unit metrics', 1, 34)
+    sheet.note('Exact source values are retained. UGF values here are in Hz, not the MHz display units.')
+    sheet.note('Blank values are undefined or unavailable. Label count refers to the individual metric.')
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    for record in sorted(results, key=lambda item: (item['mode'], item['seed'], item['report']['split'])):
+        report = record['report']
+        for metric, values in report['metrics'].items():
+            sheet.add([_circuit_identity(record, config), report['split'], record['mode'], record['seed'], metric,
+                       values['count'], *(Cell(values.get(score), 11) for score in ('mae', 'rmse', 'r2', 'normalized_rmse')),
+                       report['requires_measured_op'], record['stage_ids']])
+    sheet.filter_range = f'A4:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet
+
+
+def _cost_sheet(stages, results):
+    fields = ('Stage ID', 'Used by models', 'Planned epochs', 'Actual epochs', 'Budget unit',
+              'Planned boosting rounds per metric', 'Actual boosting rounds per metric',
+              'Seconds', 'Optimizer steps', 'Examples seen', 'Parameters',
+              'Trainable parameters', 'Device', 'Selection')
+    sheet = Sheet('TrainingCost', [48, 64, 20, 20, 36, 28, 70, 22, 22, 22, 22, 24, 18, 80],
+                  freeze_rows=5, freeze_columns=1)
+    sheet.note('Training costs — each stage ID counted once', 1, 34)
+    sheet.note('Teacher and OP predictor costs are included once per seed even when several models reuse them.')
+    sheet.note('Epochs do not imply equal compute. XGBoost reports boosting rounds per metric, with blank epoch cells.', height=32)
+    sheet.note('TOTAL unique stage seconds = ' + str(sum(stage['seconds'] for stage in stages))
+               + '; optimizer steps = ' + str(sum(stage['optimizer_steps'] for stage in stages)))
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    users = defaultdict(set)
+    for record in results:
+        for stage_id in record['stage_ids']:
+            users[stage_id].add(record['mode'])
+    for stage in stages:
+        sheet.add([stage['stage_id'], ', '.join(sorted(users[stage['stage_id']])), stage['planned_epochs'],
+                   stage['epochs'], stage.get('budget_unit', 'epochs'), stage.get('planned_boosting_rounds'),
+                   stage.get('boosting_rounds'), Cell(stage['seconds'], 11), stage['optimizer_steps'], stage.get('examples_seen'),
+                   stage.get('parameters'), stage.get('trainable_parameters'), stage.get('device'),
+                   stage.get('selection')], 32)
+    sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet
+
+
+def export_results(source, output=None, *, overwrite=False, allow_incomplete=False, finalizing=False, decimals=4):
+    """Validate and export a completed run; finalizing accepts ready_to_export.
+
+    An explicit provisional export is possible with allow_incomplete=True. Its
+    status is prominent and every comparison highlight is disabled.
+    """
+    if type(decimals) is not int or not 1 <= decimals <= 10:
+        raise ValueError('decimals must be an integer between 1 and 10')
+    source = _resolve_source(source)
+    directory = source.parent
+    output = Path(output).expanduser().resolve() if output is not None else directory / 'summary.xlsx'
+    if output.suffix.lower() != '.xlsx':
+        raise ValueError('Output must end in .xlsx')
+    if output.exists() and not overwrite:
+        raise ValueError(f'Excel output already exists; choose a new filename: {output}')
+    results, config, run = (_read_json(path) for path in
+                            (source, directory / 'config.json', directory / 'run.json'))
+    if not isinstance(config, dict) or not config:
+        raise ValueError('config.json must contain the effective experiment configuration')
+    rows = summary_rows(results, config)
+    models, complete, missing = _validate_plan(results, run, allow_incomplete=allow_incomplete, finalizing=finalizing)
+    stages = _validate_stages(_read_json(directory / 'stages.json'), results)
+    configuration, missing_configs = _configuration_sheet(directory, config, run, results,
+                                                           allow_incomplete=allow_incomplete)
+    complete = complete and not missing_configs
+    if missing:
+        configuration.note('MISSING RESULTS: ' + json.dumps(missing), 4, 42)
+    statistics, fields = _statistics_sheet(rows)
+    sheets = _comparison_sheets(rows, models, fields, complete, decimals)
+    sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
+    # The reusable writer validates all XML and writes atomically. Publishing
+    # with link prevents concurrent exporters from overwriting an existing file.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.final-exam-report-', dir=output.parent) as temporary:
+        prepared = Path(temporary) / 'report.xlsx'
+        _write_workbook(prepared, sheets)
+        if overwrite:
+            os.replace(prepared, output)
+        else:
+            try:
+                os.link(prepared, output)
+            except FileExistsError as exc:
+                raise ValueError(f'Excel output already exists: {output}') from exc
+    return output
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source', help='Run directory, raw-run directory, or results.json')
+    parser.add_argument('--output', help='New .xlsx filename, default <training-run>/summary.xlsx')
+    parser.add_argument('--overwrite', action='store_true', help='Explicitly replace the derived workbook')
+    parser.add_argument('--allow-incomplete', action='store_true', help='Export provisional results without highlighting')
+    args = parser.parse_args(argv)
+    try:
+        path = export_results(args.source, args.output, overwrite=args.overwrite,
+                              allow_incomplete=args.allow_incomplete)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        parser.error(str(exc))
+    print(path)
+
+
+if __name__ == '__main__':
+    main()
