@@ -70,10 +70,17 @@ class PredictedOPDistillation(nn.Module):
         """This path is design-only even when the wrapper still has a teacher."""
         return self.student(batch)
 
+    def _teacher_inputs(self, batch):
+        """Representation-specific input boundary; default retains device behavior."""
+        return op_input(batch, use_design=True)
+
+    def _student_inputs(self, batch):
+        return op_input(batch, use_design=True)
+
     def teacher_memory(self, batch):
         """Frozen, scaled target suitable for one-time training feature caching."""
         with torch.no_grad():
-            memory, padding = self.teacher.encoder(op_input(batch, use_design=True))
+            memory, padding = self.teacher.encoder(self._teacher_inputs(batch))
             return self.teacher_scaler.transform(memory, padding, batch['_group_keys']), padding
 
     def _alignment(self, batch, prepared, memory, padding):
@@ -126,7 +133,7 @@ class PredictedOPDistillation(nn.Module):
             return None
 
         prepared = self.student.predicted_batch(batch)
-        memory, padding = self.student.downstream.encoder(op_input(prepared, use_design=True))
+        memory, padding = self.student.downstream.encoder(self._student_inputs(prepared))
         prediction = self.student.downstream.decoder(memory, padding)
         performance = masked_mse(prediction, batch['performance'].to(prediction.dtype), mask)
         weight = int(mask.sum())
@@ -172,5 +179,5 @@ class PredictedOPEncoderDistillation(PredictedOPDistillation):
 
     def objective(self, batch):
         prepared = self.student.predicted_batch(batch)
-        memory, padding = self.student.downstream.encoder(op_input(prepared, use_design=True))
+        memory, padding = self.student.downstream.encoder(self._student_inputs(prepared))
         return self._alignment(batch, prepared, memory, padding)

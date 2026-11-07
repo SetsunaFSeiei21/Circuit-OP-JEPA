@@ -2,6 +2,8 @@
 
 新一轮器件级受控实验入口见 [final_exam/README.md](final_exam/README.md)：13 个可选模型（含级联 OP 与 oracle 对照）、单电路 Slurm 脚本、独立教师检查点、任务专属日志及 MAE/RMSE/R² Excel 汇总。多电路、消融、迁移学习目录已预留，第一阶段完成单电路流程。下方介绍原有入口。
 
+对应的端口级单电路流程见 [final_exam/README_pin.md](final_exam/README_pin.md)：器件引脚与外部端口分别成节点，13 个模型、脚本和产物均以 `_pin` 区分；OP predictor 聚合同器件引脚，按器件监督一次，再广播到引脚。
+
 器件级结构编码、OP 表示对齐，以及可按需选择的八个模式：
 
 - `zerosim_pin`：独立复现的 **pin-node ZeroSim-style** 监督基线，训练 encoder + metric-query decoder。

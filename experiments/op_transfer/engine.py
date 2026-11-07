@@ -185,7 +185,7 @@ class DataContext:
             yield batch
 
 
-def fit_scaler(ctx, encoder, options, source='design'):
+def fit_scaler(ctx, encoder, options, source='design', *, input_filter=None):
     if source not in {'design', 'op', 'design_op'}:
         raise ValueError('Latent scale source must be design, op or design_op')
     scaler = LatentScaler(options['latent_floor'])
@@ -196,7 +196,9 @@ def fit_scaler(ctx, encoder, options, source='design'):
         options['progress_every'])
     with torch.no_grad():
         for step,batch in enumerate(ctx.batches('train', options['batch_size'], op=source != 'design'),1):
-            inputs = design_input(batch) if source == 'design' else op_input(batch, use_design=source == 'design_op')
+            inputs = (input_filter(batch) if input_filter is not None else
+                      design_input(batch) if source == 'design' else
+                      op_input(batch, use_design=source == 'design_op'))
             memory, padding = encoder(inputs)
             scaler.update(memory, padding, batch['_group_keys'])
             progress.update(step)
@@ -209,8 +211,11 @@ def _cpu_state(model):
 
 
 def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=False,
-              repeated=False, after_step=None, before_epoch=None, checkpoint_extra=None):
+              repeated=False, after_step=None, before_epoch=None, checkpoint_extra=None,
+              artifact_suffix=""):
     """Exact val-best selection, actual costs, no test/OOD access in fitting."""
+    if artifact_suffix not in ("", "_pin"):
+        raise ValueError("Unsupported artifact suffix")
     seed_everything(seed, options['torch_threads'])
     start = time.perf_counter()
     model.to(ctx.device)
@@ -255,7 +260,7 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     optimizer = torch.optim.AdamW(parameters, lr=options['lr'], weight_decay=options['weight_decay'])
     stopping = EarlyStopping({'early_stopping': dict(enabled=options['patience'] > 0,
         patience=max(1, options['patience']), min_delta=0., min_epochs=1)}, epochs, stage_id)
-    directory = ctx.output / 'stages' / stage_id
+    directory = ctx.output / f'stages{artifact_suffix}' / stage_id
     directory.mkdir(parents=True)
     steps, examples, history = 0, 0, []
     best_state, best_extra = None, {}
@@ -331,8 +336,8 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
             torch.save({'state_dict':best_state,'config':ctx.config,'preprocessing':ctx.prep,
                 'stage_metadata':best_extra,'complete':False,
                 'selection':{'epoch':epoch,'value':record['val']['loss'],'split':'val'}},
-                directory/'best.pt')
-        write_json(directory/'history.json',history)
+                directory/f'best{artifact_suffix}.pt')
+        write_json(directory/f'history{artifact_suffix}.json',history)
         if stopping.should_stop:
             stopping.announce(stage_id)
             break
@@ -346,9 +351,9 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
         trainable_parameters=sum(p.numel() for p in parameters), device=str(ctx.device),
         selection=stopping.summary(), selected_state_digest=state_digest(model))
     torch.save({'state_dict': best_state, 'cost': cost, 'config': ctx.config,
-                'preprocessing': ctx.prep, 'stage_metadata': best_extra, 'complete':True}, directory / 'best.pt')
-    write_json(directory / 'history.json', history)
-    write_json(directory / 'cost.json', cost)
+                'preprocessing': ctx.prep, 'stage_metadata': best_extra, 'complete':True}, directory / f'best{artifact_suffix}.pt')
+    write_json(directory / f'history{artifact_suffix}.json', history)
+    write_json(directory / f'cost{artifact_suffix}.json', cost)
     return model, cost
 
 
@@ -490,7 +495,9 @@ def load_model(path, device='cpu'):
     return model, value
 
 
-def export_summary(output, results, stages):
+def export_summary(output, results, stages, *, artifact_suffix=""):
+    if artifact_suffix not in ("", "_pin"):
+        raise ValueError("Unsupported artifact suffix")
     groups = defaultdict(list)
     for result in results:
         for metric, values in result['report']['metrics'].items():
@@ -503,12 +510,12 @@ def export_summary(output, results, stages):
         rows.append(dict(model=mode, split=split, metric=metric, measure=measure,
             seeds=len(values), mean=statistics.mean(values),
             std=statistics.stdev(values) if len(values)>1 else None))
-    write_json(output / 'summary.json', rows)
-    with (output / 'summary.csv').open('w', newline='') as f:
+    write_json(output / f'summary{artifact_suffix}.json', rows)
+    with (output / f'summary{artifact_suffix}.csv').open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['model','split','metric','measure','seeds','mean','std'])
         writer.writeheader()
         writer.writerows(rows)
-    write_json(output / 'stages.json', {'unique_stages': stages,
+    write_json(output / f'stages{artifact_suffix}.json', {'unique_stages': stages,
         'optimizer_steps_deduplicated': sum(s['optimizer_steps'] for s in stages),
         'seconds_deduplicated': sum(s['seconds'] for s in stages),
         'note': 'Teacher and OP predictor costs counted once per seed; no equal-compute claim.'})

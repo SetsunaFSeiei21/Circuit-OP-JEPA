@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "granularity": "one learned node per observed physical terminal plus named external circuit port",
+  "graph_choice": "pin graph A: same-owner terminal edges and same-net terminal/port edges; independent external ports do not directly connect",
+  "normalization": "Fit once on canonical ID train device rows, then broadcast to terminal tokens; no statistics refit on repeated pins",
+  "preferred_repository_inspected": {
+    "repository": "https://github.com/xz-group/ZeroSim",
+    "commit": "9af8a6976cf1aae9788eedcd882b7cc201ee95ef",
+    "available_core_files": [
+      "model/circuitformer.py",
+      "model/modules.py"
+    ],
+    "limitation": "The inspected public revision does not publish its GAT, DeepGEN, GTN or MLP comparison implementations. Those models cannot honestly be labeled as extracted ZeroSim baseline code."
+  },
+  "models": {
+    "mlp_pin": {
+      "source_file": "common.py:DeviceMLP",
+      "device_level_source_record": "SOURCES.json:models.mlp",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "mlp_pin",
+      "source_files_pin": [
+        "common_pin.py:MLPPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "local device-feature tabular baseline",
+        "architecture": "Canonical ordered device features, zero padding to max_devices, encoder_layers ReLU/dropout hidden layers of width ffn_dim, linear multi-metric output.",
+        "scope": "Single-circuit fixed topology. No graph message passing, measured OP or OP missingness. The architecture is locally specified, not imported from an unpublished ZeroSim baseline."
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "xgboost_pin": {
+      "device_level_source_record": "SOURCES.json:models.xgboost",
+      "pin_adaptation": "Fixed canonical pin feature order, with role/parent identity/design and static pin topology features, is flattened for one booster per metric; only single fixed-topology evaluation is supported.",
+      "model_id": "xgboost_pin",
+      "source_files_pin": [
+        "../tree_pin.py"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "official XGBoost package; final_exam/tree.py",
+        "architecture": "One independent reg:squarederror booster per observed performance metric; fixed canonical device parameter/mask/applicability vector.",
+        "scope": "Single-circuit fixed topology; package version, native booster, settings, selected rounds and feature order are saved by the runner."
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "gat_pin": {
+      "repository": "https://github.com/kouroshHakha/circuit-fewshot-code",
+      "commit": "8d210af3e2ffbe2a5b5b6566dd2d80cab1ac2039",
+      "source_files": [
+        "cgl/models/gnn.py:GATNet",
+        "cgl/models/downstream.py:CircuitPredictorBase"
+      ],
+      "license": "BSD-3-Clause; LICENSE_circuit_fewshot",
+      "device_level_source_record": "SOURCES.json:models.gat",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "gat_pin",
+      "source_files_pin": [
+        "graph_pin.py:GATEncoderPin",
+        "graph_pin.py:MeanReadoutPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "Dense native-PyTorch device adaptation of GATConv, mean-concatenation-disabled heads and ReLU; native mean-pooling linear graph-regression readout.",
+        "adaptations": [
+          "Whole-device nodes and harmonized design-only features.",
+          "D/G/S/B terminal-pair channels add learned attention logits.",
+          "Configurable head/layer counts and attention dropout, batched dense masks instead of PyG sparse scatter.",
+          "No padding in graph pooling or attention keys."
+        ]
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "deepgen_supervised_pin": {
+      "repository": "https://github.com/kouroshHakha/circuit-fewshot-code",
+      "commit": "8d210af3e2ffbe2a5b5b6566dd2d80cab1ac2039",
+      "source_files": [
+        "cgl/models/gnn.py:DeepGENNet",
+        "cgl/models/gnn.py:XAttn",
+        "cgl/models/gnn.py:Node2GraphEmb",
+        "cgl/models/gnn.py:GraphRegression"
+      ],
+      "license": "BSD-3-Clause; LICENSE_circuit_fewshot",
+      "device_level_source_record": "SOURCES.json:models.deepgen_supervised",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "deepgen_supervised_pin",
+      "source_files_pin": [
+        "graph_pin.py:DeepGENEncoderPin",
+        "graph_pin.py:DeepGENReadoutPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "Dense GENConv channel-wise learnable-temperature softmax aggregation in preactivation res+ blocks, final LayerNorm/ReLU, learned-query graph attention pooling and MLP readout.",
+        "adaptations": [
+          "Whole-device nodes, terminal-pair message embeddings, fixed-size padded dense batches, padding-aware BatchNorm in GEN MLP.",
+          "The native Node2GraphEmb readout retains 16 query chunks of width 16, three XAttn passes, and a 256-wide graph embedding. The query is registered as an optimized Parameter rather than the upstream buffer registration.",
+          "The graph-regression MLP retains BatchNorm/ReLU/dropout and uses encoder hidden width, while its depth follows decoder_layers instead of reusing encoder depth. Output expands from one scalar to the shared metric schema."
+        ]
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "deepgen_op_pretrained_pin": {
+      "same_architecture_as": "deepgen_supervised_pin",
+      "pretraining": "Pin encoder memory is pooled by owning physical device; a shared physical-field head predicts each device OP once. ID train full supported OP fields are targets, never baseline input. The resulting pin encoder initializes supervised performance training with the native DeepGEN readout.",
+      "device_level_source_record": "SOURCES.json:models.deepgen_op_pretrained",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "deepgen_op_pretrained_pin",
+      "source_files_pin": [
+        "graph_pin.py:DeepGENEncoderPin",
+        "op_transfer_pin.py:OPPredictorPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "adaptations": [
+          "The original circuit-fewshot work uses node-voltage supervision. This benchmark deliberately expands targets to the full supported device OP field set; it is not an exact original pretraining protocol."
+        ]
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "gtn_pin": {
+      "details": "gtn_source_pin.json",
+      "paper_doi": "10.1145/3649329.3656258",
+      "code_copied": false,
+      "device_level_source_record": "SOURCES.json:models.gtn",
+      "pin_adaptation": "The neighbor branch runs on pin adjacency. Minimum-basis physical loops are computed from owner-device/net incidence, then projected to endpoints whose owner and net belong to the loop. Same-net/intra-owner pin cliques do not create circuit loops; external port nodes are excluded from loop membership. Loop masks are cached before each dataset split is used.",
+      "model_id": "gtn_pin",
+      "source_files_pin": [
+        "gtn_pin.py:GTNEncoderPin",
+        "gtn_pin.py:GTNDecoderPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "independent paper-based device adaptation"
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "zerosim_supervised_pin": {
+      "source_files": [
+        "experiments/op_transfer/models.py:design_encoder",
+        "experiments/op_transfer/models.py:decoder",
+        "device_jepa/model.py",
+        "device_jepa/training.py:encoder_from_metadata"
+      ],
+      "preferred_reference_repository": "https://github.com/xz-group/ZeroSim",
+      "reference_commit": "9af8a6976cf1aae9788eedcd882b7cc201ee95ef",
+      "code_copied_from_reference": false,
+      "device_level_source_record": "SOURCES.json:models.zerosim_supervised",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "zerosim_supervised_pin",
+      "source_files_pin": [
+        "zerosim_pin.py:ZeroSimEncoderPin",
+        "zerosim_pin.py:MetricQueryDecoderPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "existing local ZeroSim-inspired device adaptation",
+        "rationale": "Uses the exact existing encoder and decoder family of the OP predictor and cascade models for the matched backbone comparison. See repository THIRD_PARTY_NOTICES.md and docs/architecture.md for differences from ZeroSim."
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "accformer_pin": {
+      "repository": "https://github.com/SetsunaFSeiei21/ACCFormer_CR",
+      "commit": "63aa936255a5b3025bda777f0d94a74769894229",
+      "source_files": [
+        "src/models/accformer.py",
+        "src/layers/encoder.py",
+        "src/layers/decoder.py",
+        "src/utils/torch_utils.py"
+      ],
+      "license_note": "No license file was found in the inspected source tree. This user-specified repository is attributed explicitly; this document does not assign a new license to upstream code.",
+      "device_level_source_record": "SOURCES.json:models.accformer",
+      "pin_adaptation": "The node axis is physical terminals plus named external ports; token vocabulary names terminal roles and external ports, while parent device model/category/design identity is broadcast to owned pins. The architecture retains its native readout.",
+      "model_id": "accformer_pin",
+      "source_files_pin": [
+        "accformer_pin.py:ACCFormerEncoderPin",
+        "accformer_pin.py:ACCFormerDecoderPin"
+      ],
+      "inherited_device_implementation_notes": {
+        "implementation": "Ported CR architecture: input linear embedding; pre-BatchNorm topology-masked multihead attention/residual/width-D ReLU FFN blocks; learned per-metric queries, cross-attention/residual/BatchNorm decoder and scalar output.",
+        "adaptations": [
+          "Harmonized whole-device parameter/identity/port features replace CR's dataset-specific device feature vector.",
+          "Per-sample connectivity masks replace a single fixed netlist mask; terminal-pair attention bias retains D/G/S/B distinctions.",
+          "BatchNorm excludes padding and uses saved running statistics for a single valid training token.",
+          "Device padding is excluded from both encoder attention and decoder keys. Adapter graph token is removed before native decoder.",
+          "Shared configuration controls hidden width, heads, encoder depth and decoder depth; CR's internal FFN remains width D and is not replaced with the ZeroSim decoder."
+        ]
+      },
+      "implementation": "Explicit pin-node adapter; architecture kernels reused from the attributed device-level implementation",
+      "scope": "Single circuit; actual terminal/port token axis and fixed pin schema. No exact original-paper benchmark reproduction claim."
+    },
+    "predicted_op_pin": {
+      "implementation": "Pin counterpart of the existing OP-transfer method",
+      "source_files_pin": [
+        "op_transfer_pin.py"
+      ],
+      "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
+      "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
+      "measured_op_at_inference": false
+    },
+    "student_predicted_op_pin": {
+      "implementation": "Pin counterpart of the existing OP-transfer method",
+      "source_files_pin": [
+        "op_transfer_pin.py"
+      ],
+      "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
+      "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
+      "measured_op_at_inference": false
+    },
+    "student_predicted_op_distill_pin": {
+      "implementation": "Pin counterpart of the existing OP-transfer method",
+      "source_files_pin": [
+        "op_transfer_pin.py"
+      ],
+      "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
+      "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
+      "measured_op_at_inference": false
+    },
+    "op_oracle_pin": {
+      "implementation": "Pin counterpart of the existing OP-transfer method",
+      "source_files_pin": [
+        "op_transfer_pin.py"
+      ],
+      "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
+      "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
+      "measured_op_at_inference": true
+    },
+    "design_op_oracle_pin": {
+      "implementation": "Pin counterpart of the existing OP-transfer method",
+      "source_files_pin": [
+        "op_transfer_pin.py"
+      ],
+      "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
+      "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
+      "measured_op_at_inference": true
+    }
+  }
+}

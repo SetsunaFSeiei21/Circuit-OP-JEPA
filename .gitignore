@@ -14,3 +14,8 @@ private_change_notes/
 final_exam/*/results/
 final_exam/*/logs/
 final_exam/*/hpc_logs/
+
+# Pin-level experiment artifacts are distinct from device-level artifacts.
+final_exam/*/results_pin/
+final_exam/*/logs_pin/
+final_exam/*/hpc_logs_pin/

@@ -1,0 +1,53 @@
+{
+  "model": "gtn_pin",
+  "implementation_status": "independent_paper_based_pin_level_adaptation",
+  "paper": {
+    "title": "Graph-Transformer-based Surrogate Model for Accelerated Converter Circuit Topology Design",
+    "authors": [
+      "Shaoze Fan",
+      "Haoshu Lu",
+      "Shun Zhang",
+      "Ningyuan Cao",
+      "Xin Zhang",
+      "Jing Li"
+    ],
+    "venue": "DAC 2024",
+    "doi": "10.1145/3649329.3656258",
+    "author_pdf": "https://shunzh.github.io/pdfs/fan-dac-2024.pdf",
+    "institutional_record": "https://researchwith.njit.edu/en/publications/graph-transformer-based-surrogate-model-for-accelerated-converter/",
+    "sections": [
+      "4.1",
+      "4.3",
+      "4.4",
+      "5.1"
+    ]
+  },
+  "source_search": {
+    "original_author_repository_verified": false,
+    "upstream_commit": null,
+    "code_copied": false,
+    "scope": "Author PDF and institutional publication record were inspected; public title/author/GitHub searches did not locate a verifiable original code release. ZeroSim's public repository does not include its GTN comparison implementation.",
+    "excluded_unrelated_repository": "GiantCarl/GTSM is a solid-mechanics surrogate by different authors and is not this GTN."
+  },
+  "retained_mechanisms": [
+    "Separate multihead attention over connected neighbors and each incident minimum-basis circuit loop (paper equations 1, 2, 3).",
+    "Learned candidate-weighted summation over neighbor and loop messages (paper equation 4).",
+    "Repeated independently parameterized GTN layers with ReLU activation.",
+    "Mean pooling and the original two-hidden-layer regression head with widths 64 and 16."
+  ],
+  "training_integration": {
+    "prepare": "encoder.prepare_resident_pin(store)",
+    "batch": "Static gtn_loop_membership_by_pin [B,P,L], kept by design_input_pin; no CPU loop discovery in prepared train/eval batches",
+    "epoch": "Both branches enabled from epoch one; original paper warmup schedule is not implemented in this pin adapter",
+    "fallback": "Standalone pin batches have topology-only owner/net/mask CPU caching; production training prepares resident masks first"
+  },
+  "pin_adaptation": {
+    "learned_nodes": "Observed terminals and named external ports",
+    "neighbor_graph": "same-owner terminals plus same-net terminals/ports",
+    "loop_graph": "Original physical owner-device/net bipartite incidence recovered from pin_to_device and pin_net_index; no loops from pin cliques",
+    "loop_projection": "Terminal endpoints whose physical owner AND electrical net are on the physical cycle. External circuit ports are never owner devices.",
+    "decoder": "Original mean pooling/64/16 MLP operates on pin memory",
+    "cpu_scope": "Topology cycle discovery is preprocessing, cached as resident gtn_loop_membership_by_pin; attention and optimization run on selected Torch device",
+    "schedule": "Both branches enabled from epoch 1 to match controlled-budget protocol; no original 450/700 warmup claim"
+  }
+}

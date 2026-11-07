@@ -1,0 +1,2 @@
+# Pin models use the same runtime dependencies as the device-level benchmark.
+-r requirements.txt
