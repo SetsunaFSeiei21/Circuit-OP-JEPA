@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from device_jepa.excel import SCORES, export_summary, prepare_rows
 
 
-def summary_rows(results):
+def summary_rows(results, *, oracle_modes=('op_oracle', 'design_op_oracle')):
     """Keep test/OOD separate; never invent per-circuit scores from pooled ones."""
     if not isinstance(results, list) or not results:
         raise ValueError('Expected nonempty results.json records')
@@ -37,7 +37,7 @@ def summary_rows(results):
             raise ValueError(f'Duplicate model/seed/split result: {identity}')
         seen.add(identity)
         requires_op = report.get('requires_measured_op')
-        if type(requires_op) is not bool or requires_op != (mode in ('op_oracle', 'design_op_oracle')):
+        if type(requires_op) is not bool or requires_op != (mode in oracle_modes):
             raise ValueError('Measured OP input contract disagrees with the model name')
         for metric, values in report['metrics'].items():
             if not isinstance(metric, str) or not metric or not isinstance(values, dict):

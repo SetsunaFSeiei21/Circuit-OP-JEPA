@@ -65,7 +65,9 @@ class StructureEncoder(nn.Module):
 
     Consumes only type, physical-model identity, position, connectivity/terminal
     and port metadata. Contract 3 preserves each named external port role.
-    Design parameters, OP values, states and labels are deliberately inaccessible.
+    By default design parameters, OP values, states and labels are inaccessible.
+    Explicit experimental callers may supply a finite additive attention bias;
+    that path is an OP-conditioned structure encoder, not a pure-topology claim.
     """
     def __init__(self, cfg, num_types, num_terminals, num_categories=0,
                  num_models=0, num_port_roles=0):
@@ -82,7 +84,7 @@ class StructureEncoder(nn.Module):
         self.blocks = nn.ModuleList([EncoderBlock(cfg, cross=False)
                                      for _ in range(cfg.encoder_layers - cfg.cross_layers)])
 
-    def forward(self, batch):
+    def forward(self, batch, *, attention_bias=None):
         types, devices = batch["device_types"], batch["device_mask"]
         b, n = types.shape
         if n > self.cfg.max_devices:
@@ -112,6 +114,16 @@ class StructureEncoder(nn.Module):
         if self.role_bias is not None:
             bias = x.new_zeros(b, self.cfg.heads, n + 1, n + 1)
             bias[:, :, 1:, 1:] = self.role_bias(batch["edge_roles"]).permute(0, 3, 1, 2)
+        if attention_bias is not None:
+            expected = (b, self.cfg.heads, n + 1, n + 1)
+            if (not torch.is_tensor(attention_bias) or attention_bias.shape != expected
+                    or not attention_bias.is_floating_point()
+                    or attention_bias.device != x.device):
+                raise ValueError("Experimental attention bias must match batch, heads and graph-plus-node axes")
+            if not bool(torch.isfinite(attention_bias).all()):
+                raise ValueError("Experimental attention bias must be finite; topology masks own hard exclusions")
+            attention_bias = attention_bias.to(dtype=x.dtype)
+            bias = attention_bias if bias is None else bias + attention_bias
         masks = (self.attention_mask(local, bias), self.attention_mask(global_allowed, bias))
         for i, block in enumerate(self.blocks):
             x = block(x, masks[i % 2], None, None, valid)

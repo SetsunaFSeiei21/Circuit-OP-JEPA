@@ -296,6 +296,9 @@ def op_objective_pin(model, batch):
 
 def describe_model_pin(model):
     """Self-contained pin architecture recipe, independent of teacher files."""
+    from .op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin, describe_gate_model_pin
+    if isinstance(model, (DeviceOPPredictorPin, DeviceOPGateModelPin)):
+        return describe_gate_model_pin(model)
     scaling = lambda value: None if value is None else value.state_dict()
     if isinstance(model, ReadoutModelPin):
         return dict(kind='readout_pin', source=model.source, frozen=model.frozen,
@@ -314,6 +317,9 @@ def rebuild_model_pin(recipe, config, prep):
     """Restore pin encoders, pooling, broadcast and frozen branches from metadata."""
     _pin_prep(prep)
     kind = recipe['kind']
+    if kind in ('device_op_predictor_pin', 'device_op_gate_pin'):
+        from .op_gate_pin import rebuild_gate_model_pin
+        return rebuild_gate_model_pin(recipe, config, prep)
     if kind == 'readout_pin':
         source = recipe['source']
         encoder = (design_encoder_pin(config, prep) if source == 'design' else

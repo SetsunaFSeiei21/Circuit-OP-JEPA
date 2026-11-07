@@ -19,8 +19,14 @@ MODEL_NAMES_PIN = ('mlp_pin', 'xgboost_pin', 'gat_pin', 'deepgen_supervised_pin'
                'gtn_pin', 'zerosim_supervised_pin', 'accformer_pin', 'predicted_op_pin',
                'student_predicted_op_pin', 'student_predicted_op_distill_pin',
                'op_oracle_pin', 'design_op_oracle_pin')
+GATE_MODELS_PIN = ('device_op_cascade_pin', 'device_op_gate_pin',
+                  'device_op_gate_oracle_pin', 'device_op_gate_shuffle_pin',
+                  'device_op_gate_only_base_pin', 'device_op_gate_only_pin',
+                  'device_op_gate_only_oracle_pin', 'device_op_gate_only_shuffle_pin')
+MODEL_NAMES_PIN += GATE_MODELS_PIN
 CASCADE_MODELS_PIN = frozenset({'predicted_op_pin', 'student_predicted_op_pin', 'student_predicted_op_distill_pin'})
-REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin'})
+REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
+                           'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin'})
 
 
 def validate_request_pin(config, models, seeds, device, smoke=False):
@@ -54,6 +60,9 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
     for override in overrides.values():
         ModelConfig(**{**config['model'], **override})
     options = settings(config)
+    if set(selected) & set(GATE_MODELS_PIN) or 'op_gate_pin' in config:
+        from final_exam.models.op_gate_pin import validate_gate_config_pin
+        config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'))
     epochs = options['epochs']
     if not epochs['readout'] == epochs['student_predicted_op'] == (
             epochs['predicted_op_distill_encoder'] + epochs['predicted_op_distill_decoder']):
@@ -70,11 +79,47 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
 
 def effective_config_pin(config, mode, seed):
     value = copy.deepcopy(config)
-    key = 'zerosim_supervised_pin' if mode in CASCADE_MODELS_PIN | REFERENCES_PIN | {'op_predictor', 'op_predictor_pin'} else mode
+    key = 'zerosim_supervised_pin' if mode in (CASCADE_MODELS_PIN | REFERENCES_PIN | set(GATE_MODELS_PIN)
+        | {'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
     override = value.get('final_exam_pin', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
     value.setdefault('training', {})['seed'] = seed
     return value
+
+
+def gate_contract_pin(mode):
+    """Explicit inference inputs for the two paired gate studies."""
+    if mode not in GATE_MODELS_PIN:
+        raise ValueError('Not a device-OP gate study model')
+    features = '_only_' not in mode and mode != 'device_op_gate_only_pin'
+    source = ('none' if mode in ('device_op_cascade_pin', 'device_op_gate_only_base_pin') else
+              'true_op' if mode in REFERENCES_PIN else
+              'shuffled_predicted_op' if '_shuffle_' in mode else 'predicted_op')
+    return dict(group='A_features_and_gate' if features else 'B_gate_only',
+                uses_predicted_op_features=features, gate_source=source,
+                predictor_granularity='none' if mode == 'device_op_gate_only_base_pin' else 'device',
+                requires_measured_op=mode in REFERENCES_PIN,
+                attention_scope='all_encoder_self_attention' if source != 'none' else 'none',
+                diagnostic_control=source in ('true_op', 'shuffled_predicted_op'))
+
+
+def oracle_gate_coverage_pin(ctx, predictor, split, batch_size):
+    """Count true OP used only by the explicitly measured-OP gate references."""
+    import torch
+    from final_exam.op_gate_data_pin import device_input_pin
+    observed = torch.zeros((), dtype=torch.long, device=ctx.device)
+    supported_count = torch.zeros_like(observed)
+    with torch.no_grad():
+        for batch in ctx.batches(split, batch_size, op=True):
+            support = predictor.topology_mask(device_input_pin(batch))
+            actual = (support & batch['owner_op_mask'] & batch['owner_op_target_mask'].unsqueeze(-1)
+                      & torch.isfinite(batch['owner_op']))
+            observed += actual.sum()
+            supported_count += support.sum()
+    count, denominator = int(observed), int(supported_count)
+    return dict(observed_supported_fields=count, supported_fields=denominator,
+                fraction=count / denominator if denominator else None,
+                missing_policy='fill from the same frozen predicted OP; no additional missingness feature')
 
 
 def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options, config, kind='op_transfer'):
@@ -97,6 +142,8 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
         payload['support'] = model.support_metadata
     else:
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
+    if mode in GATE_MODELS_PIN:
+        payload['input_contract_pin'] = gate_contract_pin(mode)
     torch.save(payload, directory / 'checkpoint_pin.pt')
     write_json(directory / 'config_pin.json', config)
     write_json(directory / 'dependencies_pin.json', dict(stage_ids=dependencies))
@@ -154,6 +201,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
         decoder_pin, design_encoder_pin, fit_op_support_pin, freeze, op_encoder_pin)
     from final_exam.logging_utils import log_to
     from final_exam.models.models_pin import build_encoder_pin, build_model_pin, prepare_model_pin
+    from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
+    from final_exam.op_gate_data_pin import prepare_device_predictions_pin, build_shuffle_bank_pin
 
     output = Path(output).resolve()
     if not output.name.endswith('_pin'):
@@ -186,6 +235,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     _check_dataset_options(config, manifest)
     if manifest['ood'] or not all(manifest[k] for k in ('train', 'val', 'test')):
         raise ValueError('Single-circuit manifest requires train/val/test and an empty OOD split')
+    if any('_shuffle_' in name for name in models) and len(manifest['train']) < 2:
+        raise ValueError('Shuffled OP control requires at least two training samples')
     logs = Path(log_dir).resolve() if log_dir else output / 'logs_pin'
     if not logs.name.endswith('_pin'):
         raise ValueError('Pin log directory must end with _pin')
@@ -274,6 +325,42 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             save(model, mode, [dep], cfg, shared_stage=True)
                         return shared[mode]
 
+                    def device_predictor():
+                        name = 'device_op_predictor_pin'
+                        if name not in shared:
+                            cfg = effective_config_pin(config, name, seed)
+                            seed_everything(seed, options['torch_threads'])
+                            model = DeviceOPPredictorPin(cfg['model'], ctx.prep,
+                                fit_op_support_pin(ctx.rows['train'], ctx.prep)).to(device)
+                            model, dep = stage(model, name, 'op_predictor', cfg, op_objective_pin,
+                                               op=True, log_name='shared_pin/' + name)
+                            shared[name] = freeze(model)
+                            dependencies[name] = [dep]
+                            save(model, name, [dep], cfg, shared_stage=True)
+                            started = time.perf_counter()
+                            with log_to(logs / f'seed_{seed}_pin' / 'shared_pin' / name / 'cache_pin.log'):
+                                # No measured OP or performance labels are used in this forward-only pass.
+                                prepare_device_predictions_pin(ctx, model, options, splits=('train', 'val', 'test'))
+                            if device.type == 'cuda':
+                                torch.cuda.synchronize(device)
+                            cache_id = f'seed_{seed}_pin/frozen_device_op_cache_pin'
+                            cache_cost = dict(stage_id=cache_id, seed=seed, epochs=0, planned_epochs=0,
+                                optimizer_steps=0, examples_seen=sum(len(ctx.rows[s]) for s in ('train','val','test')),
+                                seconds=time.perf_counter()-started, parameters=sum(p.numel() for p in model.parameters()),
+                                trainable_parameters=0, device=str(device),
+                                selection={'kind': 'forward_only_preparation', 'uses_measured_op': False})
+                            stages.append(cache_cost)
+                            dependencies[name].append(cache_id)
+                            engine.write_json(ctx.output / 'shared_pin' / name / 'prediction_cache_pin.json', cache_cost)
+                        return shared[name]
+
+                    def shuffle_bank():
+                        if 'shuffle_bank_pin' not in shared:
+                            predictor_model = device_predictor()
+                            shared['shuffle_bank_pin'] = build_shuffle_bank_pin(ctx, predictor_model,
+                                options['batch_size'], seed)
+                        return shared['shuffle_bank_pin']
+
                     for mode in models:
                         print(f'=== {circuit} seed={seed} model={mode} ===', flush=True)
                         cfg = effective_config_pin(config, mode, seed)
@@ -290,6 +377,32 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             engine.write_json(directory / 'config_pin.json', cfg)
                             engine.write_json(directory / 'preprocessing_pin.json', ctx.prep)
                             engine.write_json(directory / 'manifest_pin.json', manifest)
+                        elif mode in GATE_MODELS_PIN:
+                            kind = 'op_transfer'
+                            needs_predictor = mode != 'device_op_gate_only_base_pin'
+                            op_model = device_predictor() if needs_predictor else None
+                            bank = shuffle_bank() if '_shuffle_' in mode else None
+                            predictor_digest = state_digest(op_model) if op_model is not None else None
+                            deps = dependencies['device_op_predictor_pin'][:] if needs_predictor else []
+                            # Shared dependencies must not consume the paired downstream initialization RNG.
+                            seed_everything(seed, options['torch_threads'])
+                            model = DeviceOPGateModelPin(mode, cfg['model'], ctx.prep,
+                                predictor=op_model, gate_config=cfg.get('op_gate_pin'), shuffle_bank=bank).to(device)
+                            initial_state = state_digest(model.encoder)
+                            initial_decoder = state_digest(model.decoder)
+                            model, dep = stage(model, mode, 'readout', cfg, op=mode in REFERENCES_PIN)
+                            deps.append(dep)
+                            if op_model is not None and state_digest(op_model) != predictor_digest:
+                                raise AssertionError('Frozen device OP predictor changed during downstream training')
+                            directory.mkdir(parents=True, exist_ok=True)
+                            audit = gate_contract_pin(mode)
+                            audit.update(predictor_frozen=needs_predictor, predictor_digest=predictor_digest,
+                                initial_encoder_digest=initial_state, initial_decoder_digest=initial_decoder,
+                                op_embedding_dim=cfg['model']['dim'], gate_heads=cfg['model']['heads'],
+                                protected_edges='same net, self, external ports, non-MOS',
+                                predictor_checkpoint='../shared_pin/device_op_predictor_pin/checkpoint_pin.pt'
+                                    if needs_predictor else None)
+                            engine.write_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode in REFERENCES_PIN:
                             model = teacher(mode == 'design_op_oracle_pin')
                             deps, kind = dependencies[mode], 'op_transfer'
@@ -382,6 +495,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             prepare_model_pin(model, ctx, options, splits=('test',))
                             report = engine.evaluate_model(ctx, model, 'test', options, measured_op=mode in REFERENCES_PIN)
                             report.update(circuit=circuit, granularity='pin')
+                            if mode in GATE_MODELS_PIN:
+                                report['op_gate_pin'] = gate_contract_pin(mode)
+                                if mode in REFERENCES_PIN:
+                                    report['oracle_gate_coverage_pin'] = oracle_gate_coverage_pin(
+                                        ctx, model.predictor, 'test', options['batch_size'])
                             engine.write_json(directory / 'test_pin.json', report)
                             print(json.dumps(report, allow_nan=False), flush=True)
                         results.append(dict(mode=mode, seed=seed, stage_ids=deps, report=report))

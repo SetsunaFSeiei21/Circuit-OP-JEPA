@@ -232,6 +232,118 @@
       "architecture": "ZeroSim-family pin encoder and native metric-query decoder; teacher and student use exactly the same pin topology/token alignment",
       "device_op_boundary": "OP remains a device property: mean-pool the owner pins before one OP field prediction, then broadcast the predicted device values back to its pins. Named external ports have no OP target.",
       "measured_op_at_inference": true
+    },
+    "device_op_cascade_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "A",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": true,
+      "gate_source": "none",
+      "measured_op_at_inference": false,
+      "architecture": "Frozen true-device ZeroSim OP predictor followed by a pin ZeroSim encoder with design and predicted OP feature fusion, and native metric-query readout. No OP attention gate.",
+      "attention_scope": "Original encoder self-attention without OP-generated bias; feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit A-group ungated baseline. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "A",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_oracle_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "A",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": true,
+      "gate_source": "measured",
+      "measured_op_at_inference": true,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_shuffle_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "A",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": true,
+      "gate_source": "shuffled_train_predicted",
+      "measured_op_at_inference": false,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_only_base_pin": {
+      "implementation": "Matched pin-level ZeroSim-family design-only baseline for the B gate-only study; no OP predictor dependency.",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "B",
+      "op_predictor_granularity": "none",
+      "predicted_op_as_node_features": false,
+      "gate_source": "none",
+      "measured_op_at_inference": false,
+      "architecture": "Pin ZeroSim structure/fusion encoder with design parameters and native metric-query readout. No OP feature tokens, OP predictor, or OP attention gate.",
+      "attention_scope": "Original encoder self-attention without OP-generated bias.",
+      "scope": "Single-circuit B-group ungated baseline. Only downstream training cost; no exact original-paper reproduction claim."
+    },
+    "device_op_gate_only_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "B",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": false,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_only_oracle_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "B",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": false,
+      "gate_source": "measured",
+      "measured_op_at_inference": true,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_gate_only_shuffle_pin": {
+      "implementation": "Repository extension: device-level ZeroSim-family OP prediction followed by pin-level ZeroSim-family performance prediction",
+      "source_files_pin": [
+        "op_gate_pin.py"
+      ],
+      "group": "B",
+      "op_predictor_granularity": "device",
+      "predicted_op_as_node_features": false,
+      "gate_source": "shuffled_train_predicted",
+      "measured_op_at_inference": false,
+      "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
+      "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
+      "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
     }
   }
 }

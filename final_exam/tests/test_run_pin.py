@@ -48,7 +48,7 @@ class RunnerPinTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = run_experiment_pin(self.data_path,self.cfg_path,output,list(MODEL_NAMES_PIN),[17,29],
                                     'cpu',smoke=True)
-        self.assertEqual(len(result['results']), 26)
+        self.assertEqual(len(result['results']), len(MODEL_NAMES_PIN) * 2)
         self.assertTrue(all(p.stem.endswith('_pin') for p in output.rglob('*') if p.is_file()))
         self.assertEqual(json.loads((output/'run_pin.json').read_text())['status'], 'complete')
         with zipfile.ZipFile(output/'summary_pin.xlsx') as book:

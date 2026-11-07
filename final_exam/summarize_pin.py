@@ -19,7 +19,22 @@ from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_num
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 
 
-ORACLES = frozenset(('op_oracle_pin', 'design_op_oracle_pin'))
+ORACLES = frozenset(('op_oracle_pin', 'design_op_oracle_pin',
+                     'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin'))
+
+# Keep this small reporting contract independent of Torch and the training
+# factories so completed runs can be summarized on a machine without a GPU.
+GATE_INPUTS_PIN = {
+    'device_op_cascade_pin': ('A', True, 'none'),
+    'device_op_gate_pin': ('A', True, 'predicted OP'),
+    'device_op_gate_oracle_pin': ('A', True, 'measured OP; missing fields use predicted OP'),
+    'device_op_gate_shuffle_pin': ('A', True, 'shuffled training predicted OP'),
+    'device_op_gate_only_base_pin': ('B', False, 'none'),
+    'device_op_gate_only_pin': ('B', False, 'predicted OP'),
+    'device_op_gate_only_oracle_pin': ('B', False, 'measured OP; missing fields use predicted OP'),
+    'device_op_gate_only_shuffle_pin': ('B', False, 'shuffled training predicted OP'),
+}
+SHUFFLE_CONTROLS_PIN = frozenset(mode for mode in GATE_INPUTS_PIN if '_shuffle_' in mode)
 
 
 def _require_pin_mode(mode):
@@ -72,7 +87,7 @@ def summary_rows_pin(results, config=None):
     for circuit, members in sorted(groups.items()):
         # Reuse the existing finite-value, count, seed and OP-input validation.
         normalized = [dict(record, mode=record['mode'][:-4]) for record in members]
-        for row in _aggregate_rows(normalized):
+        for row in _aggregate_rows(normalized, oracle_modes={mode[:-4] for mode in ORACLES}):
             row['mode'] += '_pin'
             row.update(circuit=circuit, backend='final_exam_pin',
                        scope='pooled' if circuit == 'ALL_SELECTED_CIRCUITS' else 'circuit')
@@ -271,8 +286,12 @@ def _comparison_sheets(rows, models, fields, complete, decimals):
         sheet.note('Mean ± sample std over seeds. One seed displays the mean alone; its std remains blank.')
         sheet.note('Higher R2 is better; lower MAE/RMSE is better. UGF errors are displayed in MHz.')
         sheet.note('Green marks the best unrounded mean within matching inference-input groups and matched seeds/counts.', height=32)
-        sheet.note('TRUE OP REFERENCE requires measured OP at inference. Highlighting is not a significance test.', height=30)
-        labels = [mode + ('\nTRUE OP REFERENCE' if mode in ORACLES else '') for mode in models]
+        if any(mode in GATE_INPUTS_PIN for mode in models):
+            sheet.note('TRUE OP REFERENCE needs measured OP. SHUFFLE CONTROL is diagnostic and excluded from ranking; see ModelInputs.', height=30)
+        else:
+            sheet.note('TRUE OP REFERENCE requires measured OP at inference. Highlighting is not a significance test.', height=30)
+        labels = [mode + ('\nTRUE OP REFERENCE' if mode in ORACLES else
+                          '\nSHUFFLE CONTROL' if mode in SHUFFLE_CONTROLS_PIN else '') for mode in models]
         sheet.add([Cell(value, 3) for value in ('Circuit', 'Split', 'Metric', 'Unit', *labels, 'Labels / seed')], 64)
         for circuit, split, metric in identities:
             label, unit, divisor = METRICS.get(metric, (metric, 'dataset unit', 1))
@@ -282,7 +301,7 @@ def _comparison_sheets(rows, models, fields, complete, decimals):
             best_modes = set()
             groups = defaultdict(list)
             for mode, entry in zip(models, found):
-                if entry:
+                if entry and mode not in SHUFFLE_CONTROLS_PIN:
                     row = entry[1]
                     groups[(row['requires_op_at_inference'], row['uses_design_parameters'])].append((mode, row))
             for members in groups.values():
@@ -324,6 +343,33 @@ def _per_seed_sheet(results, config):
                        values['count'], *(Cell(values.get(score), 11) for score in ('mae', 'rmse', 'r2', 'normalized_rmse')),
                        report['requires_measured_op'], record['stage_ids']])
     sheet.filter_range = f'A4:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet
+
+
+def _model_inputs_sheet(models):
+    """Expose the A/B ablations without changing metric aggregation identity."""
+    fields = ('Model', 'Study group', 'OP predictor encoder', 'Predicted OP node features',
+              'Attention gate source', 'Measured OP required', 'Role / interpretation')
+    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80], freeze_rows=5, freeze_columns=1)
+    sheet.note('Model inputs and operating-point gate controls', 1, 34)
+    sheet.note('A: predicted OP features plus optional gate. B: OP only controls the gate; baseline has no OP dependency.', height=34)
+    sheet.note('All new non-baseline gate variants use one frozen DEVICE-level OP predictor per seed, followed by a PIN-level encoder.', height=34)
+    sheet.note('Oracle scores are diagnostic, not a guaranteed upper bound. Shuffling changes gate OP only and preserves device/field identities.', height=34)
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    for mode in models:
+        if mode in GATE_INPUTS_PIN:
+            group, features, gate = GATE_INPUTS_PIN[mode]
+            predictor = 'none' if mode == 'device_op_gate_only_base_pin' else 'device'
+            role = ('Measured OP diagnostic reference; excluded from design-only inference group'
+                    if mode in ORACLES else
+                    'Diagnostic control; deterministic donors from training predicted OP only'
+                    if mode in SHUFFLE_CONTROLS_PIN else
+                    'No-gate baseline' if gate == 'none' else 'Predicted OP attention gate')
+            sheet.add([mode, group, predictor, features, gate, mode in ORACLES, role], 46)
+        else:
+            sheet.add([mode, 'existing pin model', 'see saved model configuration',
+                       None, 'no new OP gate', mode in ORACLES, 'Existing model contract is unchanged'], 46)
+    sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet
 
 
@@ -384,6 +430,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     statistics, fields = _statistics_sheet(rows)
     sheets = _comparison_sheets(rows, models, fields, complete, decimals)
     sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
+    if any(mode in GATE_INPUTS_PIN for mode in models):
+        sheets.append(_model_inputs_sheet(models))
     # The reusable writer validates all XML and writes atomically. Publishing
     # with link prevents concurrent exporters from overwriting an existing file.
     output.parent.mkdir(parents=True, exist_ok=True)

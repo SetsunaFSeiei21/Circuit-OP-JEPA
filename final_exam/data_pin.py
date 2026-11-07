@@ -95,10 +95,16 @@ class PinResidentDataset(ResidentDataset):
             net_indices.append(torch.tensor([net_ids[token['net']] for token in tokens],
                                             dtype=torch.long, device=self.device))
         self.max_owners = max(len(graph['device_ids']) for graph in owners)
+        self.owner_topologies = [_topology_prefix_pin(representatives[i])
+                                 for i in range(len(self.graphs))]
+        self._owner_topology_by_sample_id = {
+            row['sample_id']: self.owner_topologies[self.host_graph_ids[i]]
+            for i, row in enumerate(samples)}
         owner_names = {'device_mask': 'owner_mask', 'device_types': 'owner_device_types',
                        'device_categories': 'owner_device_categories',
                        'device_models': 'owner_device_models', 'edge_roles': 'owner_edge_roles',
-                       'adjacency': 'owner_adjacency'}
+                       'adjacency': 'owner_adjacency', 'port_roles': 'owner_port_roles',
+                       'named_port_roles': 'owner_named_port_roles'}
         self._owner_static_names = []
         for source, target in owner_names.items():
             if source not in owners[0]:
@@ -125,16 +131,24 @@ class PinResidentDataset(ResidentDataset):
         self.static['pin_to_device'] = self.static['owner_index']
 
     def batches(self, batch_size, *, indices=None, seed=None, metadata=False):
-        for idx, batch in super().batches(batch_size, indices=indices, seed=seed, metadata=metadata):
+        # Ask the resident base for its already-known host IDs rather than
+        # copying CUDA indices back to the host solely for topology metadata.
+        for idx, batch in super().batches(batch_size, indices=indices, seed=seed, metadata=True):
             topology = self.graph_ids.index_select(0, idx)
             # The base resident class slices node-like fields by the pin width.
             # Owners may have a different padded width in a heterogeneous store;
             # explicitly gather their complete D axis here.
             for name in self._owner_static_names:
                 batch[name] = self.static[name].index_select(0, topology)
-            for source in ('op', 'op_mask', 'op_target_mask'):
+            for source in ('parameters', 'parameter_mask', 'parameter_applicability',
+                           'op', 'op_mask', 'op_target_mask'):
                 if source in self.tables:
                     batch['owner_' + source] = self.tables[source].index_select(0, idx)
+            batch['_owner_topology_pin'] = [self._owner_topology_by_sample_id[sid]
+                                            for sid in batch['sample_ids']]
+            if not metadata:
+                batch.pop('sample_ids')
+                batch.pop('device_ids')
             yield idx, batch
 
 
@@ -167,6 +181,10 @@ class PinDataContext:
             raise ValueError('No training performance metric is observed')
         self.labeled = set(selected['labeled_train'])
         self.caches = {}
+        # Only frozen predictor outputs may be cached. Each seed/model digest
+        # replaces the preceding cache; pin models must verify this identity.
+        self.device_prediction_digest_pin = None
+        self.device_predictions_pin = {}
         terminal_names = self.prep['feature_spec']['terminal_names']
         version = self.prep.get('input_contract_version', 1)
         self.keys = {split: [group_keys_pin(row, terminal_names, version) for row in rows]
@@ -222,6 +240,11 @@ class PinDataContext:
             batch['_group_keys'] = [self.keys[split][i] for i in indices]
             batch['_indices'] = batch_indices
             batch['_sample_ids'] = [row['sample_id'] for row in rows]
+            if split in self.device_predictions_pin:
+                predicted, supported = self.device_predictions_pin[split]
+                batch['_predicted_device_op'] = predicted.index_select(0, batch_indices)
+                batch['_predicted_device_op_mask'] = supported.index_select(0, batch_indices)
+                batch['_predicted_device_op_digest'] = self.device_prediction_digest_pin
             if split == 'train':
                 labeled = torch.tensor([row['sample_id'] in self.labeled for row in rows], device=self.device)
                 batch['performance_mask'] &= labeled[:, None]
