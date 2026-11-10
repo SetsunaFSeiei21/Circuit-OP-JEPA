@@ -96,6 +96,8 @@ python final_exam/run_pin.py \
 
 训练输出内保存 `config_pin.json`、`manifest_pin.json`、`cohort_pin.json`、`preprocessing_pin.json`、`model_sources_pin.json`、`results_pin.json`、`stages_pin.json` 和 CSV/JSON/XLSX 汇总。运行元数据明确记录 `granularity=pin`、真实 pin/device 数量、代码提交、数据指纹、模型/seeds、作业及日志路径。
 
+代码提交号查询是可选操作：计算节点找不到或无法执行 Git、没有 Git 元数据、查询失败/无输出或超过 5 秒时，日志给出提示，`run_pin.json` 中的 `code_commit` 写为 `unavailable`，继续正常训练及保存配置、数据指纹和结果。不要将该值当成实际提交号。旧版本可能在报错前已创建 `.run_pin.lock`，修复后不能直接复用该训练输出目录；重新运行提交脚本会自动生成新的实验目录。
+
 每模型有 `config_pin.json`、`checkpoint_pin.pt`、`test_pin.json`；树模型使用 `checkpoint_pin.json` 及 `metric_<index>_pin.ubj`。神经网络每阶段在 `seed_<seed>_pin/stages_pin/<stage_pin>/` 保存 `best_pin.pt`、`history_pin.json`、`cost_pin.json` 和 `config_pin.json`；XGBoost 的 `history_pin.json`、`cost_pin.json` 位于 `seed_<seed>_pin/xgboost_pin/` 模型目录。
 
 学生所需完整教师保存于 `seed_<seed>_pin/shared_pin/design_op_oracle_pin/checkpoint_pin.pt`，OP predictor 保存于 `shared_pin/op_predictor_pin/checkpoint_pin.pt`。即使教师不在所选评测名单中，仍会独立保存。DeepGEN OP 预训练依赖单独位于 `shared_pin/deepgen_op_predictor_pin/`，不与 ZeroSim predictor 混用。

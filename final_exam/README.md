@@ -99,6 +99,8 @@ python final_exam/run.py \
 - 蒸馏学生额外保存 `alignment_scales.pt`、`distillation.json`，记录教师来源和冻结检查。
 - `results.json`、`summary.csv`、`summary.json`、`stages.json`、`summary.xlsx`：逐 seed 结果、聚合结果和去重阶段成本。
 
+Git 提交号属于可选的来源信息，计算节点无需安装 Git 才能训练。找不到或无法执行 Git、当前目录没有 Git 元数据、查询失败/无输出或超过 5 秒时，日志给出提示并将 `run.json` 的 `code_commit` 记录为 `unavailable`；配置、数据指纹和模型结果仍按正常流程保存，不伪造提交号。因旧版本查询代码而失败的实验可能已创建输出锁，修复后须选择新结果目录；重新运行提交脚本会自动创建新目录。
+
 独立恢复不需要原教师文件和训练代码状态对象；模型配方及全部必要子模块权重已包含在最终 checkpoint：
 
 ```python

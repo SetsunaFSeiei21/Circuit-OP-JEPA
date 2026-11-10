@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 import traceback
@@ -182,9 +181,8 @@ def load_checkpoint_pin(path, device='cpu'):
 
 
 def _revision():
-    result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True,
-                            capture_output=True, check=False)
-    return result.stdout.strip() or 'unavailable'
+    from final_exam.common.provenance import code_revision
+    return code_revision(ROOT)
 
 
 def run_experiment_pin(data_path, config_path, output, models, seeds, device, *, log_dir=None,
