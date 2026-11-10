@@ -344,6 +344,73 @@
       "architecture": "Original ZeroSim-family structure/fusion attention and metric-query readout; shared OP MLP to encoder dim, ordered terminal-role embeddings, one gate score per attention head.",
       "attention_scope": "All encoder self-attention layers, both local and global, structure and fusion; same-MOS different-net pairs only. Feature cross-attention and decoder unchanged.",
       "scope": "Single-circuit first phase. Soft attention reweighting; not physical topology identification or sparse-compute acceleration. No exact original-paper reproduction claim."
+    },
+    "device_op_distill_gate_pin": {
+      "implementation": "Repository extension: post-training OP attention gate on a pretrained pin-level ZeroSim model",
+      "source_files_pin": [
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate"
+      ],
+      "architecture": "Frozen device-token OP predictor; pin-token ZeroSim encoder, native metric-query decoder, and OP MLP matching encoder width with per-head attention bias.",
+      "attention_scope": "All encoder self-attention; same-MOS different-net terminal pairs. Feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "All base stages bypass the gate exactly; final stage freezes encoder weights but preserves autograd from the decoder output to the attention gate.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements."
+    },
+    "device_op_distill_gate_decoder_pin": {
+      "implementation": "Repository extension: post-training OP attention gate on a pretrained pin-level ZeroSim model",
+      "source_files_pin": [
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "architecture": "Frozen device-token OP predictor; pin-token ZeroSim encoder, native metric-query decoder, and OP MLP matching encoder width with per-head attention bias.",
+      "attention_scope": "All encoder self-attention; same-MOS different-net terminal pairs. Feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "All base stages bypass the gate exactly; final stage freezes encoder weights but preserves autograd from the decoder output to the attention gate.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements."
+    },
+    "device_op_supervised_gate_pin": {
+      "implementation": "Repository extension: post-training OP attention gate on a pretrained pin-level ZeroSim model",
+      "source_files_pin": [
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": false,
+      "base_training": "Direct supervised encoder and decoder with the attention gate bypassed",
+      "final_trainable_modules": [
+        "gate"
+      ],
+      "architecture": "Frozen device-token OP predictor; pin-token ZeroSim encoder, native metric-query decoder, and OP MLP matching encoder width with per-head attention bias.",
+      "attention_scope": "All encoder self-attention; same-MOS different-net terminal pairs. Feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "All base stages bypass the gate exactly; final stage freezes encoder weights but preserves autograd from the decoder output to the attention gate.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements."
     }
   }
 }

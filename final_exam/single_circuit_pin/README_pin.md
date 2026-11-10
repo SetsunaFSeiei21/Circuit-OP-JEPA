@@ -2,7 +2,7 @@
 
 本入口与器件级 `single_circuit/` 并列。每个被观测到的器件引脚是一个节点，命名外部端口也有独立节点；MOS 的 D/G/S/B 不合并成一个学习节点。图上保留同器件关系、同网络连接及端口接入关系。编码、输入权重和教师均使用端口级版本。
 
-真实 OP 仍属于器件。OP predictor 对同一器件的引脚表示聚合，预测一组器件 OP，再广播到所属引脚；OP 监督按器件计算一次，不因 MOS 拆成四个引脚就重复加权四次。外部端口无所属器件，不参与 OP 监督。部署级联模型不读取真实 OP 或其缺失模式。
+真实 OP 仍属于器件。原有 `predicted_op_pin`/学生蒸馏系列的 OP predictor 对同一器件的引脚表示聚合，预测一组器件 OP，再广播到所属引脚；OP 监督按器件计算一次，不因 MOS 拆成四个引脚就重复加权四次。外部端口无所属器件，不参与 OP 监督。部署级联模型不读取真实 OP 或其缺失模式。
 
 编辑 `train_pin.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`、`CONFIG` 与集群设置。默认 Opamp1、13 个 `_pin` 模型、seeds 17/29/43，每个电路提交一个独立作业。作业内依次运行所选模型；仅为级联学生自动训练必需的教师与 OP predictor。
 
@@ -14,7 +14,7 @@ bash final_exam/single_circuit_pin/train_pin.sh
 
 `--dry-run` 不提交、不创建输出目录。`--smoke` 提交短轮次训练，但仍导入完整原始数据；不会把 60,000 条输入自动裁成小样本。原始输入继续使用 `runs/raw/full_data/<电路名>/`，无需复制或重命名 SQLite/网表。输入单位检查和器件级入口相同，不自动猜测几何单位。
 
-`train_pin.sh` 和 `train_op_gate_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
+`train_pin.sh`、`train_op_gate_pin.sh` 和 `train_staged_op_gate_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
 
 模型列表为：
 
@@ -66,3 +66,26 @@ bash final_exam/single_circuit_pin/summarize_pin.sh \
 Excel 含 MAE、RMSE、R2、PerSeed、Statistics、TrainingCost、Configuration。跨 seeds 使用样本标准差；只有一个 seed 时留空标准差。真实 OP 参考与无需真实 OP 的模型分组比较；样本数或 seeds 不匹配时不高亮最优。每个模型名称保留 `_pin`，不与器件级结果混合统计。
 
 本入口完成的是第一阶段单电路流程，不代表多电路/OOD、消融或迁移学习已经实现。
+
+## 分阶段门控（三个新增模型）
+
+已有八个门控模型继续使用 `train_op_gate_pin.sh`。新增的三个训练顺序对照使用独立入口：
+
+```bash
+bash final_exam/single_circuit_pin/train_staged_op_gate_pin.sh --dry-run
+bash final_exam/single_circuit_pin/train_staged_op_gate_pin.sh
+```
+
+在该脚本顶部直接修改 `CIRCUITS`、`MODELS`、`SEEDS`，默认二级折叠运放、seeds 17/29/43。配置为 `final_exam/configs/staged_op_gate_pin.json`。模型名称及最后阶段如下：
+
+| 模型 | 前置训练 | 最后阶段 |
+|---|---|---|
+| `device_op_distill_gate_pin` | 教师 → 学生编码器蒸馏 → decoder | 只训练门控 |
+| `device_op_distill_gate_decoder_pin` | 复用同一个蒸馏学生 | 门控＋decoder |
+| `device_op_supervised_gate_pin` | 关闭门控直接监督训练 | 只训练门控 |
+
+这三个模型与原八个门控模型都使用**器件级 OP 预测器＋引脚级下游编码器**；不是上文原有级联系列的“引脚编码后按器件池化”预测器。部署时不需要真实 OP 或教师。
+
+最终门控轮数由 `op_transfer.epochs.gate` 独立控制，默认 30；前置训练之外会追加训练成本，不声称完整预算相等。保存两类无门控基模型和真实 OP 教师，结果仍放在本任务的 `results_pin/`，实验和 HPC 日志仍分别放在 `logs_pin/`、`hpc_logs_pin/`。自动 Excel 增加 `GateBeforeAfter` 比较页，展示逐 seed 的无门控基模型与最终模型差值。
+
+完整阶段、冻结规则、配置、成本和路径参见 [分阶段 OP 门控说明](../STAGED_OP_GATE_pin.md)。

@@ -2,7 +2,9 @@
 
 本次交付在器件级流程旁新增独立的端口级单电路实验。所有新增模型实现文件、模型 ID、脚本和生成的结果/日志使用 `_pin` 后缀。器件级代码与入口继续保留。后续多电路、消融、迁移学习不属于本次已完成范围。
 
-新增的 **器件级 OP → pin attention 门控** 单电路对照见 [OP_GATE_pin.md](OP_GATE_pin.md)，独立提供 8 个模型（OP 特征＋门控、仅门控两组），使用 `single_circuit_pin/train_op_gate_pin.sh`。下文的 13 个原有模型、默认配置和启动脚本保持原义；完整注册列表现在包含 21 个模型，可通过 `python final_exam/run_pin.py --list-models` 查看。
+新增的 **器件级 OP → pin attention 门控** 单电路对照见 [OP_GATE_pin.md](OP_GATE_pin.md)，独立提供 8 个模型（OP 特征＋门控、仅门控两组），使用 `single_circuit_pin/train_op_gate_pin.sh`。
+
+另有 3 个**先训练基础模型、再训练门控**的选项，见 [STAGED_OP_GATE_pin.md](STAGED_OP_GATE_pin.md)：蒸馏后仅训练门控、蒸馏后训练门控＋decoder、直接监督训练后仅训练门控。入口是 `single_circuit_pin/train_staged_op_gate_pin.sh`；这三个选项和前述 8 个门控模型都使用真正的器件级 OP 预测器，下游仍为引脚级。下文的 13 个原有模型、默认配置和启动脚本保持原义；完整注册列表现在包含 24 个模型，可通过 `python final_exam/run_pin.py --list-models` 查看。
 
 ## 已确定的表示规则
 

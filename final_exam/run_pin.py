@@ -22,7 +22,10 @@ GATE_MODELS_PIN = ('device_op_cascade_pin', 'device_op_gate_pin',
                   'device_op_gate_oracle_pin', 'device_op_gate_shuffle_pin',
                   'device_op_gate_only_base_pin', 'device_op_gate_only_pin',
                   'device_op_gate_only_oracle_pin', 'device_op_gate_only_shuffle_pin')
-MODEL_NAMES_PIN += GATE_MODELS_PIN
+STAGED_GATE_MODELS_PIN = ('device_op_distill_gate_pin', 'device_op_distill_gate_decoder_pin',
+                          'device_op_supervised_gate_pin')
+ALL_GATE_MODELS_PIN = GATE_MODELS_PIN + STAGED_GATE_MODELS_PIN
+MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN
 CASCADE_MODELS_PIN = frozenset({'predicted_op_pin', 'student_predicted_op_pin', 'student_predicted_op_distill_pin'})
 REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
                            'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin'})
@@ -59,7 +62,7 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
     for override in overrides.values():
         ModelConfig(**{**config['model'], **override})
     options = settings(config)
-    if set(selected) & set(GATE_MODELS_PIN) or 'op_gate_pin' in config:
+    if set(selected) & set(ALL_GATE_MODELS_PIN) or 'op_gate_pin' in config:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'))
     epochs = options['epochs']
@@ -78,7 +81,7 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
 
 def effective_config_pin(config, mode, seed):
     value = copy.deepcopy(config)
-    key = 'zerosim_supervised_pin' if mode in (CASCADE_MODELS_PIN | REFERENCES_PIN | set(GATE_MODELS_PIN)
+    key = 'zerosim_supervised_pin' if mode in (CASCADE_MODELS_PIN | REFERENCES_PIN | set(ALL_GATE_MODELS_PIN)
         | {'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
     override = value.get('final_exam_pin', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
@@ -88,8 +91,15 @@ def effective_config_pin(config, mode, seed):
 
 def gate_contract_pin(mode):
     """Explicit inference inputs for the two paired gate studies."""
-    if mode not in GATE_MODELS_PIN:
+    if mode not in ALL_GATE_MODELS_PIN:
         raise ValueError('Not a device-OP gate study model')
+    if mode in STAGED_GATE_MODELS_PIN:
+        return dict(group='staged_features_and_gate', uses_predicted_op_features=True,
+                    gate_source='predicted_op', predictor_granularity='device',
+                    requires_measured_op=False, attention_scope='all_encoder_self_attention',
+                    diagnostic_control=False,
+                    base_training='supervised' if mode == 'device_op_supervised_gate_pin' else 'distilled',
+                    final_trainable='gate_and_decoder' if mode == 'device_op_distill_gate_decoder_pin' else 'gate_only')
     features = '_only_' not in mode and mode != 'device_op_gate_only_pin'
     source = ('none' if mode in ('device_op_cascade_pin', 'device_op_gate_only_base_pin') else
               'true_op' if mode in REFERENCES_PIN else
@@ -141,7 +151,7 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
         payload['support'] = model.support_metadata
     else:
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
-    if mode in GATE_MODELS_PIN:
+    if mode in ALL_GATE_MODELS_PIN:
         payload['input_contract_pin'] = gate_contract_pin(mode)
     torch.save(payload, directory / 'checkpoint_pin.pt')
     write_json(directory / 'config_pin.json', config)
@@ -200,6 +210,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     from final_exam.logging_utils import log_to
     from final_exam.models.models_pin import build_encoder_pin, build_model_pin, prepare_model_pin
     from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
+    from final_exam.models.staged_op_gate_pin import StagedOPGateModelPin, StagedOPEncoderDistillationPin
     from final_exam.op_gate_data_pin import prepare_device_predictions_pin, build_shuffle_bank_pin
 
     output = Path(output).resolve()
@@ -251,7 +262,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                dataset_fingerprint=dataset_fingerprint(dataset), log_dir=str(logs),
                slurm_job_id=os.environ.get('SLURM_JOB_ID'), node=os.environ.get('SLURM_NODELIST'),
                torch_version=str(torch.__version__), started_unix=time.time(), smoke=smoke,
-               budget_policy='equal neural downstream maxima; prerequisite costs separate; XGBoost uses rounds')
+               budget_policy=('equal base downstream maxima; staged gates add op_transfer.epochs.gate; '
+                              'prerequisite costs separate and deduplicated; XGBoost uses rounds'))
     engine.write_json(output / 'run_pin.json', run)
     engine.write_json(output / 'config_pin.json', config)
     engine.write_json(output / 'manifest_pin.json', manifest)
@@ -359,6 +371,88 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 options['batch_size'], seed)
                         return shared['shuffle_bank_pin']
 
+                    def staged_base(distilled):
+                        """Prepare one ungated base per family/seed, independent of model order."""
+                        name = 'device_op_distilled_base_pin' if distilled else 'device_op_supervised_base_pin'
+                        if name in shared:
+                            return shared[name], name
+                        canonical_mode = ('device_op_distill_gate_pin' if distilled else
+                                          'device_op_supervised_gate_pin')
+                        cfg = effective_config_pin(config, canonical_mode, seed)
+                        op_model = device_predictor()
+                        predictor_digest = state_digest(op_model)
+                        source = teacher(True) if distilled else None
+                        teacher_digest = state_digest(source) if source is not None else None
+                        # Dependencies may have trained in a different requested model order.
+                        # Reset before construction so both the base and dormant gate are identical.
+                        seed_everything(seed, options['torch_threads'])
+                        model = StagedOPGateModelPin(cfg['model'], ctx.prep, op_model,
+                            mode=canonical_mode, gate_config=cfg.get('op_gate_pin')).to(device)
+                        deps = dependencies['device_op_predictor_pin'][:]
+                        gate_digest = state_digest(model.gate)
+                        audit = dict(base_family='distilled' if distilled else 'supervised',
+                            gate_was_disabled_during_base=True, gate_initial_digest=gate_digest,
+                            predictor_digest=predictor_digest, teacher_digest=teacher_digest,
+                            teacher_checkpoint='../design_op_oracle_pin/checkpoint_pin.pt' if distilled else None,
+                            inference_requires_measured_op=False)
+                        base_directory = ctx.output / 'shared_pin' / name
+                        base_directory.mkdir(parents=True, exist_ok=True)
+                        if distilled:
+                            deps += dependencies['design_op_oracle_pin']
+                            model.initialize_from_teacher(source)
+                            model.set_phase('distill_encoder')
+                            decoder_digest = state_digest(model.decoder)
+                            scale = engine.fit_scaler(ctx, source.encoder, options, 'design_op',
+                                input_filter=lambda batch: op_input_pin(batch, use_design=True))
+                            torch.save(scale.state_dict(), base_directory / 'alignment_scales_pin.pt')
+                            pair = StagedOPEncoderDistillationPin(model, source, scale).to(device)
+                            metadata = lambda m: dict(teacher_scaler=scale.state_dict(),
+                                teacher_checkpoint='../../shared_pin/design_op_oracle_pin/checkpoint_pin.pt',
+                                gate_disabled=True, selection_objective='validation latent alignment')
+                            pair, dep = stage(pair, 'device_op_distill_encoder_pin',
+                                'predicted_op_distill_encoder', cfg, lambda m,b: m.objective(b),
+                                op=True, log_name=f'shared_pin/{name}/encoder_pin', checkpoint_extra=metadata)
+                            deps.append(dep)
+                            model = pair.student
+                            if state_digest(model.decoder) != decoder_digest:
+                                raise AssertionError('Decoder changed during staged encoder-only distillation')
+                            if state_digest(source) != teacher_digest:
+                                raise AssertionError('Frozen staged teacher changed')
+                            del pair
+                            model.set_phase('readout')
+                            encoder_digest = state_digest(model.encoder)
+                            model, dep = stage(model, 'device_op_distill_readout_pin',
+                                'predicted_op_distill_decoder', cfg,
+                                log_name=f'shared_pin/{name}/decoder_pin')
+                            deps.append(dep)
+                            if state_digest(model.encoder) != encoder_digest:
+                                raise AssertionError('Encoder changed during staged decoder-only training')
+                            audit.update(teacher_frozen=True, decoder_unchanged_during_encoder=True,
+                                encoder_unchanged_during_decoder=True,
+                                encoder_selection='validation alignment', decoder_selection='validation performance')
+                        else:
+                            model.set_phase('supervised')
+                            model, dep = stage(model, 'device_op_supervised_readout_pin', 'readout', cfg,
+                                log_name=f'shared_pin/{name}/supervised_pin')
+                            deps.append(dep)
+                        if state_digest(model.gate) != gate_digest:
+                            raise AssertionError('Disabled gate changed during base training')
+                        if state_digest(op_model) != predictor_digest:
+                            raise AssertionError('Frozen OP predictor changed during base training')
+                        shared[name] = freeze(model)
+                        dependencies[name] = deps
+                        save(model, name, deps, cfg, shared_stage=True)
+                        audit.update(base_state_digest=state_digest(model),
+                            encoder_digest=state_digest(model.encoder), decoder_digest=state_digest(model.decoder),
+                            predictor_frozen=True)
+                        engine.write_json(base_directory / 'base_audit_pin.json', audit)
+                        # Validation is observable before gate fitting; test is deferred until it finishes.
+                        with log_to(logs / f'seed_{seed}_pin' / 'shared_pin' / name / 'evaluate_val_pin.log'):
+                            validation = engine.evaluate_model(ctx, model, 'val', options)
+                            validation.update(circuit=circuit, granularity='pin')
+                            engine.write_json(base_directory / 'val_pin.json', validation)
+                        return shared[name], name
+
                     for mode in models:
                         print(f'=== {circuit} seed={seed} model={mode} ===', flush=True)
                         cfg = effective_config_pin(config, mode, seed)
@@ -375,6 +469,42 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             engine.write_json(directory / 'config_pin.json', cfg)
                             engine.write_json(directory / 'preprocessing_pin.json', ctx.prep)
                             engine.write_json(directory / 'manifest_pin.json', manifest)
+                        elif mode in STAGED_GATE_MODELS_PIN:
+                            kind = 'op_transfer'
+                            base, base_name = staged_base(mode != 'device_op_supervised_gate_pin')
+                            base_digest = state_digest(base)
+                            deps = dependencies[base_name][:]
+                            model = copy.deepcopy(base)
+                            model.mode = mode
+                            phase = ('gate_decoder' if mode == 'device_op_distill_gate_decoder_pin' else 'gate_only')
+                            model.set_phase(phase)
+                            before = {key: state_digest(getattr(model, key))
+                                      for key in ('predictor', 'encoder', 'decoder', 'gate')}
+                            model, dep = stage(model, mode, 'gate', cfg,
+                                checkpoint_extra=lambda m: dict(base_checkpoint=f'../../shared_pin/{base_name}/checkpoint_pin.pt',
+                                    base_state_digest=base_digest, final_phase=phase,
+                                    selection_objective='validation performance'))
+                            deps.append(dep)
+                            after = {key: state_digest(getattr(model, key))
+                                     for key in ('predictor', 'encoder', 'decoder', 'gate')}
+                            for key in ('predictor', 'encoder') + (('decoder',) if phase == 'gate_only' else ()):
+                                if after[key] != before[key]:
+                                    raise AssertionError(f'Frozen {key} changed during staged gate training')
+                            if state_digest(base) != base_digest:
+                                raise AssertionError('Shared ungated base changed while training a copied gate model')
+                            directory.mkdir(parents=True, exist_ok=True)
+                            audit = gate_contract_pin(mode)
+                            audit.update(base_checkpoint=f'../shared_pin/{base_name}/checkpoint_pin.pt',
+                                base_state_digest=base_digest, final_phase=phase,
+                                predictor_frozen=True, encoder_frozen=True, decoder_frozen=phase == 'gate_only',
+                                gate_was_disabled_during_base=True,
+                                predictor_checkpoint='../shared_pin/device_op_predictor_pin/checkpoint_pin.pt',
+                                teacher_checkpoint='../shared_pin/design_op_oracle_pin/checkpoint_pin.pt'
+                                    if mode != 'device_op_supervised_gate_pin' else None,
+                                op_embedding_dim=cfg['model']['dim'], gate_heads=cfg['model']['heads'],
+                                **{f'initial_{key}_digest': value for key, value in before.items()},
+                                **{f'final_{key}_digest': value for key, value in after.items()})
+                            engine.write_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode in GATE_MODELS_PIN:
                             kind = 'op_transfer'
                             needs_predictor = mode != 'device_op_gate_only_base_pin'
@@ -493,11 +623,24 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             prepare_model_pin(model, ctx, options, splits=('test',))
                             report = engine.evaluate_model(ctx, model, 'test', options, measured_op=mode in REFERENCES_PIN)
                             report.update(circuit=circuit, granularity='pin')
-                            if mode in GATE_MODELS_PIN:
+                            if mode in ALL_GATE_MODELS_PIN:
                                 report['op_gate_pin'] = gate_contract_pin(mode)
                                 if mode in REFERENCES_PIN:
                                     report['oracle_gate_coverage_pin'] = oracle_gate_coverage_pin(
                                         ctx, model.predictor, 'test', options['batch_size'])
+                            if mode in STAGED_GATE_MODELS_PIN:
+                                # Both test reports are produced only after final validation selection.
+                                # The ungated report is diagnostic and never selects a training checkpoint.
+                                base_report_key = base_name + '_test_report'
+                                if base_report_key not in shared:
+                                    base_report = engine.evaluate_model(ctx, base, 'test', options)
+                                    base_report.update(circuit=circuit, granularity='pin')
+                                    shared[base_report_key] = base_report
+                                    engine.write_json(ctx.output / 'shared_pin' / base_name / 'test_pin.json', base_report)
+                                engine.write_json(directory / 'gate_comparison_pin.json', dict(
+                                    base_checkpoint=f'../shared_pin/{base_name}/checkpoint_pin.pt',
+                                    base_family='supervised' if mode == 'device_op_supervised_gate_pin' else 'distilled',
+                                    final_phase=phase, base_test=shared[base_report_key], post_gate_test=report))
                             engine.write_json(directory / 'test_pin.json', report)
                             print(json.dumps(report, allow_nan=False), flush=True)
                         results.append(dict(mode=mode, seed=seed, stage_ids=deps, report=report))

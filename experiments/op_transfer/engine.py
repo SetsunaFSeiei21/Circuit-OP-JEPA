@@ -40,7 +40,8 @@ MODELS = ('design_supervised', 'op_oracle', 'jepa_standardized', 'jepa_grouped',
 MEASURED_OP_MODELS = frozenset({'op_oracle', 'design_op_oracle'})
 DEFAULT_EPOCHS = dict(teacher=30, student=30, op_predictor=30, readout=50, dual=50,
                      jepa=30, student_predicted_op=50,
-                     predicted_op_distill_encoder=60, predicted_op_distill_decoder=60)
+                     predicted_op_distill_encoder=60, predicted_op_distill_decoder=60,
+                     gate=30)
 
 
 def write_json(path, value):
