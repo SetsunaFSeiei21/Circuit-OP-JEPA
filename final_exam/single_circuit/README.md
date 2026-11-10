@@ -9,6 +9,8 @@ bash final_exam/single_circuit/train.sh
 
 使用 `--smoke` 缩短训练预算，可与 `--dry-run` 合用。烟测仍导入完整原始数据，原始数据较大时建议先使用小样本电路。原始输入位于 `runs/raw/full_data/<circuit>/`，目录须包含 `sampling_history.sqlite3` 和对应网表。
 
+Slurm 会将 `run.sh` 复制到 `/var/spool/...` 后执行，不能以该副本的位置推算仓库目录。提交脚本通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径，计算节点入口依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到入口文件时提前报错；启动日志打印 `Project root:`。普通 Bash 调用仍可用，不需要创建或复制另一份工程。修复后需要重新提交失败的作业。
+
 所有输出位于当前仓库的 `final_exam/single_circuit`，每次提交生成同一个 UTC 时间与随机后缀组成的 `run_id`。
 
 | 文件 | 路径 |

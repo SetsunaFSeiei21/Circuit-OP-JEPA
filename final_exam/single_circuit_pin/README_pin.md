@@ -14,6 +14,8 @@ bash final_exam/single_circuit_pin/train_pin.sh
 
 `--dry-run` 不提交、不创建输出目录。`--smoke` 提交短轮次训练，但仍导入完整原始数据；不会把 60,000 条输入自动裁成小样本。原始输入继续使用 `runs/raw/full_data/<电路名>/`，无需复制或重命名 SQLite/网表。输入单位检查和器件级入口相同，不自动猜测几何单位。
 
+`train_pin.sh` 和 `train_op_gate_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
+
 模型列表为：
 
 ```bash

@@ -82,6 +82,7 @@ for circuit in "${CIRCUITS[@]}"; do
 done
 
 cd "$PROJECT_ROOT"
+export JEPA_PROJECT_ROOT="$PROJECT_ROOT"
 export JEPA_CONDA_ENV="$CONDA_ENV" JEPA_CONDA_HOME="$CONDA_HOME"
 export PYTHONUNBUFFERED=1
 for circuit in "${CIRCUITS[@]}"; do
