@@ -168,3 +168,28 @@ bash final_exam/single_circuit_pin/summarize_pin.sh \
 ```
 
 默认拒绝覆盖现有工作簿，未完成实验默认拒绝导出。`--allow-incomplete` 只生成明确标注的临时表，不进行最优高亮。三个新模型的完整导出要求有对应的基模型比较文件。
+
+## CUDA 门控反向传播兼容性
+
+部分 PyTorch CUDA memory-efficient SDPA 实现在 Q/K/V 均不需要梯度、只有浮点 attention mask 需要梯度时，不保存反向传播所需的 logsumexp（LSE）。这会导致 `LSE is not correctly aligned (strideH)`，某些形状也可能报非法内存访问。上游问题见 [PyTorch #148476](https://github.com/pytorch/pytorch/issues/148476)，上游修复见 [#188302](https://github.com/pytorch/pytorch/pull/188302)。
+
+分阶段门控的第一个冻结自注意力块恰好满足这个条件：结构 embedding 与 Q/K/V 投影被冻结，只有 OP 门控偏置在训练。普通联合训练时，Q/K/V 也需要梯度，因此不一定触发同一缺陷。这个报错与 Git 元数据警告、loss 震荡不是同一个问题。
+
+`device_jepa/model.py` 中的 `EncoderBlock` 现在只在以下条件同时成立时，局部使用 `sdpa_kernel(SDPBackend.MATH)`：
+
+1. 当前允许记录梯度；
+2. 自注意力 mask 需要梯度；
+3. 输入与 Q/K/V 投影权重、偏置都不需要梯度。
+
+这条路径仍在输入所在设备执行，CUDA 张量不会转到 CPU。编码器继续冻结，门控梯度穿过编码器和 decoder；不会 `detach` 门控或重新训练主干。上下文结束即恢复调用方的注意力后端设置，后续有 Q/K/V 梯度的层、正常联合训练、验证和推理仍沿用原来的后端选择。不同后端可能有浮点舍入差异；局部 math attention 的显存与速度开销需要在实际 GPU 上测量。
+
+无需修改模型名称、epoch 或 checkpoint 格式。已有完成阶段的 checkpoint 不会被此次代码更新删除，但当前启动器**不提供断点续训**；再次运行会创建新目录并从前置阶段重新训练，请保留失败目录中的模型和日志。
+
+CPU 回归与 CUDA 专用回归入口：
+
+```bash
+python -m unittest discover -s tests -p 'test_attention_mask_grad.py' -v
+python -m unittest final_exam.tests.test_staged_op_gate_models_pin -v
+```
+
+CPU 环境会明确跳过 CUDA 用例。在已分配 GPU 的计算节点运行这两条命令，才能验证实际 CUDA 内核路径；这些测试使用合成小样本，不读取完整 60,000 点数据。新增 CUDA 用例覆盖冻结 Q/K/V 的偏置反向传播，以及三个分阶段门控模型的优化器更新。

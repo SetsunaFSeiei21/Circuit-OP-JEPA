@@ -113,6 +113,46 @@ class StagedOPGateModelsPinTests(unittest.TestCase):
         for name in ('decoder', 'gate'):
             self.assertNotEqual(before[name], state_digest(getattr(model, name)), name)
 
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for staged gate regression')
+    def test_cuda_staged_gate_steps_keep_frozen_modules_unchanged(self):
+        batch = {key: value.cuda() if torch.is_tensor(value) else copy.deepcopy(value)
+                 for key, value in self.batch.items()}
+        for mode in STAGED_GATE_MODELS_PIN:
+            with self.subTest(mode=mode):
+                phase = 'gate_decoder' if mode == STAGED_GATE_MODELS_PIN[1] else 'gate_only'
+                model = self.model(mode, dropout=.3).cuda().set_phase(phase).train()
+                names = ('predictor', 'encoder', 'decoder', 'gate')
+                before = {name: state_digest(getattr(model, name)) for name in names}
+                frozen = ('predictor', 'encoder') if phase == 'gate_decoder' else names[:3]
+                optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
+                                              lr=1e-3)
+                for _ in range(2):
+                    optimizer.zero_grad(set_to_none=True)
+                    prediction = model(batch)
+                    self.assertTrue(prediction.is_cuda)
+                    loss = (prediction - torch.randn_like(prediction)).square().mean()
+                    self.assertTrue(bool(torch.isfinite(loss)))
+                    loss.backward()
+                    gradients = [p.grad for p in model.gate.parameters() if p.grad is not None]
+                    self.assertTrue(gradients)
+                    self.assertTrue(all(gradient.is_cuda and bool(torch.isfinite(gradient).all())
+                                        for gradient in gradients))
+                    self.assertGreater(sum(float(gradient.abs().sum()) for gradient in gradients), 0.)
+                    for name in frozen:
+                        module = getattr(model, name)
+                        self.assertFalse(module.training)
+                        self.assertTrue(all(p.grad is None for p in module.parameters()))
+                    optimizer.step()
+                    torch.cuda.synchronize()
+                    for name in frozen:
+                        self.assertEqual(before[name], state_digest(getattr(model, name)), name)
+                self.assertNotEqual(before['gate'], state_digest(model.gate))
+                if phase == 'gate_decoder':
+                    self.assertNotEqual(before['decoder'], state_digest(model.decoder))
+                model.eval()
+                with torch.no_grad():
+                    self.assertTrue(bool(torch.isfinite(model(batch)).all()))
+
     def test_encoder_distillation_is_label_free_and_gate_decoder_teacher_stay_frozen(self):
         teacher, student = self.teacher(), self.model()
         student.initialize_from_teacher(teacher)

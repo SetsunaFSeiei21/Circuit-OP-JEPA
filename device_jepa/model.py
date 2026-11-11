@@ -3,10 +3,12 @@
 This is not a byte-for-byte reproduction and imports no ZeroSim code. See
 THIRD_PARTY_NOTICES.md and docs/architecture.md for correspondence/differences.
 """
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 
 import torch
 from torch import nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
 @dataclass
@@ -50,7 +52,22 @@ class EncoderBlock(nn.Module):
         self.drop = nn.Dropout(cfg.dropout)
 
     def forward(self, x, self_mask, parameter_tokens, cross_mask, valid):
-        update = self.self_attn(x, x, x, attn_mask=self_mask, need_weights=False)[0]
+        # Some fused SDPA kernels (including PyTorch 2.6 efficient attention)
+        # save backward intermediates only when Q/K/V require gradients. A
+        # trainable additive mask on a frozen block still needs those values:
+        # otherwise its backward can fail with "LSE ... aligned (strideH)".
+        # Use math SDPA only for this mask-only gradient case. It runs on the
+        # input device, keeps the gate differentiable, and does not unfreeze
+        # the encoder or change the backend of subsequent attention calls.
+        qkv_requires_grad = x.requires_grad or any(
+            parameter is not None and parameter.requires_grad
+            for parameter in (self.self_attn.in_proj_weight, self.self_attn.in_proj_bias)
+        )
+        mask_only_grad = (torch.is_grad_enabled() and self_mask is not None
+                          and self_mask.requires_grad and not qkv_requires_grad)
+        backend = sdpa_kernel(SDPBackend.MATH) if mask_only_grad else nullcontext()
+        with backend:
+            update = self.self_attn(x, x, x, attn_mask=self_mask, need_weights=False)[0]
         x = self.self_norm(x + self.drop(update))
         if self.cross_attn is not None:
             update = self.cross_attn(x, parameter_tokens, parameter_tokens,
