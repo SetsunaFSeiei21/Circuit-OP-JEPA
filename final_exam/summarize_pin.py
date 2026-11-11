@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_number, _write_workbook
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
+from final_exam.gate_version_registry_pin import (
+    V1_GATE_MODELS_PIN, V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN, gate_version_pin,
+)
 
 
 ORACLES = frozenset(('op_oracle_pin', 'design_op_oracle_pin',
@@ -48,13 +51,36 @@ FUSION_STAGED_GATE_INPUTS_PIN = {
            else 'gate only')
     for mode in FUSION_STAGED_GATE_MODELS_PIN
 }
-ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN}
-ALL_GATE_REPORTS_PIN = GATE_INPUTS_PIN.keys() | ALL_STAGED_GATE_INPUTS_PIN.keys()
+V1_STAGED_GATE_INPUTS_PIN = {
+    mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
+           else 'supervised ungated model', 'gate only')
+    for mode in V1_STAGED_GATE_MODELS_PIN
+}
+ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN,
+                             **V1_STAGED_GATE_INPUTS_PIN}
+ALL_NONSTAGED_GATE_INPUTS_PIN = {**GATE_INPUTS_PIN,
+    **{mode: ('A', True, 'predicted OP') for mode in V1_JOINT_GATE_MODELS_PIN}}
+ALL_GATE_REPORTS_PIN = ALL_NONSTAGED_GATE_INPUTS_PIN.keys() | ALL_STAGED_GATE_INPUTS_PIN.keys()
+
+
+def _gate_scope(mode):
+    if mode in ALL_STAGED_GATE_INPUTS_PIN:
+        return staged_gate_spec_pin(mode)['attention_scope']
+    if mode == 'device_op_gate_fusion_pin_v1':
+        return 'fusion_self_attention'
+    if mode in ALL_NONSTAGED_GATE_INPUTS_PIN and ALL_NONSTAGED_GATE_INPUTS_PIN[mode][2] != 'none':
+        return 'all_encoder_self_attention'
+    return 'none'
+
+
+def _gate_version(mode):
+    return gate_version_pin(mode) if _gate_scope(mode) != 'none' else 'none'
 
 
 def _require_pin_mode(mode):
-    if not isinstance(mode, str) or not mode.endswith('_pin') or len(mode) <= 4:
-        raise ValueError('Pin reports require every model name to end in _pin')
+    if (not isinstance(mode, str) or len(mode) <= 4
+            or not (mode.endswith('_pin') or mode in V1_GATE_MODELS_PIN)):
+        raise ValueError('Pin reports require every model name to end in _pin or use a registered _pin_v1 name')
 
 
 def _read_json(path):
@@ -97,13 +123,19 @@ def summary_rows_pin(results, config=None):
         if not isinstance(record, dict) or not isinstance(record.get('report'), dict):
             raise ValueError('Each result must contain a report object')
         _require_pin_mode(record.get('mode'))
+        contract = record['report'].get('op_gate_pin')
+        if record['mode'] in V1_GATE_MODELS_PIN and contract is not None:
+            if not isinstance(contract, dict):
+                raise ValueError('Gate input contract must be an object')
+            for key, expected in (('gate_version', 'v1'), ('attention_scope', _gate_scope(record['mode']))):
+                if contract.get(key, expected) != expected:
+                    raise ValueError(f'Gate report {key} differs from the model name')
         groups[_circuit_identity(record, config or {})].append(record)
     rows = []
     for circuit, members in sorted(groups.items()):
         # Reuse the existing finite-value, count, seed and OP-input validation.
-        normalized = [dict(record, mode=record['mode'][:-4]) for record in members]
-        for row in _aggregate_rows(normalized, oracle_modes={mode[:-4] for mode in ORACLES}):
-            row['mode'] += '_pin'
+        for row in _aggregate_rows(members, oracle_modes=ORACLES):
+            row['uses_design_parameters'] = row['mode'] != 'op_oracle_pin'
             row.update(circuit=circuit, backend='final_exam_pin',
                        scope='pooled' if circuit == 'ALL_SELECTED_CIRCUITS' else 'circuit')
             row['seed_ids'] = sorted(record['seed'] for record in members
@@ -303,7 +335,7 @@ def _comparison_sheets(rows, models, fields, complete, decimals):
         sheet.note('Green marks the best unrounded mean within matching inference-input groups and matched seeds/counts.', height=32)
         if any(mode in ALL_STAGED_GATE_INPUTS_PIN for mode in models):
             sheet.note('Staged gates use additional training; compare TrainingCost and GateBeforeAfter. Highlighting is not a compute-matched significance test.', height=30)
-        elif any(mode in GATE_INPUTS_PIN for mode in models):
+        elif any(mode in ALL_NONSTAGED_GATE_INPUTS_PIN for mode in models):
             sheet.note('TRUE OP REFERENCE needs measured OP. SHUFFLE CONTROL is diagnostic and excluded from ranking; see ModelInputs.', height=30)
         else:
             sheet.note('TRUE OP REFERENCE requires measured OP at inference. Highlighting is not a significance test.', height=30)
@@ -363,26 +395,28 @@ def _per_seed_sheet(results, config):
     return sheet
 
 
-def _model_inputs_sheet(models):
+def _model_inputs_sheet(models, results=()):
     """Expose the A/B ablations without changing metric aggregation identity."""
     fields = ('Model', 'Study group', 'OP predictor encoder', 'Predicted OP node features',
               'Attention gate source', 'Measured OP required', 'Role / interpretation',
-              'Base training', 'Final trainable modules', 'Attention gate scope')
-    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80, 42, 34, 42], freeze_rows=5, freeze_columns=1)
+              'Base training', 'Final trainable modules', 'Attention gate scope', 'Gate version')
+    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80, 42, 34, 42, 18], freeze_rows=5, freeze_columns=1)
     sheet.note('Model inputs and operating-point gate controls', 1, 34)
     sheet.note('A: predicted OP features plus optional gate. B: OP only controls the gate; baseline has no OP dependency.', height=34)
     sheet.note('All new non-baseline gate variants use one frozen DEVICE-level OP predictor per seed, followed by a PIN-level encoder.', height=34)
     sheet.note('Staged variants disable gates during base training and freeze encoder weights during final gate training. Oracle/shuffle variants remain diagnostics.', height=34)
     sheet.add([Cell(value, 3) for value in fields], 44)
+    alias_modes = {record['mode'] for record in results
+                   if record['report'].get('ungated_base_checkpoint_pin')}
     for mode in models:
         if mode in ALL_STAGED_GATE_INPUTS_PIN:
             base, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
             role = ('Same distilled base checkpoint across selected distilled gate variants'
                     if base == 'distilled student' else 'No teacher or latent distillation dependency')
             sheet.add([mode, 'staged gate', 'device', True, 'predicted OP', False,
-                       role, base, final_modules, staged_gate_spec_pin(mode)['attention_scope']], 46)
-        elif mode in GATE_INPUTS_PIN:
-            group, features, gate = GATE_INPUTS_PIN[mode]
+                       role, base, final_modules, _gate_scope(mode), _gate_version(mode)], 46)
+        elif mode in ALL_NONSTAGED_GATE_INPUTS_PIN:
+            group, features, gate = ALL_NONSTAGED_GATE_INPUTS_PIN[mode]
             predictor = 'none' if mode == 'device_op_gate_only_base_pin' else 'device'
             role = ('Measured OP diagnostic reference; excluded from design-only inference group'
                     if mode in ORACLES else
@@ -390,18 +424,19 @@ def _model_inputs_sheet(models):
                     if mode in SHUFFLE_CONTROLS_PIN else
                     'No-gate baseline' if gate == 'none' else 'Predicted OP attention gate')
             sheet.add([mode, group, predictor, features, gate, mode in ORACLES, role,
-                       'No separate base stage', 'encoder and decoder' if gate == 'none'
+                       'shared supervised ungated stage' if mode in alias_modes else 'No separate base stage',
+                       'encoder and decoder' if gate == 'none'
                        else 'encoder, decoder and gate',
-                       'none' if gate == 'none' else 'all_encoder_self_attention'], 46)
+                       _gate_scope(mode), _gate_version(mode)], 46)
         else:
             sheet.add([mode, 'existing pin model', 'see saved model configuration',
                        None, 'no new OP gate', mode in ORACLES, 'Existing model contract is unchanged',
-                       'see saved configuration', 'see stage parameter metadata', 'none'], 46)
+                       'see saved configuration', 'see stage parameter metadata', 'none', 'none'], 46)
     sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet
 
 
-def _gate_comparison_sheet(directory, results, *, allow_incomplete):
+def _gate_comparison_sheet(directory, results, *, allow_incomplete, base_records=None):
     """Show each saved ungated base and its final gated descendant on test only.
 
     These are per-seed physical-unit values, not extra selected models or an
@@ -409,8 +444,8 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
     """
     fields = ('Model', 'Seed', 'Metric', 'Labels', 'Base training', 'Final trainable modules',
               'Base MAE', 'Final MAE', 'MAE change', 'Base RMSE', 'Final RMSE', 'RMSE change',
-              'Base R2', 'Final R2', 'R2 change', 'Base checkpoint', 'Attention gate scope')
-    sheet = Sheet('GateBeforeAfter', [46, 12, 28, 14, 32, 30, *([24] * 9), 80, 42],
+              'Base R2', 'Final R2', 'R2 change', 'Base checkpoint', 'Attention gate scope', 'Gate version')
+    sheet = Sheet('GateBeforeAfter', [46, 12, 28, 14, 32, 30, *([24] * 9), 80, 42, 18],
                   freeze_rows=5, freeze_columns=3)
     sheet.note('Ungated base versus final gate model — per seed', 1, 34)
     sheet.note('Both test reports are evaluated after training. Test labels do not select checkpoints or fit transforms.', height=34)
@@ -435,6 +470,8 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
         scope = staged_gate_spec_pin(mode)['attention_scope']
         if comparison.get('attention_scope', scope) != scope:
             raise ValueError(f'Gate comparison attention scope differs from the model: {path}')
+        if comparison.get('gate_version', _gate_version(mode)) != _gate_version(mode):
+            raise ValueError(f'Gate comparison version differs from the model: {path}')
         checkpoint = comparison.get('base_checkpoint')
         if not isinstance(checkpoint, str) or not checkpoint:
             raise ValueError(f'Gate comparison requires a base checkpoint path: {path}')
@@ -447,6 +484,15 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
             raise ValueError(f'Final gate comparison differs from the exported model result: {path}')
         if set(base['metrics']) != set(final['metrics']):
             raise ValueError(f'Base and final gate metric schemas differ: {path}')
+        if base_records is not None:
+            checkpoint_path = (path.parent / checkpoint).resolve()
+            identity = (seed, _circuit_identity(record, {}), base['split'], str(checkpoint_path))
+            reference = dict(mode=checkpoint_path.parent.name, seed=seed, report=base,
+                             circuit=_circuit_identity(record, {}), stage_ids=[],
+                             base_checkpoint_pin=str(checkpoint_path))
+            if identity in base_records and base_records[identity]['report'] != base:
+                raise ValueError(f'Conflicting reports for the same shared base checkpoint: {checkpoint_path}')
+            base_records[identity] = reference
         for metric, post in final['metrics'].items():
             before = base['metrics'][metric]
             if before['count'] != post['count']:
@@ -458,9 +504,66 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
                 values.extend(Cell(value, 11) for value in (old, new, change))
             base_name, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
             sheet.add([mode, seed, metric, post['count'], base_name, final_modules,
-                       *values, checkpoint, scope], 36)
+                       *values, checkpoint, scope, _gate_version(mode)], 36)
     sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet, missing
+
+
+def _gate_study_sheet(directory, results, base_records, config, decimals):
+    """Summarize shared ungated references once, without creating training runs."""
+    aliases = {}
+    for record in results:
+        checkpoint = record['report'].get('ungated_base_checkpoint_pin')
+        if checkpoint is None:
+            continue
+        if not isinstance(checkpoint, str) or not checkpoint:
+            raise ValueError('Ungated base alias must be a checkpoint path')
+        path = (directory / f'seed_{record["seed"]}_pin' / checkpoint).resolve()
+        key = (record['seed'], _circuit_identity(record, config), record['report']['split'], str(path))
+        if key in aliases:
+            raise ValueError(f'Multiple selected models alias the same ungated base: {path}')
+        aliases[key] = record
+    references = []
+    for identity, reference in base_records.items():
+        if identity in aliases:
+            baseline = aliases[identity]['report']
+            before = reference['report']
+            fields = ('metrics', 'count', 'normalized_mse', 'requires_measured_op')
+            if any(baseline.get(field) != before.get(field) for field in fields):
+                raise ValueError(f'Chosen baseline disagrees with its shared ungated checkpoint: {identity[-1]}')
+        else:
+            references.append(reference)
+    rows = summary_rows_pin(results + references, config)
+    reference_modes = {record['mode'] for record in references}
+    fields = ('Circuit', 'Split', 'Model / base reference', 'Role', 'Gate version',
+              'Attention scope', 'Metric', 'Seeds', 'Labels / seed', 'MAE mean ± std',
+              'RMSE mean ± std', 'R2 mean ± std',
+              *(score + suffix for score in SCORES for suffix in ('_mean', '_std')))
+    sheet = Sheet('GateStudy', [28, 12, 52, 34, 18, 38, 28, 22, 18, 28, 28, 28, *([24] * 6)],
+                  freeze_rows=5, freeze_columns=3)
+    sheet.note('Gate study including ungated base references — mean ± sample std', 1, 34)
+    sheet.note('References reuse saved checkpoints. They are not additional trained models or extra seeds; TrainingCost remains deduplicated.', height=34)
+    sheet.note('Each shared base is counted once per seed. A selected baseline that explicitly aliases that same checkpoint replaces the duplicate reference.', height=34)
+    sheet.note('All values retain physical units (UGF in Hz); R2 is dimensionless. One seed has no std. Different stage budgets are reported separately.', height=34)
+    sheet.add([Cell(field, 3) for field in fields], 44)
+    for row in rows:
+        mode = row['mode']
+        scores = []
+        for score in SCORES:
+            average, deviation = row[score + '_mean'], row[score + '_std']
+            value = 'n/a' if average is None else _format_number(average, decimals)[0]
+            if average is not None and deviation is not None:
+                value += ' ± ' + _format_number(deviation, decimals)[0]
+            if row[score + '_defined_seeds'] < row['num_seeds']:
+                value += f' [{row[score + "_defined_seeds"]}/{row["num_seeds"]} seeds]'
+            scores.append(value)
+        sheet.add([row['circuit'], row['split'], mode,
+                   'ungated base reference' if mode in reference_modes else 'selected model',
+                   _gate_version(mode), _gate_scope(mode), row['metric'], row['seed_ids'],
+                   row['count_per_seed'], *scores,
+                   *(Cell(row[score + suffix], 11) for score in SCORES for suffix in ('_mean', '_std'))], 36)
+    sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet
 
 
 def _cost_sheet(stages, results):
@@ -546,9 +649,10 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if missing:
         configuration.note('MISSING RESULTS: ' + json.dumps(missing), 4, 42)
     gate_comparison = None
+    base_records = {}
     if any(mode in ALL_STAGED_GATE_INPUTS_PIN for mode in models):
         gate_comparison, missing_gate_comparisons = _gate_comparison_sheet(
-            directory, results, allow_incomplete=allow_incomplete)
+            directory, results, allow_incomplete=allow_incomplete, base_records=base_records)
         complete = complete and not missing_gate_comparisons
         if missing_gate_comparisons:
             configuration.note('MISSING GATE COMPARISONS: ' + json.dumps(missing_gate_comparisons), 4, 42)
@@ -558,9 +662,11 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if run.get('resume'):
         sheets.append(_resume_sheet(stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
-        sheets.append(_model_inputs_sheet(models))
+        sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:
         sheets.append(gate_comparison)
+        if any(mode in V1_GATE_MODELS_PIN for mode in models):
+            sheets.append(_gate_study_sheet(directory, results, base_records, config, decimals))
     # The reusable writer validates all XML and writes atomically. Publishing
     # with link prevents concurrent exporters from overwriting an existing file.
     output.parent.mkdir(parents=True, exist_ok=True)

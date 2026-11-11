@@ -1,5 +1,14 @@
 # 端口级单电路实验
 
+门控 **v1** 的独立入口为 `train_op_gate_pin_v1.sh`，默认包含六个 `_pin_v1` 门控模型和 `device_op_cascade_pin` 无门控对照。编辑脚本顶部的 `CIRCUITS`、`MODELS`、`SEEDS` 后运行：
+
+```bash
+bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh --dry-run
+bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh
+```
+
+配置为 `final_exam/configs/op_gate_pin_v1.json`；结果、实验日志、HPC 日志仍分别位于本目录的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `op_gate_v1`。默认七个评测入口之外，蒸馏无门控基座也会在 Excel `GateStudy` 中比较。各版本输入结构、六个新模型的训练流程、预算与 checkpoint 兼容规则集中记录在 [../record.txt](../record.txt)。原有脚本继续启动原有版本。
+
 本入口与器件级 `single_circuit/` 并列。每个被观测到的器件引脚是一个节点，命名外部端口也有独立节点；MOS 的 D/G/S/B 不合并成一个学习节点。图上保留同器件关系、同网络连接及端口接入关系。编码、输入权重和教师均使用端口级版本。
 
 真实 OP 仍属于器件。原有 `predicted_op_pin`/学生蒸馏系列的 OP predictor 对同一器件的引脚表示聚合，预测一组器件 OP，再广播到所属引脚；OP 监督按器件计算一次，不因 MOS 拆成四个引脚就重复加权四次。外部端口无所属器件，不参与 OP 监督。部署级联模型不读取真实 OP 或其缺失模式。

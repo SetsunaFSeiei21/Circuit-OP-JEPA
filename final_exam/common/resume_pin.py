@@ -20,9 +20,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from final_exam.common.launch_pin import directory_name, run_logged, save_json, utc_now
 from final_exam.staged_gate_registry_pin import ALL_STAGED_GATE_MODELS_PIN
+from final_exam.gate_version_registry_pin import V1_JOINT_GATE_MODELS_PIN
 
 
-STAGED_MODELS = frozenset(ALL_STAGED_GATE_MODELS_PIN)
+STAGED_MODELS = frozenset(ALL_STAGED_GATE_MODELS_PIN + V1_JOINT_GATE_MODELS_PIN + ('device_op_cascade_pin',))
 _SOURCE_IDENTITY = (
     'source_training_output', 'source_run', 'configuration_source', 'manifest_source',
     'data_path', 'dataset_fingerprint', 'circuit', 'models', 'seeds', 'smoke',
@@ -62,7 +63,7 @@ def inspect_source(source):
     models, seeds = record.get('models'), record.get('seeds')
     if (not isinstance(models, list) or not models or any(not isinstance(m, str) for m in models)
             or len(set(models)) != len(models) or set(models) - STAGED_MODELS):
-        raise ValueError('Resume currently supports only registered staged OP gate pin models')
+        raise ValueError('Resume supports registered staged gates, v1 joint gates and their cascade baseline')
     if (not isinstance(seeds, list) or not seeds
             or any(type(seed) is not int or not 0 <= seed < 2**32 for seed in seeds)
             or len(set(seeds)) != len(seeds)):

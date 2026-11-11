@@ -1,0 +1,205 @@
+Circuit-OP-JEPA / final_exam 门控版本记录
+更新日期：2026-11-11
+
+一、版本管理与工程边界
+
+1. 本文件是门控结构的集中版本记录。后续增加 v2、v3 时追加章节，保留此前
+   的结构、模型名称、训练目标和兼容边界；不能悄悄覆盖已经有实验结果的版本。
+2. 未带版本后缀的旧门控模型记为 v0。旧模型 ID、旧配置和 checkpoint 配方保留。
+   v1 模型严格在原有模型名后增加 _v1，例如 device_op_gate_pin_v1，不能改写成
+   device_op_gate_v1_pin 或 device_op_gate_pin_v1_pin。
+3. 新结构代码与实验调度分离：
+   - final_exam/models/op_gate_pin.py：原有 v0 门控和公共器件到引脚模型接口。
+   - final_exam/models/gates_pin/：独立的门控版本实现，v1 放在 v1_pin.py。
+   - final_exam/gate_version_registry_pin.py：不依赖 PyTorch 的版本与模型 ID 注册。
+   - final_exam/staged_gate_registry_pin.py：训练方式和门控层位置的明确映射。
+   - final_exam/models/staged_op_gate_pin.py：阶段冻结策略，不把门控结构与训练策略绑定。
+   - final_exam/run_pin.py：训练、依赖共享、评估、checkpoint 与断点恢复调度。
+   - final_exam/summarize_pin.py：保留模型完整名称、版本、位置和成本的 Excel 汇总。
+4. “共享一个门控”指同一个实验模型内指定层共享门控网络；不同模型、不同 seed
+   各自训练自己的门控权重，不把一个实验的门控训练结果复用为另一个实验结果。
+5. 只有门控模型新增 _v1 名称，无门控基线不伪装成一个新门控版本。输出的
+   checkpoint_pin.pt、test_pin.json 等文件名仍沿用公共接口，它们位于包含完整
+   模型 ID 的独立目录中。实验 run ID 包含 op_gate_v1，且仍以 _pin 结尾。
+
+二、所有版本共同的输入与作用范围
+
+1. 器件级 OP 预测器输入拓扑和设计参数，按物理器件预测一组 OP。预测器先用
+   训练集真实 OP 监督，随后冻结；下游 encoder 是引脚级 ZeroSim 编码器。
+2. OP 使用训练集拟合的预处理，不把原始安培、伏特、西门子等不同量纲直接拼接。
+   OP 字段数 F 由 preprocessing_pin.json 的 feature_spec.op_names 决定。
+   当前常见 raw44 数据默认去掉 w_um、l_um、multiplicity 后 F=41；代码不硬编码 41。
+3. 门控只调节同一个 MOS 的 D/G/S/B 中不同电气网络的有序引脚对。电阻、电容、
+   不同器件的引脚对、外部端口、graph token、自环和真实同网短接的附加偏置均为 0。
+   偏置 0 意味着不额外调节，绝不是把这些节点的原有注意力或连接清零。
+4. 同一 MOS 的所有引脚对共享其器件 OP；查询/键引脚角色有顺序，D-S 与 S-D
+   不强制对称。网络学习的是 attention 偏置，不是严格的导通判据或电流方向。
+5. 每个头的门控 g 属于 (0,1)，附加偏置为：
+       bias = strength * log(epsilon + (1 - epsilon) * g)
+   加到 softmax 之前的 attention logits。g 接近 1 时抑制很弱，接近 0 时抑制更强。
+   默认 epsilon=0.0001、strength=1.0、initial_gate=0.99；保留接近无门控的初始化。
+6. 所有位置均只指 encoder 的 Self-Attention，不包括参数融合 Cross-Attention
+   和性能 decoder。全层模式作用于结构层与融合层；fusion 模式只作用于融合块。
+   默认 encoder_layers=6、cross_layers=3，所以两种范围分别为 3+3 层和后 3 层。
+7. 一个共享 MLP 输出 H 个门控分数，而非 H 个独立 OP 预测器。给定一次前向中的
+   OP 与引脚对，同一份逐头偏置复用于所有指定层；各层原始 Q/K 和注意力仍不同。
+
+三、v0：OP 与支持掩码嵌入，再叠加可学习的查询/键引脚嵌入
+
+适用名称：不带 _v1 的现有 device_op_gate* 和分阶段 device_op_*gate* 模型。
+
+计算过程：
+   safe_OP = where(supported_fields, normalized_OP, 0)
+   e_OP = Linear(2F, dim) -> GELU -> Linear(dim, dim)
+          输入为 concat(safe_OP, supported_fields)
+   pair = e_OP + Embedding_query(role_i) + Embedding_key(role_j)
+   logits = LayerNorm(dim) -> Linear(dim, dim) -> GELU -> Linear(dim, H)
+   g = sigmoid(logits)
+
+说明：
+   - 查询、键角色各有独立的 Embedding(4, dim) 参数表。
+   - 支持掩码按训练集是否支持该器件/模型的 OP 字段拟合，不是“预测是否准确”的掩码。
+   - 全部 MOS 字段均支持时，该掩码全为 1，不能提供随样本变化的新信息。
+   - v0 本来就跨层共享门控。因此“一个网络控制多层”不是 v1 新增加的性质。
+   - 原有 gate_only、gate_decoder、oracle、shuffle 控制及对应旧训练入口继续保留。
+
+四、v1：归一化 OP 与两个引脚独热编码直接拼接
+
+目的：明确输入语义，去掉门控的支持掩码输入和独立引脚 Embedding；用一个较简单
+的 MLP 学习器件状态与有序引脚对的关系。不能仅凭结构简化就宣称解决了训练震荡。
+
+计算过程：
+   safe_OP = where(supported_fields, normalized_OP, 0)
+   input = concat(safe_OP, one_hot(role_i, 4), one_hot(role_j, 4))
+   logits = Linear(F + 8, dim) -> GELU -> Linear(dim, H)
+   g = sigmoid(logits)
+
+默认 F=41、dim=128、heads=8 时，维度为 49 -> 128 -> 8。
+dim=128 是隐藏层宽度，不代表 128 个 OP 字段；ffn_dim=512 不决定这里的输入维度。
+role 顺序为 D、G、S、B，两组 one-hot 的位置分别对应查询引脚与键引脚。
+
+去掉与保留的掩码必须区别：
+   - 去掉：拼接进入门控 MLP 的字段支持位，不再输入一个 F 维 0/1 向量。
+   - 保留：上游 OP 监督的观测/支持筛选、不受支持字段的安全填充、batch padding，
+           以及第二区域规则中的 MOS/同器件/不同电气网络资格限制。
+   - 不受支持字段填 0 是标准化空间中的占位，不表示物理值确实为零；v1 不再
+     显式告诉 MLP 哪些零是占位。字段支持模式变化时，这是需要评估的表达限制。
+   - v1 的六个新模型均使用预测 OP，不引入新的真实 OP oracle 或 shuffle 版本。
+
+五、v1 的六个模型与两个无门控对照
+
+1. device_op_gate_pin_v1
+   联合优化下游 encoder、decoder、门控；门控位置为结构层 + 融合层。
+   OP 预测器冻结；性能监督不反传更新 OP 预测器。
+2. device_op_gate_fusion_pin_v1
+   同上，但门控只在融合块的 Self-Attention 中生效。
+3. device_op_distill_gate_pin_v1
+   训练真实 OP + 设计参数教师；关门控，用教师初始化学生并蒸馏 encoder；冻结
+   encoder 训练 decoder；最后冻结 encoder 与 decoder，只训练门控。全层门控。
+4. device_op_distill_gate_fusion_pin_v1
+   与模型 3 相同的蒸馏和冻结策略；最终门控只作用于融合块。
+5. device_op_supervised_gate_pin_v1
+   先关门控直接监督训练 encoder + decoder，再冻结两者，只训练门控。全层门控。
+6. device_op_supervised_gate_fusion_pin_v1
+   与模型 5 相同，但最终门控只作用于融合块。
+
+无门控对照：
+   A. device_op_cascade_pin：冻结器件 OP 预测器，直接监督训练下游；默认选择列表
+      中保留这个已有名称，用作直接联合优化与监督分段的对照。
+      在包含 v1 的实验中直接复用 shared_pin/device_op_supervised_base_pin，
+      保存独立推理 checkpoint 和审计记录，但不重复训练该监督基座。
+   B. device_op_distilled_base_pin：蒸馏分支开启门控前保存的共同基座。它由训练
+      依赖自动产生和评估，无需再次从头训练，也无需额外写入 MODELS。
+   监督分段还会保存 device_op_supervised_base_pin，用于与最终门控模型逐项配对。
+   因而七个默认评测入口可以展示蒸馏无门控基座这个额外对照；不能把重复引用的
+   同一基座计成多个独立 seed，也不能重复累计其训练成本。
+
+本轮不增加 device_op_distill_gate_decoder*_v1。旧版“最后门控 + decoder”模型
+继续存在，但不在这次三种策略 x 两个位置的默认六模型清单中。
+
+六、默认训练预算与实验解释
+
+配置：final_exam/configs/op_gate_pin_v1.json
+   op_transfer.epochs.op_predictor = 30
+   op_transfer.epochs.teacher = 60
+   op_transfer.epochs.predicted_op_distill_encoder = 30
+   op_transfer.epochs.predicted_op_distill_decoder = 30
+   op_transfer.epochs.readout = 60
+   op_transfer.epochs.gate = 30
+   op_transfer.batch_size = 32，lr = 0.0001，patience = 10。
+
+轮次是最大预算，实际可能提前停止；各阶段用相应验证目标选择 checkpoint。
+联合模型的下游训练最多 60 轮；监督分段最多 60+30 轮；蒸馏分段的学生部分最多
+30+30+30 轮，另有最多 60 轮教师和 30 轮 OP 预测器成本。相同依赖在同一 seed 内
+共享，并在成本表中去重；这不是所有方法完整训练开销相等的实验。
+蒸馏 encoder 按验证 latent 对齐选模，decoder 和门控按验证性能选模；test 仅评估。
+比较门控作用时应看同一基座的 GateBeforeAfter，不把教师预训练优势全算成门控收益。
+直接联合优化与分段方案的最终精度/稳定性须由多 seed 实验确定，代码不预设胜负。
+
+七、启动、输出与版本兼容
+
+先编辑 final_exam/single_circuit_pin/train_op_gate_pin_v1.sh 顶部的 CIRCUITS、MODELS、
+SEEDS 和 CONFIG。默认 two_stage_folded_opamp、上述七个入口、seed 17/29/43。
+   bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh --dry-run
+   bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh
+--dry-run 只预览；--smoke 会提交并缩短训练，但仍导入完整输入源，不自动抽样原始数据。
+
+每个电路提交独立 Slurm 作业，8 CPU / 1 GPU、80G，默认 b_phzhwu / ex01A800。
+原始数据：runs/raw/full_data/<circuit>/sampling_history.sqlite3。
+实验目录：final_exam/single_circuit_pin/results_pin/<circuit>_op_gate_v1_<timestamp>_..._pin/
+实验日志：final_exam/single_circuit_pin/logs_pin/<相同 run_id>/
+HPC 日志：final_exam/single_circuit_pin/hpc_logs_pin/<相同 run_id>/
+自动表格：<实验目录>/training_pin/summary_pin.xlsx。
+GateStudy 页把所选模型和去重后的无门控基座放在一起，显示 MAE、RMSE、R² 的
+均值 ± 样本标准差及精确数值；默认清单对应八个模型/基座结果。ModelInputs 与
+GateBeforeAfter 中的 Gate version 区分 v0、v1 与无门控，避免不同版本混在一起。
+模型输出：training_pin/seed_<seed>_pin/<完整 model ID>/checkpoint_pin.pt、config_pin.json、
+          test_pin.json 和 op_gate_audit_pin.json。
+教师：training_pin/seed_<seed>_pin/shared_pin/design_op_oracle_pin/checkpoint_pin.pt。
+器件 OP 预测器：同级 shared_pin/device_op_predictor_pin/checkpoint_pin.pt。
+分段模型另存 gate_comparison_pin.json，包含对应无门控基座与门控后 test 结果。
+
+再次汇总已有结果：
+   bash final_exam/single_circuit_pin/summarize_pin.sh <实验目录>
+若已有同名 Excel，按汇总脚本提示使用 --overwrite，或用 --output 指定新文件。
+
+checkpoint 配方与报告应明确记录 v1，重建时校验结构版本，不能把旧门控权重当作
+v1 使用。旧 checkpoint 继续按旧结构读取。改变模型 ID、版本或训练配置属于新实验，
+不能通过改名把 v0 的 optimizer 进度直接当作 v1 续训；恢复入口沿用其原始模型清单
+和配置检查。重新开始新版本时生成新实验目录，保留已有结果不覆盖。
+
+恢复包含 v1 的失败实验仍用：
+   bash final_exam/single_circuit_pin/resume_staged_op_gate_pin.sh <失败实验目录>
+该入口现在也支持 v1 联合模型及其无门控基线，不仅支持分阶段模型。已完成阶段
+复用 checkpoint；中断阶段从最近完整 epoch 的原子快照恢复权重、optimizer、随机数
+及早停状态。未完成的 epoch 重跑。恢复写入新目录，不修改原实验；不能修改配置后续训。
+仅恢复源实验中的部分模型时，仍保留源实验的共享基座路线，不重新训练另一种基线。
+checkpoint 外层 format=final_exam_pin_v1 是已有文件格式版本，不等于门控版本；
+门控结构看 recipe.gate_version 和完整模型 ID。v1 审计中的 gate_input_dim 为 F+8，
+gate_hidden_dim 为 model.dim；op_embedding_dim 留空，因为 v1 不再有独立 OP embedding。
+
+八、后续增加版本的最小检查清单
+
+1. 新增独立实现文件与显式 _vN ID；注册模型到版本、层范围、训练阶段的映射。
+2. 追加本记录，写明输入字段/维度、引脚表示、输出形状、共享范围、初始化和偏置公式。
+3. 保持 R/C、同网短接、外部端口、padding 不被错误门控；不把真实 test OP 送入普通模型。
+4. 检查门控反向传播，尤其冻结 encoder/decoder 时门控梯度必须能够通过它们。
+5. 检查版本配方重建、冻结状态、断点恢复身份、完整模型名、结果和成本去重。
+6. 用新目录运行 CPU 小型验证和实际 GPU 实验；没有实际验证时不声称已经解决稳定性。
+
+九、v1 交付检查（2026-11-11）
+
+环境：PyTorch 2.6.0+cpu。没有可用 CUDA GPU，未运行用户集群的 60,000 点训练。
+   python -m unittest discover -s final_exam/tests -v
+     157 项：156 通过，1 项 CUDA 测试跳过。
+   python -m unittest discover -s final_exam/single_circuit_pin -p 'test*.py' -q
+     44 项通过，含 dry-run、提交失败退出码、Slurm 路径、配置快照、恢复入口。
+   python -m unittest tests.test_model -q
+     14 项通过。
+合计 214 项通过、1 项跳过；Shell 语法与 git diff --check 通过。
+
+新增检查包含：六种 v1 的 F+8 输入、没有独立引脚 Embedding、逐头/跨层共享，
+R/C 与同网边保护，冻结后门控仍有梯度，真实 OP/性能标签污染不影响普通模型推理，
+版本配方重建，七模型共同依赖去重，基线复用，八类结果汇总，完整实验无优化重放，
+模拟在 epoch 边界中断后恢复 optimizer/RNG 并匹配不中断训练，以及仅恢复基线时
+保持原共享基座路线。此检查说明软件流程通过，不代表已获得新门控性能或稳定性结论。

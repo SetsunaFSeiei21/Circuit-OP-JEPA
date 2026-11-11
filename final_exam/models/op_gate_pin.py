@@ -15,6 +15,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from final_exam.gate_version_registry_pin import V1_JOINT_GATE_MODELS_PIN, gate_version_pin
 from device_jepa.model import ModelConfig
 from device_jepa.training import state_digest
 from experiments.op_transfer.models import OPPredictor, design_encoder, freeze
@@ -30,11 +31,11 @@ GATE_MODELS_PIN = (
     'device_op_gate_oracle_pin', 'device_op_gate_shuffle_pin',
     'device_op_gate_only_base_pin', 'device_op_gate_only_pin',
     'device_op_gate_only_oracle_pin', 'device_op_gate_only_shuffle_pin',
-)
+) + V1_JOINT_GATE_MODELS_PIN
 GATE_ORACLES_PIN = frozenset((
     'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin',
 ))
-_FEATURE_MODES = frozenset(GATE_MODELS_PIN[:4])
+_FEATURE_MODES = frozenset(GATE_MODELS_PIN[:4] + V1_JOINT_GATE_MODELS_PIN)
 _BASE_MODES = frozenset(('device_op_cascade_pin', 'device_op_gate_only_base_pin'))
 
 
@@ -91,6 +92,8 @@ same d_model width as the encoder. A shared score trunk combines that embedding
 with ordered query/key terminal embeddings. Its H output coordinates supply
 different scores to the H attention heads; it is not H separate OP predictors.
 """
+    version = 'v0'
+
     def __init__(self, config, prep, gate_config=None):
         super().__init__()
         self.cfg = config if isinstance(config, ModelConfig) else ModelConfig(**config)
@@ -108,6 +111,9 @@ different scores to the H attention heads; it is not H separate OP predictors.
         for name, index in kinds.items():
             mos[index] = name.lower() in ('nmos', 'pmos')
         self.register_buffer('mos_types', mos)
+        self._init_network()
+
+    def _init_network(self):
         dim, fields = self.cfg.dim, len(self.field_names)
         self.op_embedding = nn.Sequential(nn.Linear(2*fields, dim), nn.GELU(), nn.Linear(dim, dim))
         self.query_roles = nn.Embedding(4, dim)
@@ -119,6 +125,24 @@ different scores to the H attention heads; it is not H separate OP predictors.
         nn.init.normal_(self.score_head[-1].weight, std=1e-3)
         initial = self.settings['initial_gate']
         nn.init.constant_(self.score_head[-1].bias, math.log(initial/(1-initial)))
+
+    @classmethod
+    def from_gate_layout(cls, source):
+        """Create a fresh version using identical physical layout metadata.
+
+        Only used when a shared *ungated* base is copied into a new experiment.
+        Encoder, decoder and predictor weights are never modified here.
+        """
+        result = cls.__new__(cls)
+        nn.Module.__init__(result)
+        result.cfg = deepcopy(source.cfg)
+        result.settings = deepcopy(source.settings)
+        result.field_names = list(source.field_names)
+        for name in ('terminal_roles', 'mos_types'):
+            result.register_buffer(name, getattr(source, name).detach().clone())
+        result._init_network()
+        reference = next(source.parameters())
+        return result.to(device=reference.device, dtype=reference.dtype).train(source.training)
 
     def _layout(self, batch, values, supported):
         require_pin_batch(batch)
@@ -163,10 +187,13 @@ different scores to the H attention heads; it is not H separate OP predictors.
                  + self.query_roles.weight[None, None, :, None, :]
                  + self.key_roles.weight[None, None, None, :, :])
         logits = self.score_head(pairs)  # B,D,4,4,H
+        return self._bias_from_logits(logits, owners, roles, eligible)
+
+    def _bias_from_logits(self, logits, owners, roles, eligible):
         probability = torch.sigmoid(logits)
         epsilon = self.settings['epsilon']
         penalties = self.settings['strength'] * torch.log(epsilon+(1-epsilon)*probability)
-        batch_size, devices = values.shape[:2]
+        batch_size, devices = logits.shape[:2]
         pins = owners.shape[1]
         table = penalties.permute(0,4,1,2,3).reshape(batch_size,self.cfg.heads,devices*16)
         indices = owners[:, :, None]*16 + roles[:, :, None]*4 + roles[:, None, :]
@@ -176,8 +203,18 @@ different scores to the H attention heads; it is not H separate OP predictors.
         return F.pad(result,(1,0,1,0))  # The graph token is never gated.
 
 
+def gate_class_pin(version):
+    """Lazy version factory preserves the historical module/class import path."""
+    if version == 'v0':
+        return OPAttentionGatePin
+    if version == 'v1':
+        from .gates_pin.v1_pin import OPAttentionGateV1Pin
+        return OPAttentionGateV1Pin
+    raise ValueError(f'Unknown OP gate version: {version}')
+
+
 class DeviceOPGateModelPin(nn.Module):
-    """Eight matched device-predictor/pin-downstream variants.
+    """Legacy paired controls and versioned joint device-to-pin OP gates.
 
 All A variants inject correct predicted OP features; all B variants omit OP
 feature tokens. Only the gate's OP source varies between predicted/oracle/shuffle.
@@ -197,7 +234,9 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
         self.gate_source = ('none' if mode in _BASE_MODES else
                             'oracle' if self.requires_measured_op else
                             'shuffle' if '_shuffle_' in mode else 'predicted')
-        self.attention_scope = 'none' if self.gate_source == 'none' else 'all_encoder_self_attention'
+        self.attention_scope = ('none' if self.gate_source == 'none' else
+            'fusion_self_attention' if mode == 'device_op_gate_fusion_pin_v1' else
+            'all_encoder_self_attention')
         needs_predictor = mode != 'device_op_gate_only_base_pin'
         if needs_predictor != (predictor is not None):
             raise ValueError('Only the gate-only ungated baseline omits the device OP predictor')
@@ -214,10 +253,15 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
         else:
             self.encoder = design_encoder_pin(self.model_config, prep)
         self.decoder = decoder_pin(self.model_config, prep)
+        gate_type = gate_class_pin(gate_version_pin(mode))
         self.gate = (None if self.gate_source == 'none' else
-                     OPAttentionGatePin(self.model_config, prep, self.gate_config))
+                     gate_type(self.model_config, prep, self.gate_config))
         self.shuffle_bank = shuffle_bank
         self.last_oracle_coverage = None
+
+    @property
+    def gate_version(self):
+        return 'none' if self.gate is None else self.gate.version
 
     def train(self, mode=True):
         super().train(mode)
@@ -318,6 +362,7 @@ def describe_gate_model_pin(model):
     from final_exam.op_gate_data_pin import describe_shuffle_bank_pin
     return dict(kind='device_op_gate_pin',mode=model.mode,model_config=deepcopy(model.model_config),
                 gate_config=deepcopy(model.gate_config),
+                gate_version=model.gate_version, attention_scope=model.attention_scope,
                 predictor=None if model.predictor is None else describe_gate_model_pin(model.predictor),
                 shuffle_bank=None if model.shuffle_bank is None else describe_shuffle_bank_pin(model.shuffle_bank),
                 use_op_features=model.use_op_features,gate_source=model.gate_source,
@@ -339,6 +384,12 @@ def rebuild_gate_model_pin(recipe, config, prep):
     bank = None if recipe['shuffle_bank'] is None else rebuild_shuffle_bank_pin(recipe['shuffle_bank'])
     model = DeviceOPGateModelPin(recipe['mode'],saved_config,prep,predictor,
                                 recipe['gate_config'],bank)
+    saved_version = recipe.get('gate_version', 'none' if model.gate is None else 'v0')
+    if saved_version != model.gate_version:
+        raise ValueError('Gate checkpoint version disagrees with its model mode')
+    saved_scope = recipe.get('attention_scope', model.attention_scope if saved_version != 'v1' else None)
+    if saved_scope != model.attention_scope:
+        raise ValueError('Gate checkpoint scope disagrees with its model mode')
     for name in ('use_op_features','gate_source','requires_measured_op'):
         if recipe.get(name) != getattr(model,name):
             raise ValueError(f'Gate checkpoint metadata disagrees with model mode: {name}')

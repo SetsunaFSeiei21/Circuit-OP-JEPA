@@ -28,7 +28,7 @@ class GateRunnerPinTests(unittest.TestCase):
         output = self.root / 'gate_study_pin'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = run_experiment_pin(self.data_path, self.cfg_path, output,
-                                       list(GATE_MODELS_PIN), [17], 'cpu', smoke=True)
+                                       list(GATE_MODELS_PIN[:8]), [17], 'cpu', smoke=True)
         stages = result['stages']
         self.assertEqual(len(stages), 10)  # one predictor, one cache, eight downstream stages
         self.assertEqual(sum(s['stage_id'].endswith('/device_op_predictor_pin') for s in stages), 1)
@@ -73,7 +73,7 @@ class GateRunnerPinTests(unittest.TestCase):
                     coverage = record['report']['oracle_gate_coverage_pin']
                     self.assertGreater(coverage['supported_fields'], 0)
                     self.assertLessEqual(coverage['observed_supported_fields'], coverage['supported_fields'])
-        for family in (GATE_MODELS_PIN[:4], GATE_MODELS_PIN[4:]):
+        for family in (GATE_MODELS_PIN[:4], GATE_MODELS_PIN[4:8]):
             for name in ('initial_encoder_digest', 'initial_decoder_digest'):
                 self.assertEqual(len({audits[mode][name] for mode in family}), 1, name)
         dependency = output / 'seed_17_pin/shared_pin/device_op_predictor_pin/checkpoint_pin.pt'

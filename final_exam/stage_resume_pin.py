@@ -29,7 +29,7 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     if record.get('granularity') != 'pin':
         raise ValueError('Resume source is not a pin training run')
     if not set(models) <= set(allowed_models):
-        raise ValueError('Resume currently supports only registered staged OP gate pin models')
+        raise ValueError('Resume supports registered staged gates, v1 joint gates and their cascade baseline')
     if not set(models) <= set(record.get('models', [])) or not set(seeds) <= set(record.get('seeds', [])):
         raise ValueError('Resume models and seeds must be selected from the source run')
     if read_json(source / 'config_pin.json') != config:

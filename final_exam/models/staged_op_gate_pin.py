@@ -18,9 +18,10 @@ from final_exam.staged_gate_registry_pin import (
     ALL_STAGED_GATE_MODELS_PIN, FUSION_STAGED_GATE_MODELS_PIN,
     STAGED_GATE_MODELS_PIN, staged_gate_spec_pin,
 )
+from final_exam.gate_version_registry_pin import gate_version_pin
 from .common_pin import require_pin_batch
 from .op_gate_pin import (
-    DeviceOPGateModelPin, describe_gate_model_pin, rebuild_gate_model_pin,
+    DeviceOPGateModelPin, describe_gate_model_pin, rebuild_gate_model_pin, gate_class_pin,
 )
 from .op_transfer_pin import (
     ReadoutModelPin, _pin_alignment_names, broadcast_owner_op_pin,
@@ -44,7 +45,8 @@ class StagedOPGateModelPin(DeviceOPGateModelPin):
     def __init__(self, config, prep, predictor, *, mode, gate_config=None):
         if mode not in ALL_STAGED_GATE_MODELS_PIN:
             raise ValueError(f'Unknown staged OP gate mode: {mode}')
-        super().__init__('device_op_gate_pin', config, prep, predictor,
+        initial_mode = 'device_op_gate_pin_v1' if gate_version_pin(mode) == 'v1' else 'device_op_gate_pin'
+        super().__init__(initial_mode, config, prep, predictor,
                          gate_config=gate_config)
         self.set_mode_pin(mode)
         self.set_phase('supervised')
@@ -52,6 +54,13 @@ class StagedOPGateModelPin(DeviceOPGateModelPin):
     def set_mode_pin(self, mode):
         """Select the gate location when copying a shared, ungated base."""
         spec = staged_gate_spec_pin(mode)
+        version = gate_version_pin(mode)
+        if self.gate.version != version:
+            if getattr(self, 'gate_enabled', False):
+                raise ValueError('Gate versions may only change on an ungated base')
+            self.gate = gate_class_pin(version).from_gate_layout(self.gate)
+            if hasattr(self, 'phase'):
+                self.set_phase(self.phase)
         self.mode = mode
         self.attention_scope = spec['attention_scope']
         return self
@@ -180,7 +189,7 @@ def describe_staged_gate_model_pin(model):
                 model_config=deepcopy(model.model_config),
                 gate_config=deepcopy(model.gate_config), phase=model.phase,
                 gate_enabled=model.gate_enabled,
-                attention_scope=model.attention_scope,
+                attention_scope=model.attention_scope, gate_version=model.gate_version,
                 predictor=describe_gate_model_pin(model.predictor),
                 use_op_features=True, gate_source='predicted_op',
                 requires_measured_op=False)
@@ -193,6 +202,8 @@ def rebuild_staged_gate_model_pin(recipe, config, prep):
     predictor = rebuild_gate_model_pin(recipe['predictor'], saved_config, prep)
     model = StagedOPGateModelPin(saved_config, prep, predictor,
         mode=recipe['mode'], gate_config=recipe['gate_config']).set_phase(recipe['phase'])
+    if recipe.get('gate_version', 'v0') != model.gate_version:
+        raise ValueError('Staged gate recipe version disagrees with its model mode')
     expected = dict(gate_enabled=model.gate_enabled, use_op_features=True,
                     gate_source='predicted_op', requires_measured_op=False)
     if any(recipe.get(key) != value for key, value in expected.items()):

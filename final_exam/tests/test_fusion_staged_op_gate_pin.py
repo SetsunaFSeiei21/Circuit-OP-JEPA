@@ -194,7 +194,7 @@ class FusionStagedGateRunnerPinTests(unittest.TestCase):
                 for path in root.rglob('*') if path.is_file()}
 
     def test_six_variants_share_identical_bases_and_export_distinct_scope(self):
-        output, result = self.run_models('all_six_pin', ALL_STAGED_GATE_MODELS_PIN)
+        output, result = self.run_models('all_six_pin', STAGED_GATE_MODELS_PIN + FUSION_STAGED_GATE_MODELS_PIN)
         self.assertEqual(len(result['results']), 6)
         ids = [record['stage_id'] for record in result['stages']]
         self.assertEqual(len(ids), 12)
@@ -224,7 +224,7 @@ class FusionStagedGateRunnerPinTests(unittest.TestCase):
                             if path.startswith('xl/worksheets/') and path.endswith('.xml'))
             self.assertIn('fusion_self_attention', cells)
             self.assertIn('all_encoder_self_attention', cells)
-            for mode in ALL_STAGED_GATE_MODELS_PIN:
+            for mode in STAGED_GATE_MODELS_PIN + FUSION_STAGED_GATE_MODELS_PIN:
                 self.assertIn(mode, cells)
 
     def test_new_three_completed_run_recovery_never_optimizes_again(self):
