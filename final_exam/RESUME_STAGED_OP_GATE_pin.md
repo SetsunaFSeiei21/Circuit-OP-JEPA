@@ -1,10 +1,15 @@
 # 分阶段引脚 OP 门控：失败恢复与断点续训
 
-本功能用于单电路的三个分阶段门控模型：
+本功能用于单电路的六个分阶段门控模型；原三个模型对 encoder 全部 Self-Attention 加门控，新增三个 `_fusion_pin` 模型只对融合块 Self-Attention 加门控：
 
 - `device_op_distill_gate_pin`
 - `device_op_distill_gate_decoder_pin`
 - `device_op_supervised_gate_pin`
+- `device_op_distill_gate_fusion_pin`
+- `device_op_distill_gate_decoder_fusion_pin`
+- `device_op_supervised_gate_fusion_pin`
+
+仅融合层模型的训练与启动见 [FUSION_STAGED_OP_GATE_pin.md](FUSION_STAGED_OP_GATE_pin.md)。恢复必须保留源实验的模型名称与门控范围，不能把旧模型的最终门控阶段直接当作 `_fusion_pin` 模型续训。
 
 当前没有把所有 baseline、器件级实验或 OOD 实验都改成支持续训。恢复任务读取原实验的模型、seeds、有效配置和数据划分，在同一仓库内创建新的结果与日志子目录；不覆盖原失败目录，也不重新导入 SQLite。
 
@@ -53,7 +58,7 @@ bash final_exam/single_circuit_pin/resume_staged_op_gate_pin.sh \
 
 ## 新训练保存的续训状态
 
-更新后的三个分阶段模型及其前置训练阶段，会在每个完整的训练＋验证 epoch 结束后保存：
+更新后的六个分阶段模型及其前置训练阶段，会在每个完整的训练＋验证 epoch 结束后保存：
 
 ```text
 training_pin/seed_<seed>_pin/stages_pin/<stage_name>/last_pin.pt

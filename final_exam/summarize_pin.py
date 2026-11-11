@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_number, _write_workbook
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
+from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
 
 
 ORACLES = frozenset(('op_oracle_pin', 'design_op_oracle_pin',
@@ -40,7 +41,15 @@ STAGED_GATE_INPUTS_PIN = {
     'device_op_distill_gate_decoder_pin': ('distilled student', 'gate and decoder'),
     'device_op_supervised_gate_pin': ('supervised ungated model', 'gate only'),
 }
-ALL_GATE_REPORTS_PIN = GATE_INPUTS_PIN.keys() | STAGED_GATE_INPUTS_PIN.keys()
+FUSION_STAGED_GATE_INPUTS_PIN = {
+    mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
+           else 'supervised ungated model',
+           'gate and decoder' if staged_gate_spec_pin(mode)['final_phase'] == 'gate_decoder'
+           else 'gate only')
+    for mode in FUSION_STAGED_GATE_MODELS_PIN
+}
+ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN}
+ALL_GATE_REPORTS_PIN = GATE_INPUTS_PIN.keys() | ALL_STAGED_GATE_INPUTS_PIN.keys()
 
 
 def _require_pin_mode(mode):
@@ -292,7 +301,7 @@ def _comparison_sheets(rows, models, fields, complete, decimals):
         sheet.note('Mean ± sample std over seeds. One seed displays the mean alone; its std remains blank.')
         sheet.note('Higher R2 is better; lower MAE/RMSE is better. UGF errors are displayed in MHz.')
         sheet.note('Green marks the best unrounded mean within matching inference-input groups and matched seeds/counts.', height=32)
-        if any(mode in STAGED_GATE_INPUTS_PIN for mode in models):
+        if any(mode in ALL_STAGED_GATE_INPUTS_PIN for mode in models):
             sheet.note('Staged gates use additional training; compare TrainingCost and GateBeforeAfter. Highlighting is not a compute-matched significance test.', height=30)
         elif any(mode in GATE_INPUTS_PIN for mode in models):
             sheet.note('TRUE OP REFERENCE needs measured OP. SHUFFLE CONTROL is diagnostic and excluded from ranking; see ModelInputs.', height=30)
@@ -358,20 +367,20 @@ def _model_inputs_sheet(models):
     """Expose the A/B ablations without changing metric aggregation identity."""
     fields = ('Model', 'Study group', 'OP predictor encoder', 'Predicted OP node features',
               'Attention gate source', 'Measured OP required', 'Role / interpretation',
-              'Base training', 'Final trainable modules')
-    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80, 42, 34], freeze_rows=5, freeze_columns=1)
+              'Base training', 'Final trainable modules', 'Attention gate scope')
+    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80, 42, 34, 42], freeze_rows=5, freeze_columns=1)
     sheet.note('Model inputs and operating-point gate controls', 1, 34)
     sheet.note('A: predicted OP features plus optional gate. B: OP only controls the gate; baseline has no OP dependency.', height=34)
     sheet.note('All new non-baseline gate variants use one frozen DEVICE-level OP predictor per seed, followed by a PIN-level encoder.', height=34)
     sheet.note('Staged variants disable gates during base training and freeze encoder weights during final gate training. Oracle/shuffle variants remain diagnostics.', height=34)
     sheet.add([Cell(value, 3) for value in fields], 44)
     for mode in models:
-        if mode in STAGED_GATE_INPUTS_PIN:
-            base, final_modules = STAGED_GATE_INPUTS_PIN[mode]
-            role = ('Same distilled base checkpoint as the other distilled gate variant'
+        if mode in ALL_STAGED_GATE_INPUTS_PIN:
+            base, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
+            role = ('Same distilled base checkpoint across selected distilled gate variants'
                     if base == 'distilled student' else 'No teacher or latent distillation dependency')
             sheet.add([mode, 'staged gate', 'device', True, 'predicted OP', False,
-                       role, base, final_modules], 46)
+                       role, base, final_modules, staged_gate_spec_pin(mode)['attention_scope']], 46)
         elif mode in GATE_INPUTS_PIN:
             group, features, gate = GATE_INPUTS_PIN[mode]
             predictor = 'none' if mode == 'device_op_gate_only_base_pin' else 'device'
@@ -382,11 +391,12 @@ def _model_inputs_sheet(models):
                     'No-gate baseline' if gate == 'none' else 'Predicted OP attention gate')
             sheet.add([mode, group, predictor, features, gate, mode in ORACLES, role,
                        'No separate base stage', 'encoder and decoder' if gate == 'none'
-                       else 'encoder, decoder and gate'], 46)
+                       else 'encoder, decoder and gate',
+                       'none' if gate == 'none' else 'all_encoder_self_attention'], 46)
         else:
             sheet.add([mode, 'existing pin model', 'see saved model configuration',
                        None, 'no new OP gate', mode in ORACLES, 'Existing model contract is unchanged',
-                       'see saved configuration', 'see stage parameter metadata'], 46)
+                       'see saved configuration', 'see stage parameter metadata', 'none'], 46)
     sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet
 
@@ -399,8 +409,8 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
     """
     fields = ('Model', 'Seed', 'Metric', 'Labels', 'Base training', 'Final trainable modules',
               'Base MAE', 'Final MAE', 'MAE change', 'Base RMSE', 'Final RMSE', 'RMSE change',
-              'Base R2', 'Final R2', 'R2 change', 'Base checkpoint')
-    sheet = Sheet('GateBeforeAfter', [46, 12, 28, 14, 32, 30, *([24] * 9), 80],
+              'Base R2', 'Final R2', 'R2 change', 'Base checkpoint', 'Attention gate scope')
+    sheet = Sheet('GateBeforeAfter', [46, 12, 28, 14, 32, 30, *([24] * 9), 80, 42],
                   freeze_rows=5, freeze_columns=3)
     sheet.note('Ungated base versus final gate model — per seed', 1, 34)
     sheet.note('Both test reports are evaluated after training. Test labels do not select checkpoints or fit transforms.', height=34)
@@ -410,7 +420,7 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
     missing = []
     for record in sorted(results, key=lambda item: (item['mode'], item['seed'])):
         mode, seed = record['mode'], record['seed']
-        if mode not in STAGED_GATE_INPUTS_PIN:
+        if mode not in ALL_STAGED_GATE_INPUTS_PIN:
             continue
         path = directory / f'seed_{seed}_pin' / mode / 'gate_comparison_pin.json'
         if not path.is_file():
@@ -422,6 +432,9 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
         comparison = _read_json(path)
         if not isinstance(comparison, dict):
             raise ValueError(f'Invalid gate comparison object: {path}')
+        scope = staged_gate_spec_pin(mode)['attention_scope']
+        if comparison.get('attention_scope', scope) != scope:
+            raise ValueError(f'Gate comparison attention scope differs from the model: {path}')
         checkpoint = comparison.get('base_checkpoint')
         if not isinstance(checkpoint, str) or not checkpoint:
             raise ValueError(f'Gate comparison requires a base checkpoint path: {path}')
@@ -443,9 +456,9 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete):
                 old, new = before.get(score), post.get(score)
                 change = None if old is None or new is None else new - old
                 values.extend(Cell(value, 11) for value in (old, new, change))
-            base_name, final_modules = STAGED_GATE_INPUTS_PIN[mode]
+            base_name, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
             sheet.add([mode, seed, metric, post['count'], base_name, final_modules,
-                       *values, checkpoint], 36)
+                       *values, checkpoint, scope], 36)
     sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet, missing
 
@@ -533,7 +546,7 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if missing:
         configuration.note('MISSING RESULTS: ' + json.dumps(missing), 4, 42)
     gate_comparison = None
-    if any(mode in STAGED_GATE_INPUTS_PIN for mode in models):
+    if any(mode in ALL_STAGED_GATE_INPUTS_PIN for mode in models):
         gate_comparison, missing_gate_comparisons = _gate_comparison_sheet(
             directory, results, allow_incomplete=allow_incomplete)
         complete = complete and not missing_gate_comparisons

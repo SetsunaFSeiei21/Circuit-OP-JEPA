@@ -197,6 +197,7 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
         self.gate_source = ('none' if mode in _BASE_MODES else
                             'oracle' if self.requires_measured_op else
                             'shuffle' if '_shuffle_' in mode else 'predicted')
+        self.attention_scope = 'none' if self.gate_source == 'none' else 'all_encoder_self_attention'
         needs_predictor = mode != 'device_op_gate_only_base_pin'
         if needs_predictor != (predictor is not None):
             raise ValueError('Only the gate-only ungated baseline omits the device OP predictor')
@@ -292,6 +293,14 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
             if self.gate is not None:
                 values, support = self.gate_values(batch,predicted,supported)
                 bias = self.gate(batch,values,support)
+        if self.attention_scope == 'fusion_self_attention':
+            # OP continues to enter through feature fusion, while the entire
+            # structural prefix sees topology only. The same gate values are
+            # applied to each later fusion block's self-attention logits.
+            structure = self.encoder.structure_encoder(inputs)
+            return self.encoder.forward_from_structure(structure, inputs, fusion_attention_bias=bias)
+        if self.attention_scope not in ('none', 'all_encoder_self_attention'):
+            raise ValueError(f'Unknown OP attention scope: {self.attention_scope}')
         structure = self.encoder.structure_encoder(inputs,attention_bias=bias)
         return self.encoder.forward_from_structure(structure,inputs)
 

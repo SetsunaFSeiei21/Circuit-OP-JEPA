@@ -14,6 +14,10 @@ from experiments.op_transfer.distillation import (
 )
 from experiments.op_transfer.losses import LatentScaler
 from experiments.op_transfer.models import freeze
+from final_exam.staged_gate_registry_pin import (
+    ALL_STAGED_GATE_MODELS_PIN, FUSION_STAGED_GATE_MODELS_PIN,
+    STAGED_GATE_MODELS_PIN, staged_gate_spec_pin,
+)
 from .common_pin import require_pin_batch
 from .op_gate_pin import (
     DeviceOPGateModelPin, describe_gate_model_pin, rebuild_gate_model_pin,
@@ -23,12 +27,6 @@ from .op_transfer_pin import (
     design_input_pin, op_input_pin,
 )
 
-
-STAGED_GATE_MODELS_PIN = (
-    'device_op_distill_gate_pin',
-    'device_op_distill_gate_decoder_pin',
-    'device_op_supervised_gate_pin',
-)
 
 # Values identify exactly the modules which may be updated in each stage.
 _PHASE_MODULES = {
@@ -44,12 +42,19 @@ class StagedOPGateModelPin(DeviceOPGateModelPin):
     """One deployable architecture with an explicit, serializable stage policy."""
 
     def __init__(self, config, prep, predictor, *, mode, gate_config=None):
-        if mode not in STAGED_GATE_MODELS_PIN:
+        if mode not in ALL_STAGED_GATE_MODELS_PIN:
             raise ValueError(f'Unknown staged OP gate mode: {mode}')
         super().__init__('device_op_gate_pin', config, prep, predictor,
                          gate_config=gate_config)
-        self.mode = mode
+        self.set_mode_pin(mode)
         self.set_phase('supervised')
+
+    def set_mode_pin(self, mode):
+        """Select the gate location when copying a shared, ungated base."""
+        spec = staged_gate_spec_pin(mode)
+        self.mode = mode
+        self.attention_scope = spec['attention_scope']
+        return self
 
     @property
     def gate_enabled(self):
@@ -175,6 +180,7 @@ def describe_staged_gate_model_pin(model):
                 model_config=deepcopy(model.model_config),
                 gate_config=deepcopy(model.gate_config), phase=model.phase,
                 gate_enabled=model.gate_enabled,
+                attention_scope=model.attention_scope,
                 predictor=describe_gate_model_pin(model.predictor),
                 use_op_features=True, gate_source='predicted_op',
                 requires_measured_op=False)
@@ -191,9 +197,16 @@ def rebuild_staged_gate_model_pin(recipe, config, prep):
                     gate_source='predicted_op', requires_measured_op=False)
     if any(recipe.get(key) != value for key, value in expected.items()):
         raise ValueError('Staged gate recipe input or phase metadata is inconsistent')
+    # Historical all-layer recipes predate the explicit scope field. New
+    # fusion-only recipes must declare it so ambiguity cannot change inference.
+    saved_scope = recipe.get('attention_scope',
+        'all_encoder_self_attention' if model.mode in STAGED_GATE_MODELS_PIN else None)
+    if saved_scope != model.attention_scope:
+        raise ValueError('Staged gate recipe attention scope disagrees with its model mode')
     return model
 
 
-__all__ = ['STAGED_GATE_MODELS_PIN', 'StagedOPGateModelPin',
+__all__ = ['STAGED_GATE_MODELS_PIN', 'FUSION_STAGED_GATE_MODELS_PIN',
+           'ALL_STAGED_GATE_MODELS_PIN', 'staged_gate_spec_pin', 'StagedOPGateModelPin',
            'StagedOPEncoderDistillationPin', 'describe_staged_gate_model_pin',
            'rebuild_staged_gate_model_pin']

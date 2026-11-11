@@ -208,7 +208,7 @@ class DeviceEncoder(nn.Module):
         return (self.parameter_value(values) + self.parameter_names.weight[None, None],
                 live & batch["device_mask"].unsqueeze(-1))
 
-    def forward_from_structure(self, structure, batch):
+    def forward_from_structure(self, structure, batch, *, fusion_attention_bias=None):
         tokens, live = self.input_tokens(batch)
         b, n, num_features, _ = tokens.shape
         p = torch.cat([tokens.reshape(b, n * num_features, self.cfg.dim),
@@ -223,9 +223,23 @@ class DeviceEncoder(nn.Module):
         # Do not mutate or detach structure tokens: the other branch consumes
         # precisely this same dropout realization with its own gradient path.
         x, valid = structure["tokens"], structure["valid"]
+        masks = structure["self_masks"]
+        if fusion_attention_bias is not None:
+            expected = (b, self.cfg.heads, n + 1, n + 1)
+            if (not torch.is_tensor(fusion_attention_bias)
+                    or fusion_attention_bias.shape != expected
+                    or not fusion_attention_bias.is_floating_point()
+                    or fusion_attention_bias.device != x.device):
+                raise ValueError("Fusion attention bias must match batch, heads and graph-plus-node axes")
+            if not bool(torch.isfinite(fusion_attention_bias).all()):
+                raise ValueError("Fusion attention bias must be finite; topology masks own hard exclusions")
+            bias = fusion_attention_bias.to(dtype=x.dtype).reshape(b * self.cfg.heads, n + 1, n + 1)
+            # New tensors only: preserve the pure-structure tokens/masks and
+            # their original hard exclusions. Cross-attention is unchanged.
+            masks = tuple(mask + bias for mask in masks)
         offset = len(self.structure_encoder.blocks)
         for i, block in enumerate(self.fusion_blocks):
-            x = block(x, structure["self_masks"][(offset + i) % 2], p, cross_mask, valid)
+            x = block(x, masks[(offset + i) % 2], p, cross_mask, valid)
         x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
         return x, ~valid
 

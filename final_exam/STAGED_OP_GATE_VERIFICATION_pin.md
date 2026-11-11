@@ -87,3 +87,26 @@ Q/K/V 梯度路径和 `no_grad` 路径不改变后端选择。CUDA 用例另覆�
 - 已知的历史 OP 缓存前向成本保留累计；本次重建耗时在 `resume` 元数据及 Excel `Resume` 页单独展示，训练成本仍按共享阶段去重。
 
 恢复精度以完整 epoch 边界为限，不包含未完成 batch 的状态；跨硬件或不同软件版本的逐位一致性没有得到验证。
+
+## 2026-11-11：仅融合层的三种分阶段门控
+
+新增 `device_op_distill_gate_fusion_pin`、`device_op_distill_gate_decoder_fusion_pin`、`device_op_supervised_gate_fusion_pin`。保持三种原有训练流程，只把门控注入位置限制为融合块的 Self-Attention。
+
+| 验证 | 结果 |
+|---|---|
+| `python -m unittest final_exam.tests.test_fusion_staged_op_gate_pin -q` | 新增 8 项全部通过 |
+| `python -m unittest discover -s final_exam/tests -p 'test_*.py' -q` | 143 项：142 通过、1 CUDA 跳过；包含新增 8 项 |
+| `python -m unittest discover -s final_exam/single_circuit_pin -p 'test_*pin.py' -q` | 38 项全部通过，含新旧启动与恢复入口 |
+| `python -m unittest tests.test_model -q` | 14 项全部通过 |
+| `bash -n final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh` | 通过 |
+| `git diff --check` | 通过 |
+
+关键行为检查：
+
+- 在 6 层编码器、3 层融合配置下，修改门控参数后，前 3 层结构 attention mask 和结构输出逐位不变；后 3 层 Self-Attention mask 改变；Cross-Attention 与 decoder 的 mask 不变。
+- 原全层门控仍会作用于结构前缀。新模型基础训练阶段完全绕过门控，最后阶段各注意力头均有有限、非零门控梯度；冻结模块权重不变。
+- 新旧六模型同跑共享相同的无门控基模型，产生 12 个唯一成本阶段；各模型及 Excel 明确记录门控范围。直接监督路径不训练教师。
+- 新三模型 checkpoint 可独立重建；错误 scope 拒绝，旧模型缺少 scope 的历史 recipe 可重建。完成实验恢复时新增优化器更新为零，原目录摘要不变。
+- 新模板除模型列表外与旧模板一致。登录节点预览、提交参数、配置快照与新旧混合恢复通过模拟 Slurm 测试。
+
+测试环境仍是 PyTorch 2.6.0+cpu。没有实际提交 Slurm 作业、运行 A800 或完整 60,000 点实验；这些检查不证明新门控位置改善精度或振荡。

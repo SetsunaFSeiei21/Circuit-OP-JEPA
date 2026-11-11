@@ -96,6 +96,21 @@ class ResumeStagedGateLauncherTests(unittest.TestCase):
         }))
         self.assertEqual(self.inspect(chained)['data_path'], first['data_path'])
 
+    def test_resume_accepts_fusion_only_and_mixed_staged_models(self):
+        fusion_models = ['device_op_distill_gate_fusion_pin', 'device_op_distill_gate_decoder_fusion_pin',
+                         'device_op_supervised_gate_fusion_pin']
+        for name, selected in [('fusion_pin', fusion_models), ('mixed_pin', MODELS + fusion_models)]:
+            with self.subTest(name=name):
+                source, training = self.source_fixture(name)
+                record = json.loads((training / 'run_pin.json').read_text())
+                record['models'] = selected
+                (training / 'run_pin.json').write_text(json.dumps(record))
+                before = self.snapshot(source)
+                inspected = self.inspect(source)
+                self.assertEqual(inspected['models'], selected)
+                self.assertEqual(inspected['seeds'], SEEDS)
+                self.assertEqual(self.snapshot(source), before)
+
     def test_invalid_source_fails_without_creating_new_run(self):
         for invalid in ('foreign_model', 'missing_data'):
             with self.subTest(invalid=invalid):
@@ -182,6 +197,8 @@ class ResumeStagedGateLauncherTests(unittest.TestCase):
         common.mkdir()
         for name in ('resume_pin.py', 'launch_pin.py'):
             shutil.copyfile(FINAL_ROOT / 'common' / name, common / name)
+        shutil.copyfile(FINAL_ROOT / 'staged_gate_registry_pin.py',
+                        self.root / 'final_exam/staged_gate_registry_pin.py')
         # The shell must submit the existing root-aware Slurm wrapper, never
         # calculate the repository from the eventual /var/spool script path.
         wrapper = self.root / 'scripts/run/slurm_run.sh'

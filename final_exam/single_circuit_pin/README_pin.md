@@ -14,7 +14,7 @@ bash final_exam/single_circuit_pin/train_pin.sh
 
 `--dry-run` 不提交、不创建输出目录。`--smoke` 提交短轮次训练，但仍导入完整原始数据；不会把 60,000 条输入自动裁成小样本。原始输入继续使用 `runs/raw/full_data/<电路名>/`，无需复制或重命名 SQLite/网表。输入单位检查和器件级入口相同，不自动猜测几何单位。
 
-`train_pin.sh`、`train_op_gate_pin.sh` 和 `train_staged_op_gate_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
+`train_pin.sh`、`train_op_gate_pin.sh`、`train_staged_op_gate_pin.sh` 和 `train_staged_op_gate_fusion_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
 
 模型列表为：
 
@@ -89,3 +89,26 @@ bash final_exam/single_circuit_pin/train_staged_op_gate_pin.sh
 最终门控轮数由 `op_transfer.epochs.gate` 独立控制，默认 30；前置训练之外会追加训练成本，不声称完整预算相等。保存两类无门控基模型和真实 OP 教师，结果仍放在本任务的 `results_pin/`，实验和 HPC 日志仍分别放在 `logs_pin/`、`hpc_logs_pin/`。自动 Excel 增加 `GateBeforeAfter` 比较页，展示逐 seed 的无门控基模型与最终模型差值。
 
 完整阶段、冻结规则、配置、成本和路径参见 [分阶段 OP 门控说明](../STAGED_OP_GATE_pin.md)。
+
+## 仅融合层门控（三个对照模型）
+
+新增模型沿用上述三种训练顺序，但门控只加到融合块的 Self-Attention；结构前缀、融合块 Cross-Attention 和 decoder 不接收门控偏置。默认 `encoder_layers=6`、`cross_layers=3`，因此作用于后 3 层；数量随 `cross_layers` 配置改变。
+
+```bash
+MODELS=(
+  device_op_distill_gate_fusion_pin
+  device_op_distill_gate_decoder_fusion_pin
+  device_op_supervised_gate_fusion_pin
+)
+```
+
+新入口默认只运行这三个模型，原入口仍运行原三个模型：
+
+```bash
+bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh --dry-run
+bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh
+```
+
+在新脚本顶部编辑 `CIRCUITS`、`MODELS`、`SEEDS`；默认配置为 `final_exam/configs/staged_op_gate_fusion_pin.json`，训练预算与旧分阶段门控模板一致。新 run ID 含 `_staged_op_gate_fusion_`，结果和两类日志仍在本任务现有目录内。可在同一个 `MODELS` 数组中列出两组共六个模型，以便共享相同配置下的 OP 预测器、教师和无门控基模型；单独提交的作业分别训练依赖。
+
+六个分阶段门控模型都支持原恢复入口。范围、训练顺序和具体路径见 [仅融合层门控说明](../FUSION_STAGED_OP_GATE_pin.md)；恢复规则见 [断点续训说明](../RESUME_STAGED_OP_GATE_pin.md)。
