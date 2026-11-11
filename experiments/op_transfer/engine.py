@@ -213,13 +213,93 @@ def _cpu_state(model):
 
 def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=False,
               repeated=False, after_step=None, before_epoch=None, checkpoint_extra=None,
-              artifact_suffix=""):
-    """Exact val-best selection, actual costs, no test/OOD access in fitting."""
+              artifact_suffix="", resume_from=None, resume_identity=None):
+    """Val-best fitting, optionally recovering into a fresh stage directory.
+
+    Passing ``resume_identity`` enables atomic epoch-boundary snapshots even on
+    a fresh run. Recovery never writes to ``resume_from``. Legacy best-only
+    checkpoints restart the stage from those weights with a fresh optimizer;
+    only new ``last`` checkpoints restore an exact completed-epoch boundary.
+    """
     if artifact_suffix not in ("", "_pin"):
         raise ValueError("Unsupported artifact suffix")
+    from . import resume as recovery
+    recoverable = resume_identity is not None or resume_from is not None
+    identity = (recovery.stage_identity(ctx, model, stage_id, epochs, options, seed,
+                                       resume_identity or {}) if recoverable else None)
+    plan = (recovery.load_source(ctx, model, stage_id, epochs, options, seed, artifact_suffix,
+                                resume_from, identity) if recoverable else {'policy': 'fresh'})
+    directory = ctx.output / f'stages{artifact_suffix}' / stage_id
+    if directory.exists():
+        raise ValueError('Choose a fresh destination for stage recovery/training')
+    restored_epoch = 0
+    prior_steps = prior_epochs = 0
+    prior_seconds = 0.
+    audit = dict(policy=plan['policy'], source_stage=plan.get('source_stage'), restored_epoch=0,
+                 optimizer_state_restored=False)
+    if plan['policy'] == 'completed_stage':
+        payload = plan['payload']
+        model.load_state_dict(payload['state_dict'], strict=True)
+        model.to(ctx.device).eval()
+        cost = copy.deepcopy(payload['cost'])
+        audit.update(restored_epoch=cost['epochs'], new_optimizer_steps=0, new_epochs=0,
+                     new_seconds=0.)
+        if 'resume' in cost:
+            audit['source_recovery'] = copy.deepcopy(cost['resume'])
+        cost['resume'] = audit
+        directory.mkdir(parents=True)
+        copied = {**payload, 'cost': cost, 'resume_identity': identity, 'history': plan['history']}
+        recovery.atomic_torch_save(directory / f'best{artifact_suffix}.pt', copied)
+        recovery.atomic_json(directory / f'history{artifact_suffix}.json', plan['history'])
+        recovery.atomic_json(directory / f'cost{artifact_suffix}.json', cost)
+        print(f'{stage_id}: reused completed stage from {plan["source_stage"]}; no optimization', flush=True)
+        return model, cost
     seed_everything(seed, options['torch_threads'])
     start = time.perf_counter()
     model.to(ctx.device)
+    if plan['policy'] in ('epoch_resume', 'legacy_weights_restart'):
+        model.load_state_dict(plan['payload']['state_dict'], strict=True)
+    if plan['policy'] == 'epoch_resume':
+        # Every committed boundary follows validation, which leaves the model
+        # in eval mode. Match that state before any next-epoch callback.
+        model.eval()
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(parameters, lr=options['lr'], weight_decay=options['weight_decay'])
+    stopping = EarlyStopping({'early_stopping': dict(enabled=options['patience'] > 0,
+        patience=max(1, options['patience']), min_delta=0., min_epochs=1)}, epochs, stage_id)
+    steps, examples, history = 0, 0, []
+    best_state, best_extra = None, {}
+    if plan['policy'] == 'epoch_resume':
+        saved = plan['payload']
+        history = plan['history']
+        # Reconstruct and verify patience/best selection from completed epochs,
+        # rather than trusting unchecked counters from a checkpoint.
+        for record in history:
+            stopping.update(record['val']['loss'], record['epoch'])
+        if not recovery.same_value(vars(stopping), saved['early_stopping']):
+            raise ValueError('Recovery early-stopping state contradicts its history/configuration')
+        optimizer.load_state_dict(saved['optimizer_state_dict'])
+        restored_epoch = prior_epochs = saved['epoch']
+        steps = prior_steps = saved['optimizer_steps']
+        examples = saved['examples_seen']
+        prior_seconds = saved['seconds']
+        best_state = saved['best_state_dict']
+        best_extra = saved['best_stage_metadata']
+        audit.update(restored_epoch=restored_epoch, optimizer_state_restored=True,
+                     discarded_partial_epoch_work_unknown=True)
+        if saved.get('recovery_audit'):
+            audit['source_recovery'] = copy.deepcopy(saved['recovery_audit'])
+            if saved['recovery_audit'].get('partial_prior_cost_unknown'):
+                audit['partial_prior_cost_unknown'] = True
+        print(f'{stage_id}: resume after completed epoch {restored_epoch}/{epochs} '
+              f'with optimizer, RNG and early-stopping state', flush=True)
+    elif plan['policy'] == 'legacy_weights_restart':
+        audit.update(restored_epoch=plan['restored_epoch'], partial_prior_cost_unknown=True)
+        print(f'{stage_id}: legacy best weights from epoch {plan["restored_epoch"]}; '
+              f'optimizer/RNG unavailable, restarting the full {epochs}-epoch stage budget', flush=True)
+    elif plan['policy'] == 'missing_checkpoint_restart':
+        audit['partial_prior_cost_unknown'] = True
+        print(f'{stage_id}: no usable checkpoint in source; restarting this stage', flush=True)
     frozen_features = {}
     cache_cascade_readout = (isinstance(model, PredictedOPCascade) and not model.joint
                              and model.downstream.frozen)
@@ -227,7 +307,7 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     cache_cascade_teacher = isinstance(model, PredictedOPDistillation)
     encoder_only = isinstance(model, PredictedOPEncoderDistillation)
     cache_teacher = isinstance(model, DistillationPair) or cache_cascade_teacher
-    if cache_readout or cache_teacher:
+    if (cache_readout or cache_teacher) and restored_epoch < epochs and not stopping.should_stop:
         # Encode each frozen branch once per stage, not once per epoch.
         model.eval()
         with torch.no_grad():
@@ -257,15 +337,21 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
                     padding_table[batch['_indices'], :n] = padding
                     progress.update(step)
                 frozen_features[split] = table, padding_table
-    parameters = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(parameters, lr=options['lr'], weight_decay=options['weight_decay'])
-    stopping = EarlyStopping({'early_stopping': dict(enabled=options['patience'] > 0,
-        patience=max(1, options['patience']), min_delta=0., min_epochs=1)}, epochs, stage_id)
-    directory = ctx.output / f'stages{artifact_suffix}' / stage_id
+    # Cache preparation and object reconstruction must not advance the saved
+    # training RNG stream. Restore only once all such preparation has finished.
+    if plan['policy'] == 'epoch_resume':
+        recovery.restore_rng(plan['payload']['rng_state'])
     directory.mkdir(parents=True)
-    steps, examples, history = 0, 0, []
-    best_state, best_extra = None, {}
-    for epoch in range(1, epochs+1):
+    if plan['policy'] == 'epoch_resume':
+        # If this attempt also dies before finishing its first resumed epoch,
+        # its own directory must still retain the recovered boundary.
+        recovery.atomic_torch_save(directory/f'last{artifact_suffix}.pt', plan['payload'])
+        recovery.atomic_json(directory/f'history{artifact_suffix}.json', history)
+    elif plan['policy'] == 'legacy_weights_restart':
+        recovery.atomic_torch_save(directory/f'best{artifact_suffix}.pt', {
+            **plan['payload'], 'resume_identity': identity})
+    epoch_range = range(restored_epoch + 1, epochs + 1) if not stopping.should_stop else ()
+    for epoch in epoch_range:
         if before_epoch:
             before_epoch(model)
         record = {'epoch': epoch}
@@ -334,11 +420,34 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
             best_extra = copy.deepcopy(checkpoint_extra(model) if checkpoint_extra else {})
             # Preserve useful progress if a long HPC stage is interrupted.
             # This is a selected-weight snapshot, not optimizer-resume support.
-            torch.save({'state_dict':best_state,'config':ctx.config,'preprocessing':ctx.prep,
+            snapshot = {'state_dict':best_state,'config':ctx.config,'preprocessing':ctx.prep,
                 'stage_metadata':best_extra,'complete':False,
-                'selection':{'epoch':epoch,'value':record['val']['loss'],'split':'val'}},
-                directory/f'best{artifact_suffix}.pt')
-        write_json(directory/f'history{artifact_suffix}.json',history)
+                'selection':{'epoch':epoch,'value':record['val']['loss'],'split':'val'}}
+            if recoverable:
+                snapshot['resume_identity'] = identity
+                recovery.atomic_torch_save(directory/f'best{artifact_suffix}.pt', snapshot)
+            else:
+                torch.save(snapshot, directory/f'best{artifact_suffix}.pt')
+        if recoverable:
+            # This is current (last-epoch) state, not validation-best state.
+            # Commit it only after a complete training AND validation epoch.
+            if ctx.device.type == 'cuda':
+                torch.cuda.synchronize(ctx.device)
+            current_extra = copy.deepcopy(checkpoint_extra(model) if checkpoint_extra else {})
+            recovery.atomic_torch_save(directory/f'last{artifact_suffix}.pt', dict(
+                format=recovery.FORMAT, resume_identity=identity, config=ctx.config,
+                preprocessing=ctx.prep, state_dict=_cpu_state(model),
+                optimizer_state_dict=recovery.cpu_tree(optimizer.state_dict()),
+                rng_state=recovery.capture_rng(), early_stopping=copy.deepcopy(vars(stopping)),
+                epoch=epoch, history=copy.deepcopy(history), best_state_dict=best_state,
+                best_stage_metadata=best_extra,
+                stage_metadata=current_extra,
+                optimizer_steps=steps, examples_seen=examples,
+                recovery_audit=copy.deepcopy(audit),
+                seconds=prior_seconds + time.perf_counter()-start))
+            recovery.atomic_json(directory/f'history{artifact_suffix}.json', history)
+        else:
+            write_json(directory/f'history{artifact_suffix}.json',history)
         if stopping.should_stop:
             stopping.announce(stage_id)
             break
@@ -347,14 +456,24 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     model.load_state_dict(best_state)
     model.eval()
     cost = dict(stage_id=stage_id, optimizer_steps=steps, examples_seen=examples,
-        epochs=len(history), planned_epochs=epochs, seconds=time.perf_counter()-start,
+        epochs=len(history), planned_epochs=epochs, seconds=prior_seconds + time.perf_counter()-start,
         parameters=sum(p.numel() for p in model.parameters()),
         trainable_parameters=sum(p.numel() for p in parameters), device=str(ctx.device),
         selection=stopping.summary(), selected_state_digest=state_digest(model))
-    torch.save({'state_dict': best_state, 'cost': cost, 'config': ctx.config,
-                'preprocessing': ctx.prep, 'stage_metadata': best_extra, 'complete':True}, directory / f'best{artifact_suffix}.pt')
-    write_json(directory / f'history{artifact_suffix}.json', history)
-    write_json(directory / f'cost{artifact_suffix}.json', cost)
+    payload = {'state_dict': best_state, 'cost': cost, 'config': ctx.config,
+               'preprocessing': ctx.prep, 'stage_metadata': best_extra, 'complete':True}
+    if recoverable:
+        audit.update(new_optimizer_steps=steps-prior_steps, new_epochs=len(history)-prior_epochs,
+                     new_seconds=cost['seconds']-prior_seconds)
+        cost['resume'] = audit
+        payload.update(resume_identity=identity, history=history)
+        recovery.atomic_torch_save(directory / f'best{artifact_suffix}.pt', payload)
+        recovery.atomic_json(directory / f'history{artifact_suffix}.json', history)
+        recovery.atomic_json(directory / f'cost{artifact_suffix}.json', cost)
+    else:
+        torch.save(payload, directory / f'best{artifact_suffix}.pt')
+        write_json(directory / f'history{artifact_suffix}.json', history)
+        write_json(directory / f'cost{artifact_suffix}.json', cost)
     return model, cost
 
 

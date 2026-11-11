@@ -25,6 +25,9 @@ GATE_MODELS_PIN = ('device_op_cascade_pin', 'device_op_gate_pin',
 STAGED_GATE_MODELS_PIN = ('device_op_distill_gate_pin', 'device_op_distill_gate_decoder_pin',
                           'device_op_supervised_gate_pin')
 ALL_GATE_MODELS_PIN = GATE_MODELS_PIN + STAGED_GATE_MODELS_PIN
+RECOVERABLE_STAGES_PIN = frozenset(STAGED_GATE_MODELS_PIN + (
+    'device_op_predictor_pin', 'design_op_oracle_pin', 'device_op_distill_encoder_pin',
+    'device_op_distill_readout_pin', 'device_op_supervised_readout_pin'))
 MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN
 CASCADE_MODELS_PIN = frozenset({'predicted_op_pin', 'student_predicted_op_pin', 'student_predicted_op_distill_pin'})
 REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
@@ -133,7 +136,8 @@ def oracle_gate_coverage_pin(ctx, predictor, split, batch_size):
 
 def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options, config, kind='op_transfer'):
     import torch
-    from experiments.op_transfer.engine import _cpu_state, write_json
+    from experiments.op_transfer.engine import _cpu_state
+    from experiments.op_transfer.resume import atomic_torch_save, atomic_json
     from final_exam.models.op_transfer_pin import describe_model_pin
     mode = mode if mode.endswith('_pin') else mode + '_pin'
     directory = Path(directory)
@@ -153,9 +157,9 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
     if mode in ALL_GATE_MODELS_PIN:
         payload['input_contract_pin'] = gate_contract_pin(mode)
-    torch.save(payload, directory / 'checkpoint_pin.pt')
-    write_json(directory / 'config_pin.json', config)
-    write_json(directory / 'dependencies_pin.json', dict(stage_ids=dependencies))
+    atomic_torch_save(directory / 'checkpoint_pin.pt', payload)
+    atomic_json(directory / 'config_pin.json', config)
+    atomic_json(directory / 'dependencies_pin.json', dict(stage_ids=dependencies))
 
 
 def load_checkpoint_pin(path, device='cpu'):
@@ -196,12 +200,13 @@ def _revision():
 
 
 def run_experiment_pin(data_path, config_path, output, models, seeds, device, *, log_dir=None,
-                   manifest_path=None, smoke=False):
+                   manifest_path=None, smoke=False, resume_from=None):
     import torch
     from device_jepa.data import load_dataset, build_manifest, verify_manifest, dataset_fingerprint
     from device_jepa.resident import require_device
     from device_jepa.training import _check_dataset_options, seed_everything, state_digest
     from experiments.op_transfer import engine
+    from experiments.op_transfer.resume import atomic_torch_save, atomic_json
     from final_exam.data_pin import PinDataContext
     from final_exam.models.op_transfer_pin import op_objective_pin, op_input_pin
     from final_exam.models.op_transfer_pin import PredictedOPDistillationPin, PredictedOPEncoderDistillationPin
@@ -212,6 +217,9 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
     from final_exam.models.staged_op_gate_pin import StagedOPGateModelPin, StagedOPEncoderDistillationPin
     from final_exam.op_gate_data_pin import prepare_device_predictions_pin, build_shuffle_bank_pin
+    from final_exam.stage_resume_pin import (validate_source_pin, validate_data_pin,
+                                             restore_scaler_pin, scaler_digest_pin,
+                                             recover_cache_cost_pin)
 
     output = Path(output).resolve()
     if not output.name.endswith('_pin'):
@@ -219,6 +227,12 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError('Choose a new/empty output directory')
     config, models = validate_request_pin(json.loads(Path(config_path).read_text()), models, seeds, device, smoke)
+    logs = Path(log_dir).resolve() if log_dir else output / 'logs_pin'
+    resume_source, source_run, saved_preprocessing, source_cohort, source_manifest = (None,) * 5
+    if resume_from is not None:
+        resume_source, source_run, saved_preprocessing, source_cohort, source_manifest = validate_source_pin(
+            resume_from, config, models, seeds, output=output, logs=logs, smoke=smoke,
+            allowed_models=STAGED_GATE_MODELS_PIN)
     device = require_device(device)
     options = engine.settings(config)
     seed_everything(seeds[0], options['torch_threads'])
@@ -238,7 +252,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     too_small = [mode for mode, capacity in capacities.items() if capacity < pin_count]
     if too_small:
         raise ValueError(f'{pin_count} pin/port tokens exceed max_devices capacity for {too_small}; no truncation')
-    manifest = (json.loads(Path(manifest_path).read_text()) if manifest_path else
+    manifest = (json.loads(Path(manifest_path).read_text()) if manifest_path else source_manifest if resume_source else
                 build_manifest(dataset, config=config['dataset']))
     verify_manifest(dataset, manifest)
     _check_dataset_options(config, manifest)
@@ -246,7 +260,9 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
         raise ValueError('Single-circuit manifest requires train/val/test and an empty OOD split')
     if any('_shuffle_' in name for name in models) and len(manifest['train']) < 2:
         raise ValueError('Shuffled OP control requires at least two training samples')
-    logs = Path(log_dir).resolve() if log_dir else output / 'logs_pin'
+    fingerprint = dataset_fingerprint(dataset)
+    if resume_source:
+        validate_data_pin(source_run, source_manifest, manifest, fingerprint, source_cohort)
     if not logs.name.endswith('_pin'):
         raise ValueError('Pin log directory must end with _pin')
     if (logs / 'experiment_pin.log').exists():
@@ -259,15 +275,19 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                pin_tokens=pin_count, physical_devices=len(representative['devices']),
                resident_token_capacity=max(capacities.values()),
                evaluation_splits=['test'], device=str(device), code_commit=_revision(),
-               dataset_fingerprint=dataset_fingerprint(dataset), log_dir=str(logs),
+               dataset_fingerprint=fingerprint, log_dir=str(logs),
                slurm_job_id=os.environ.get('SLURM_JOB_ID'), node=os.environ.get('SLURM_NODELIST'),
                torch_version=str(torch.__version__), started_unix=time.time(), smoke=smoke,
                budget_policy=('equal base downstream maxima; staged gates add op_transfer.epochs.gate; '
                               'prerequisite costs separate and deduplicated; XGBoost uses rounds'))
-    engine.write_json(output / 'run_pin.json', run)
-    engine.write_json(output / 'config_pin.json', config)
-    engine.write_json(output / 'manifest_pin.json', manifest)
-    engine.write_json(output / 'model_sources_pin.json', json.loads(
+    if resume_source:
+        run['resume'] = dict(source_training_output=str(resume_source), source_code_commit=source_run.get('code_commit'),
+                             source_status=source_run.get('status'), source_unchanged=True,
+                             boundary='completed epochs; incomplete legacy weights restart their stage')
+    atomic_json(output / 'run_pin.json', run)
+    atomic_json(output / 'config_pin.json', config)
+    atomic_json(output / 'manifest_pin.json', manifest)
+    atomic_json(output / 'model_sources_pin.json', json.loads(
         (ROOT / 'final_exam/models/SOURCES_pin.json').read_text()))
     results, stages = [], []
     try:
@@ -275,7 +295,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
             try:
                 context_config = copy.deepcopy(config)
                 context_config['model']['max_devices'] = max(capacities.values())
-                ctx = PinDataContext(dataset, manifest, context_config, device, {}, output)
+                ctx = PinDataContext(dataset, manifest, context_config, device, {}, output,
+                                     preprocessing=saved_preprocessing)
+                stage_identity = dict(dataset_fingerprint=fingerprint, manifest=manifest, cohort=ctx.selection)
+                if resume_source:
+                    print(f'Resume source: {resume_source}; completed stages will be reused; RAM caches are rebuilt', flush=True)
                 for seed in seeds:
                     ctx.output = output / f'seed_{seed}_pin'
                     ctx.output.mkdir()
@@ -298,13 +322,25 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             with log_to(path):
                                 print(f'seed={seed} stage={name} budget={options["epochs"][epoch_key]}', flush=True)
                                 prepare_model_pin(model, ctx, options)
+                                resume_args = {}
+                                if set(models) & set(STAGED_GATE_MODELS_PIN) and name in RECOVERABLE_STAGES_PIN:
+                                    identity = copy.deepcopy(stage_identity)
+                                    if hasattr(model, 'teacher_scaler'):
+                                        identity['teacher_scaler_digest'] = scaler_digest_pin(model.teacher_scaler.state_dict())
+                                    resume_args = dict(resume_identity=identity,
+                                        resume_from=resume_source / f'seed_{seed}_pin' / 'stages_pin' / name if resume_source else None)
                                 model, cost = engine.fit_stage(ctx, model, name, options['epochs'][epoch_key],
-                                                              options, seed, objective, artifact_suffix='_pin', **kwargs)
+                                                              options, seed, objective, artifact_suffix='_pin',
+                                                              **resume_args, **kwargs)
                         finally:
                             ctx.config = original_config
                         cost.update(stage_id=f'seed_{seed}_pin/{name}', seed=seed)
                         stages.append(cost)
-                        engine.write_json(ctx.output / 'stages_pin' / name / 'config_pin.json', model_cfg)
+                        if resume_source:
+                            atomic_json(output / 'resume_pin.json', dict(**run['resume'],
+                                stages=[dict(stage_id=s['stage_id'], **s.get('resume', {'policy': 'fresh_or_cache'}))
+                                        for s in stages]))
+                        atomic_json(ctx.output / 'stages_pin' / name / 'config_pin.json', model_cfg)
                         engine.export_summary(output, results, stages, artifact_suffix='_pin')
                         return model, cost['stage_id']
 
@@ -359,9 +395,10 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 seconds=time.perf_counter()-started, parameters=sum(p.numel() for p in model.parameters()),
                                 trainable_parameters=0, device=str(device),
                                 selection={'kind': 'forward_only_preparation', 'uses_measured_op': False})
+                            cache_cost = recover_cache_cost_pin(resume_source, seed, cache_cost)
                             stages.append(cache_cost)
                             dependencies[name].append(cache_id)
-                            engine.write_json(ctx.output / 'shared_pin' / name / 'prediction_cache_pin.json', cache_cost)
+                            atomic_json(ctx.output / 'shared_pin' / name / 'prediction_cache_pin.json', cache_cost)
                         return shared[name]
 
                     def shuffle_bank():
@@ -402,9 +439,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             model.initialize_from_teacher(source)
                             model.set_phase('distill_encoder')
                             decoder_digest = state_digest(model.decoder)
-                            scale = engine.fit_scaler(ctx, source.encoder, options, 'design_op',
-                                input_filter=lambda batch: op_input_pin(batch, use_design=True))
-                            torch.save(scale.state_dict(), base_directory / 'alignment_scales_pin.pt')
+                            scale = restore_scaler_pin(resume_source, seed, name, ctx, cfg, options)
+                            if scale is None:
+                                scale = engine.fit_scaler(ctx, source.encoder, options, 'design_op',
+                                    input_filter=lambda batch: op_input_pin(batch, use_design=True))
+                            atomic_torch_save(base_directory / 'alignment_scales_pin.pt', scale.state_dict())
                             pair = StagedOPEncoderDistillationPin(model, source, scale).to(device)
                             metadata = lambda m: dict(teacher_scaler=scale.state_dict(),
                                 teacher_checkpoint='../../shared_pin/design_op_oracle_pin/checkpoint_pin.pt',
@@ -445,12 +484,12 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                         audit.update(base_state_digest=state_digest(model),
                             encoder_digest=state_digest(model.encoder), decoder_digest=state_digest(model.decoder),
                             predictor_frozen=True)
-                        engine.write_json(base_directory / 'base_audit_pin.json', audit)
+                        atomic_json(base_directory / 'base_audit_pin.json', audit)
                         # Validation is observable before gate fitting; test is deferred until it finishes.
                         with log_to(logs / f'seed_{seed}_pin' / 'shared_pin' / name / 'evaluate_val_pin.log'):
                             validation = engine.evaluate_model(ctx, model, 'val', options)
                             validation.update(circuit=circuit, granularity='pin')
-                            engine.write_json(base_directory / 'val_pin.json', validation)
+                            atomic_json(base_directory / 'val_pin.json', validation)
                         return shared[name], name
 
                     for mode in models:
@@ -466,9 +505,9 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             cost.update(stage_id=f'seed_{seed}_pin/xgboost_pin', seed=seed)
                             stages.append(cost)
                             deps = [cost['stage_id']]
-                            engine.write_json(directory / 'config_pin.json', cfg)
-                            engine.write_json(directory / 'preprocessing_pin.json', ctx.prep)
-                            engine.write_json(directory / 'manifest_pin.json', manifest)
+                            atomic_json(directory / 'config_pin.json', cfg)
+                            atomic_json(directory / 'preprocessing_pin.json', ctx.prep)
+                            atomic_json(directory / 'manifest_pin.json', manifest)
                         elif mode in STAGED_GATE_MODELS_PIN:
                             kind = 'op_transfer'
                             base, base_name = staged_base(mode != 'device_op_supervised_gate_pin')
@@ -504,7 +543,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 op_embedding_dim=cfg['model']['dim'], gate_heads=cfg['model']['heads'],
                                 **{f'initial_{key}_digest': value for key, value in before.items()},
                                 **{f'final_{key}_digest': value for key, value in after.items()})
-                            engine.write_json(directory / 'op_gate_audit_pin.json', audit)
+                            atomic_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode in GATE_MODELS_PIN:
                             kind = 'op_transfer'
                             needs_predictor = mode != 'device_op_gate_only_base_pin'
@@ -530,7 +569,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 protected_edges='same net, self, external ports, non-MOS',
                                 predictor_checkpoint='../shared_pin/device_op_predictor_pin/checkpoint_pin.pt'
                                     if needs_predictor else None)
-                            engine.write_json(directory / 'op_gate_audit_pin.json', audit)
+                            atomic_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode in REFERENCES_PIN:
                             model = teacher(mode == 'design_op_oracle_pin')
                             deps, kind = dependencies[mode], 'op_transfer'
@@ -596,8 +635,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     raise AssertionError('Frozen teacher changed')
                                 directory.mkdir(parents=True, exist_ok=True)
                                 audit.update(teacher_frozen=True, predictor_frozen=True)
-                                engine.write_json(directory / 'distillation_pin.json', audit)
-                                torch.save(scale.state_dict(), directory / 'alignment_scales_pin.pt')
+                                atomic_json(directory / 'distillation_pin.json', audit)
+                                atomic_torch_save(directory / 'alignment_scales_pin.pt', scale.state_dict())
                                 del pair
                             if state_digest(model.predictor) != predictor_digest:
                                 raise AssertionError('Frozen OP predictor changed')
@@ -636,37 +675,37 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     base_report = engine.evaluate_model(ctx, base, 'test', options)
                                     base_report.update(circuit=circuit, granularity='pin')
                                     shared[base_report_key] = base_report
-                                    engine.write_json(ctx.output / 'shared_pin' / base_name / 'test_pin.json', base_report)
-                                engine.write_json(directory / 'gate_comparison_pin.json', dict(
+                                    atomic_json(ctx.output / 'shared_pin' / base_name / 'test_pin.json', base_report)
+                                atomic_json(directory / 'gate_comparison_pin.json', dict(
                                     base_checkpoint=f'../shared_pin/{base_name}/checkpoint_pin.pt',
                                     base_family='supervised' if mode == 'device_op_supervised_gate_pin' else 'distilled',
                                     final_phase=phase, base_test=shared[base_report_key], post_gate_test=report))
-                            engine.write_json(directory / 'test_pin.json', report)
+                            atomic_json(directory / 'test_pin.json', report)
                             print(json.dumps(report, allow_nan=False), flush=True)
                         results.append(dict(mode=mode, seed=seed, stage_ids=deps, report=report))
-                        engine.write_json(output / 'results_pin.json', results)
+                        atomic_json(output / 'results_pin.json', results)
                         engine.export_summary(output, results, stages, artifact_suffix='_pin')
                         del model
                     shared.clear()
                 run['status'] = 'ready_to_export'
-                engine.write_json(output / 'run_pin.json', run)
+                atomic_json(output / 'run_pin.json', run)
                 from final_exam.summarize_pin import export_results_pin
                 export_results_pin(output, finalizing=True)
                 run.update(status='complete', elapsed_seconds=time.time()-run['started_unix'])
-                engine.write_json(output / 'run_pin.json', run)
+                atomic_json(output / 'run_pin.json', run)
                 print(f'Completed. Excel: {output / "summary_pin.xlsx"}', flush=True)
             except BaseException:
                 traceback.print_exc()
                 run['status'] = 'failed_export' if run['status'] == 'ready_to_export' else 'failed'
                 run['elapsed_seconds'] = time.time()-run['started_unix']
-                engine.write_json(output / 'run_pin.json', run)
+                atomic_json(output / 'run_pin.json', run)
                 raise
     except BaseException:
         # Log acquisition itself can fail before entering the logged try block.
         if run['status'] in ('running', 'ready_to_export'):
             run['status'] = 'failed_export' if run['status'] == 'ready_to_export' else 'failed'
             run['elapsed_seconds'] = time.time()-run['started_unix']
-            engine.write_json(output / 'run_pin.json', run)
+            atomic_json(output / 'run_pin.json', run)
         raise
     return dict(output=str(output), results=results, stages=stages)
 
@@ -683,6 +722,7 @@ def main(argv=None):
     parser.add_argument('--seeds', nargs='+', type=int, default=[17, 29, 43])
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--smoke', action='store_true')
+    parser.add_argument('--resume-from', help='Recover staged gate training from an old run into a new output')
     args = parser.parse_args(argv)
     if args.list_models:
         print('\n'.join(MODEL_NAMES_PIN))
@@ -690,7 +730,8 @@ def main(argv=None):
     if not args.data or not args.output:
         parser.error('--data and --output are required')
     run_experiment_pin(args.data, args.config, args.output, args.models, args.seeds, args.device,
-                   log_dir=args.log_dir, manifest_path=args.manifest, smoke=args.smoke)
+                   log_dir=args.log_dir, manifest_path=args.manifest, smoke=args.smoke,
+                   resume_from=args.resume_from)
 
 
 if __name__ == '__main__':

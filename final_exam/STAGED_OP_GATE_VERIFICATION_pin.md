@@ -55,3 +55,35 @@ Q/K/V 梯度路径和 `no_grad` 路径不改变后端选择。CUDA 用例另覆�
 
 此次修复没有增加断点续训。失败目录中的 checkpoint 保留；使用普通启动脚本
 重新提交会创建新实验目录并重训前置阶段。
+
+## 2026-11-11：新增分阶段门控恢复功能
+
+以下为 CUDA 兼容性修复之后单独新增的恢复功能验证；上一节描述的“不提供断点续训”是当时修复的边界。当前恢复入口及限制见 [RESUME_STAGED_OP_GATE_pin.md](RESUME_STAGED_OP_GATE_pin.md)。
+
+| 检查 | 结果 |
+|---|---|
+| `experiments.op_transfer.test_resume` 专项 | 14 项通过，包含空来源阶段目录的恢复边界 |
+| `python -m unittest final_exam.tests.test_staged_resume_pin -v` | 7 项通过 |
+| `python -m unittest final_exam.single_circuit_pin.test_resume_staged_op_gate_launch_pin -v` | 9 项通过 |
+| `final_exam/tests` 全量回归 | 135 项：134 项通过，1 项 CUDA 用例因无 GPU 跳过 |
+| `experiments/op_transfer` 全量及新增边界用例 | 原全量 92 项通过，新增空目录用例单独通过；合计 93 个不同用例已测 |
+| pin 启动器相关回归 | 33 项通过 |
+
+专项与全量统计存在包含关系，不能将表内数字直接相加作为独立测试总数。
+
+验证环境使用 PyTorch 2.6.0+cpu。上述测试包含实际小模型训练、故障注入和模拟 Slurm 提交，未在本环境执行真实 A800 训练、实际 `sbatch` 提交或 60,000 点完整数据恢复。
+
+已验证的恢复契约：
+
+- 人为中断后恢复模型、AdamW、Python/NumPy/PyTorch RNG 和早停状态，CPU 结果及历史与不中断训练一致。
+- 已完成阶段不重新调用训练目标或执行优化器更新；复用后保留原选中权重与历史训练成本。
+- 旧版首次 gate 失败场景可以复用此前完成的预测器、教师、学生 encoder 和 decoder；尚未开始的后续 seeds 正常训练。
+- 原目录所有文件摘要不变，新结果写入独立目录；恢复后再次失败仍可以继续恢复。
+- 旧的未完成 best-only checkpoint 明确重置优化器并重新训练该阶段，不伪称完整状态续训。
+- 新 `last_pin.pt` 包含恢复所需的模型、最佳权重、历史和状态；即使旁边的 best/history 文件缺失，完整 last 仍可用于恢复。损坏的 last 不被静默替换。
+- 终止 epoch 已保存但阶段最终导出未完成时，恢复只完成选模与保存，不重复优化。
+- 数据、配置、划分、seed 或依赖不一致时拒绝恢复；已有归一化和教师 latent scaler 不重新拟合。
+- 提交脚本复用原模型、seed、配置与数据引用；不重新导入 SQLite，不覆盖旧目录，`--dry-run` 不写文件或提交作业。
+- 已知的历史 OP 缓存前向成本保留累计；本次重建耗时在 `resume` 元数据及 Excel `Resume` 页单独展示，训练成本仍按共享阶段去重。
+
+恢复精度以完整 epoch 边界为限，不包含未完成 batch 的状态；跨硬件或不同软件版本的逐位一致性没有得到验证。

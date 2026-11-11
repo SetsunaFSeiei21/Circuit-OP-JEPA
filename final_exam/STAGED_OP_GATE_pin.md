@@ -183,7 +183,7 @@ bash final_exam/single_circuit_pin/summarize_pin.sh \
 
 这条路径仍在输入所在设备执行，CUDA 张量不会转到 CPU。编码器继续冻结，门控梯度穿过编码器和 decoder；不会 `detach` 门控或重新训练主干。上下文结束即恢复调用方的注意力后端设置，后续有 Q/K/V 梯度的层、正常联合训练、验证和推理仍沿用原来的后端选择。不同后端可能有浮点舍入差异；局部 math attention 的显存与速度开销需要在实际 GPU 上测量。
 
-无需修改模型名称、epoch 或 checkpoint 格式。已有完成阶段的 checkpoint 不会被此次代码更新删除，但当前启动器**不提供断点续训**；再次运行会创建新目录并从前置阶段重新训练，请保留失败目录中的模型和日志。
+无需修改模型名称或 epoch。已有完成阶段的 checkpoint 可以通过新增的 `resume_staged_op_gate_pin.sh` 恢复入口复用；新训练另保存包含优化器、随机数和早停状态的 epoch 边界 checkpoint。普通 `train_staged_op_gate_pin.sh` 仍用于从头开始的新实验。恢复命令、旧版 checkpoint 的限制和日志路径见 [失败恢复与断点续训说明](RESUME_STAGED_OP_GATE_pin.md)，请保留失败目录中的模型、日志及原 canonical 数据文件。
 
 CPU 回归与 CUDA 专用回归入口：
 

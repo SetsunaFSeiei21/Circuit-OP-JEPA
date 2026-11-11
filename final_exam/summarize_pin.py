@@ -477,6 +477,34 @@ def _cost_sheet(stages, results):
     return sheet
 
 
+def _resume_sheet(stages):
+    """Separate recovered training investment from compute in this attempt."""
+    fields = ('Stage ID', 'Recovery policy', 'Restored epoch', 'Optimizer restored',
+              'New epochs', 'New optimizer steps', 'New seconds',
+              'Retained total epochs', 'Retained total optimizer steps',
+              'Unrecorded partial work', 'Source stage')
+    sheet = Sheet('Resume', [56, 32, 20, 24, 20, 24, 24, 24, 30, 36, 90],
+                  freeze_rows=4, freeze_columns=1)
+    sheet.note('Resume — recovered stages and compute in this attempt', 1, 34)
+    sheet.note('TrainingCost retains completed historical training once per stage. New columns below count only this attempt; RAM prediction caches are rebuilt.', height=44)
+    sheet.note('A killed partial epoch is replayed. Legacy best-only recovery restarts its stage with a fresh optimizer; unsaved partial work cannot be counted exactly.', height=44)
+    sheet.add([Cell(value, 3) for value in fields], 42)
+    for stage in stages:
+        audit = stage.get('resume', {})
+        lineage, unknown = audit, False
+        while isinstance(lineage, dict) and lineage:
+            unknown |= bool(lineage.get('partial_prior_cost_unknown')
+                            or lineage.get('discarded_partial_epoch_work_unknown'))
+            lineage = lineage.get('source_recovery')
+        sheet.add([stage['stage_id'], audit.get('policy', 'fresh_or_cache'), audit.get('restored_epoch', 0),
+                   audit.get('optimizer_state_restored', False), audit.get('new_epochs', stage['epochs']),
+                   audit.get('new_optimizer_steps', stage['optimizer_steps']),
+                   Cell(audit.get('new_seconds', stage['seconds']), 11),
+                   stage['epochs'], stage['optimizer_steps'], unknown, audit.get('source_stage')], 36)
+    sheet.filter_range = f'A4:{_column(len(fields))}{len(sheet.rows)}'
+    return sheet
+
+
 def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete=False, finalizing=False, decimals=4):
     """Validate and export a completed run; finalizing accepts ready_to_export.
 
@@ -514,6 +542,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     statistics, fields = _statistics_sheet(rows)
     sheets = _comparison_sheets(rows, models, fields, complete, decimals)
     sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
+    if run.get('resume'):
+        sheets.append(_resume_sheet(stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models))
     if gate_comparison is not None:

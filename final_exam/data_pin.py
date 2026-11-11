@@ -154,7 +154,7 @@ class PinResidentDataset(ResidentDataset):
 
 class PinDataContext:
     """Same training interface as op_transfer.DataContext, with pin artifacts."""
-    def __init__(self, dataset, manifest, config, device, limits, output):
+    def __init__(self, dataset, manifest, config, device, limits, output, *, preprocessing=None):
         self.device, self.config, self.output = require_device(device), config, Path(output)
         self.full_manifest = manifest
         self.rows, selected = {}, copy.deepcopy(manifest)
@@ -169,12 +169,22 @@ class PinDataContext:
         if not self.rows['train'] or not self.rows['val'] or not selected['labeled_train']:
             raise ValueError('Nonempty train, validation and labeled train cohorts required')
         self.selection = selected
-        print('Fitting device statistics on ID train only; expanding to pins after normalization', flush=True)
-        device_prep = fit_preprocessor(dataset, selected, include_performance=True,
-            config=config.get('normalization'), statistics_device=self.device)
-        device_prep['op_state_features'] = []
+        if preprocessing is None:
+            print('Fitting device statistics on ID train only; expanding to pins after normalization', flush=True)
+            device_prep = fit_preprocessor(dataset, selected, include_performance=True,
+                config=config.get('normalization'), statistics_device=self.device)
+            device_prep['op_state_features'] = []
+            self.prep = make_preprocessing_pin(device_prep, self.rows['train'])
+        else:
+            device_prep = copy.deepcopy(preprocessing.get('device_preprocessing'))
+            if not isinstance(device_prep, dict):
+                raise ValueError('Resume requires complete saved device and pin preprocessing')
+            expected = make_preprocessing_pin(device_prep, self.rows['train'])
+            if expected != preprocessing:
+                raise ValueError('Saved pin preprocessing/vocabulary does not match the training rows')
+            self.prep = copy.deepcopy(preprocessing)
+            print('Resume: reusing saved ID-train normalization and pin vocabulary without refitting', flush=True)
         self.device_preprocessing = device_prep
-        self.prep = make_preprocessing_pin(device_prep, self.rows['train'])
         self.pin_vocab = self.prep['device_vocab']
         self.metric_mask = [count > 0 for count in self.prep['performance']['count']]
         if not any(self.metric_mask):
