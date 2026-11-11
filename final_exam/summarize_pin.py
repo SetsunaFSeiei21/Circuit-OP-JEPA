@@ -19,7 +19,9 @@ from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_num
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
 from final_exam.gate_version_registry_pin import (
-    V1_GATE_MODELS_PIN, V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN, gate_version_pin,
+    V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
+    V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
+    VERSIONED_GATE_MODELS_PIN, gate_version_pin,
 )
 
 
@@ -56,17 +58,24 @@ V1_STAGED_GATE_INPUTS_PIN = {
            else 'supervised ungated model', 'gate only')
     for mode in V1_STAGED_GATE_MODELS_PIN
 }
+V2_STAGED_GATE_INPUTS_PIN = {
+    mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
+           else 'supervised ungated model', 'gate only')
+    for mode in V2_STAGED_GATE_MODELS_PIN
+}
 ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN,
-                             **V1_STAGED_GATE_INPUTS_PIN}
+                             **V1_STAGED_GATE_INPUTS_PIN, **V2_STAGED_GATE_INPUTS_PIN}
 ALL_NONSTAGED_GATE_INPUTS_PIN = {**GATE_INPUTS_PIN,
-    **{mode: ('A', True, 'predicted OP') for mode in V1_JOINT_GATE_MODELS_PIN}}
+    **{mode: ('A', True, 'predicted OP')
+       for mode in (*V1_JOINT_GATE_MODELS_PIN, *V2_JOINT_GATE_MODELS_PIN)}}
 ALL_GATE_REPORTS_PIN = ALL_NONSTAGED_GATE_INPUTS_PIN.keys() | ALL_STAGED_GATE_INPUTS_PIN.keys()
+V2_RELATIVE_NORMALIZATION_PIN = 'per_sample_per_field_all_valid_mos'
 
 
 def _gate_scope(mode):
     if mode in ALL_STAGED_GATE_INPUTS_PIN:
         return staged_gate_spec_pin(mode)['attention_scope']
-    if mode == 'device_op_gate_fusion_pin_v1':
+    if mode in ('device_op_gate_fusion_pin_v1', 'device_op_gate_fusion_pin_v2'):
         return 'fusion_self_attention'
     if mode in ALL_NONSTAGED_GATE_INPUTS_PIN and ALL_NONSTAGED_GATE_INPUTS_PIN[mode][2] != 'none':
         return 'all_encoder_self_attention'
@@ -79,8 +88,32 @@ def _gate_version(mode):
 
 def _require_pin_mode(mode):
     if (not isinstance(mode, str) or len(mode) <= 4
-            or not (mode.endswith('_pin') or mode in V1_GATE_MODELS_PIN)):
-        raise ValueError('Pin reports require every model name to end in _pin or use a registered _pin_v1 name')
+            or not (mode.endswith('_pin') or mode in VERSIONED_GATE_MODELS_PIN)):
+        raise ValueError('Pin reports require every model name to end in _pin or use a registered versioned gate name')
+
+
+def _validate_gate_report_contract(mode, contract):
+    if mode not in VERSIONED_GATE_MODELS_PIN or contract is None:
+        return
+    if not isinstance(contract, dict):
+        raise ValueError('Gate input contract must be an object')
+    for key, expected in (('gate_version', gate_version_pin(mode)), ('attention_scope', _gate_scope(mode))):
+        if contract.get(key, expected) != expected:
+            raise ValueError(f'Gate report {key} differs from the model name')
+    if mode not in V2_GATE_MODELS_PIN:
+        return
+    if contract.get('gate_relative_normalization', V2_RELATIVE_NORMALIZATION_PIN) != V2_RELATIVE_NORMALIZATION_PIN:
+        raise ValueError('Gate report relative normalization differs from v2')
+    for key in ('gate_input_dim', 'gate_hidden_dim'):
+        value = contract.get(key)
+        if value is not None and (type(value) is not int or value < 1):
+            raise ValueError(f'Gate report {key} must be a positive integer')
+    dimension = contract.get('gate_input_dim')
+    if dimension is not None and (dimension < 10 or (dimension - 8) % 2):
+        raise ValueError('Gate report v2 input dimension must be 2F + 8')
+    epsilon = contract.get('norm_eps')
+    if epsilon is not None and (type(epsilon) not in (int, float) or not math.isfinite(epsilon) or epsilon <= 0):
+        raise ValueError('Gate report norm_eps must be finite and positive')
 
 
 def _read_json(path):
@@ -123,13 +156,7 @@ def summary_rows_pin(results, config=None):
         if not isinstance(record, dict) or not isinstance(record.get('report'), dict):
             raise ValueError('Each result must contain a report object')
         _require_pin_mode(record.get('mode'))
-        contract = record['report'].get('op_gate_pin')
-        if record['mode'] in V1_GATE_MODELS_PIN and contract is not None:
-            if not isinstance(contract, dict):
-                raise ValueError('Gate input contract must be an object')
-            for key, expected in (('gate_version', 'v1'), ('attention_scope', _gate_scope(record['mode']))):
-                if contract.get(key, expected) != expected:
-                    raise ValueError(f'Gate report {key} differs from the model name')
+        _validate_gate_report_contract(record['mode'], record['report'].get('op_gate_pin'))
         groups[_circuit_identity(record, config or {})].append(record)
     rows = []
     for circuit, members in sorted(groups.items()):
@@ -395,12 +422,33 @@ def _per_seed_sheet(results, config):
     return sheet
 
 
+def _gate_normalization_metadata(mode, results):
+    """Expose saved v2 normalization settings without inventing dimensions."""
+    if mode not in V2_GATE_MODELS_PIN:
+        return [None] * 4
+    values = []
+    for key in ('gate_relative_normalization', 'gate_input_dim', 'gate_hidden_dim', 'norm_eps'):
+        observed = {(record['report'].get('op_gate_pin') or {}).get(key)
+                    for record in results if record['mode'] == mode}
+        observed.discard(None)
+        if len(observed) > 1:
+            raise ValueError(f'Gate report {key} differs between seeds/splits for {mode}')
+        default = V2_RELATIVE_NORMALIZATION_PIN if key == 'gate_relative_normalization' else None
+        values.append(next(iter(observed), default))
+    return values
+
+
 def _model_inputs_sheet(models, results=()):
     """Expose the A/B ablations without changing metric aggregation identity."""
     fields = ('Model', 'Study group', 'OP predictor encoder', 'Predicted OP node features',
               'Attention gate source', 'Measured OP required', 'Role / interpretation',
               'Base training', 'Final trainable modules', 'Attention gate scope', 'Gate version')
-    sheet = Sheet('ModelInputs', [48, 18, 30, 28, 58, 26, 80, 42, 34, 42, 18], freeze_rows=5, freeze_columns=1)
+    widths = [48, 18, 30, 28, 58, 26, 80, 42, 34, 42, 18]
+    include_normalization = any(mode in V2_GATE_MODELS_PIN for mode in models)
+    if include_normalization:
+        fields += ('Gate relative normalization', 'Gate input dimension', 'Gate hidden dimension', 'Gate norm epsilon')
+        widths += [52, 24, 24, 24]
+    sheet = Sheet('ModelInputs', widths, freeze_rows=5, freeze_columns=1)
     sheet.note('Model inputs and operating-point gate controls', 1, 34)
     sheet.note('A: predicted OP features plus optional gate. B: OP only controls the gate; baseline has no OP dependency.', height=34)
     sheet.note('All new non-baseline gate variants use one frozen DEVICE-level OP predictor per seed, followed by a PIN-level encoder.', height=34)
@@ -409,12 +457,13 @@ def _model_inputs_sheet(models, results=()):
     alias_modes = {record['mode'] for record in results
                    if record['report'].get('ungated_base_checkpoint_pin')}
     for mode in models:
+        normalization = _gate_normalization_metadata(mode, results) if include_normalization else []
         if mode in ALL_STAGED_GATE_INPUTS_PIN:
             base, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
             role = ('Same distilled base checkpoint across selected distilled gate variants'
                     if base == 'distilled student' else 'No teacher or latent distillation dependency')
             sheet.add([mode, 'staged gate', 'device', True, 'predicted OP', False,
-                       role, base, final_modules, _gate_scope(mode), _gate_version(mode)], 46)
+                       role, base, final_modules, _gate_scope(mode), _gate_version(mode), *normalization], 46)
         elif mode in ALL_NONSTAGED_GATE_INPUTS_PIN:
             group, features, gate = ALL_NONSTAGED_GATE_INPUTS_PIN[mode]
             predictor = 'none' if mode == 'device_op_gate_only_base_pin' else 'device'
@@ -427,11 +476,11 @@ def _model_inputs_sheet(models, results=()):
                        'shared supervised ungated stage' if mode in alias_modes else 'No separate base stage',
                        'encoder and decoder' if gate == 'none'
                        else 'encoder, decoder and gate',
-                       _gate_scope(mode), _gate_version(mode)], 46)
+                       _gate_scope(mode), _gate_version(mode), *normalization], 46)
         else:
             sheet.add([mode, 'existing pin model', 'see saved model configuration',
                        None, 'no new OP gate', mode in ORACLES, 'Existing model contract is unchanged',
-                       'see saved configuration', 'see stage parameter metadata', 'none', 'none'], 46)
+                       'see saved configuration', 'see stage parameter metadata', 'none', 'none', *normalization], 46)
     sheet.filter_range = f'A5:{_column(len(fields))}{len(sheet.rows)}'
     return sheet
 
@@ -665,7 +714,7 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:
         sheets.append(gate_comparison)
-        if any(mode in V1_GATE_MODELS_PIN for mode in models):
+        if any(mode in VERSIONED_GATE_MODELS_PIN for mode in models):
             sheets.append(_gate_study_sheet(directory, results, base_records, config, decimals))
     # The reusable writer validates all XML and writes atomically. Publishing
     # with link prevents concurrent exporters from overwriting an existing file.

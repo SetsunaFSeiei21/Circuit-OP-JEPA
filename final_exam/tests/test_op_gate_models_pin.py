@@ -7,7 +7,7 @@ import torch
 
 from device_jepa.data import build_manifest, fit_preprocessor, samples_for_split, synthetic_dataset
 from device_jepa.training import state_digest
-from final_exam.gate_version_registry_pin import V1_JOINT_GATE_MODELS_PIN
+from final_exam.gate_version_registry_pin import VERSIONED_JOINT_GATE_MODELS_PIN
 from final_exam.data_pin import PinResidentDataset, make_preprocessing_pin
 from final_exam.op_gate_data_pin import ShuffleBankPin, device_input_pin
 from final_exam.models.op_gate_pin import (
@@ -194,7 +194,7 @@ class OPAttentionModelsPinTests(unittest.TestCase):
 
     def test_initialization_matched_within_each_family_and_zero_gate_matches_baseline(self):
         predictor = self.predictor()
-        for names in (GATE_MODELS_PIN[:4] + V1_JOINT_GATE_MODELS_PIN, GATE_MODELS_PIN[4:8]):
+        for names in (GATE_MODELS_PIN[:4] + VERSIONED_JOINT_GATE_MODELS_PIN, GATE_MODELS_PIN[4:8]):
             baseline = None
             for name in names:
                 if '_shuffle_' in name:

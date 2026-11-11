@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from final_exam.gate_version_registry_pin import V1_JOINT_GATE_MODELS_PIN, gate_version_pin
+from final_exam.gate_version_registry_pin import VERSIONED_JOINT_GATE_MODELS_PIN, gate_version_pin
 from device_jepa.model import ModelConfig
 from device_jepa.training import state_digest
 from experiments.op_transfer.models import OPPredictor, design_encoder, freeze
@@ -31,23 +31,28 @@ GATE_MODELS_PIN = (
     'device_op_gate_oracle_pin', 'device_op_gate_shuffle_pin',
     'device_op_gate_only_base_pin', 'device_op_gate_only_pin',
     'device_op_gate_only_oracle_pin', 'device_op_gate_only_shuffle_pin',
-) + V1_JOINT_GATE_MODELS_PIN
+) + VERSIONED_JOINT_GATE_MODELS_PIN
 GATE_ORACLES_PIN = frozenset((
     'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin',
 ))
-_FEATURE_MODES = frozenset(GATE_MODELS_PIN[:4] + V1_JOINT_GATE_MODELS_PIN)
+_FEATURE_MODES = frozenset(GATE_MODELS_PIN[:4] + VERSIONED_JOINT_GATE_MODELS_PIN)
 _BASE_MODES = frozenset(('device_op_cascade_pin', 'device_op_gate_only_base_pin'))
 
 
-def validate_gate_config_pin(value=None):
+def validate_gate_config_pin(value=None, *, version=None):
     """Validate the small gate namespace independently of model configuration."""
     if value is None:
         value = {}
     if not isinstance(value, dict):
         raise ValueError('op_gate_pin must be an object')
     defaults = dict(epsilon=1e-4, strength=1.0, initial_gate=0.99)
-    if set(value) - set(defaults):
-        raise ValueError('Unknown op_gate_pin keys: ' + ', '.join(sorted(set(value)-set(defaults))))
+    allowed = set(defaults) | {'norm_eps'}
+    if set(value) - allowed:
+        raise ValueError('Unknown op_gate_pin keys: ' + ', '.join(sorted(set(value)-allowed)))
+    # Preserve legacy configuration/recipe dictionaries exactly unless the new
+    # version (or an explicit caller) needs sample-normalization settings.
+    if version == 'v2':
+        defaults['norm_eps'] = 1e-5
     result = {**defaults, **value}
     for name, number in result.items():
         if type(number) not in (int, float) or not math.isfinite(number):
@@ -58,6 +63,8 @@ def validate_gate_config_pin(value=None):
         raise ValueError('op_gate_pin.initial_gate must be in (0, 1)')
     if result['strength'] < 0:
         raise ValueError('op_gate_pin.strength must be nonnegative')
+    if 'norm_eps' in result and result['norm_eps'] <= 0:
+        raise ValueError('op_gate_pin.norm_eps must be positive')
     return {name: float(number) for name, number in result.items()}
 
 
@@ -98,7 +105,7 @@ different scores to the H attention heads; it is not H separate OP predictors.
         super().__init__()
         self.cfg = config if isinstance(config, ModelConfig) else ModelConfig(**config)
         original = _pin_prep(prep)
-        self.settings = validate_gate_config_pin(gate_config)
+        self.settings = validate_gate_config_pin(gate_config, version=self.version)
         self.field_names = list(original['feature_spec']['op_names'])
         if not self.field_names:
             raise ValueError('OP attention requires at least one trained OP field')
@@ -127,7 +134,7 @@ different scores to the H attention heads; it is not H separate OP predictors.
         nn.init.constant_(self.score_head[-1].bias, math.log(initial/(1-initial)))
 
     @classmethod
-    def from_gate_layout(cls, source):
+    def from_gate_layout(cls, source, gate_config=None):
         """Create a fresh version using identical physical layout metadata.
 
         Only used when a shared *ungated* base is copied into a new experiment.
@@ -136,7 +143,8 @@ different scores to the H attention heads; it is not H separate OP predictors.
         result = cls.__new__(cls)
         nn.Module.__init__(result)
         result.cfg = deepcopy(source.cfg)
-        result.settings = deepcopy(source.settings)
+        result.settings = validate_gate_config_pin(
+            {**source.settings, **(gate_config or {})}, version=cls.version)
         result.field_names = list(source.field_names)
         for name in ('terminal_roles', 'mos_types'):
             result.register_buffer(name, getattr(source, name).detach().clone())
@@ -210,6 +218,9 @@ def gate_class_pin(version):
     if version == 'v1':
         from .gates_pin.v1_pin import OPAttentionGateV1Pin
         return OPAttentionGateV1Pin
+    if version == 'v2':
+        from .gates_pin.v2_pin import OPAttentionGateV2Pin
+        return OPAttentionGateV2Pin
     raise ValueError(f'Unknown OP gate version: {version}')
 
 
@@ -228,14 +239,14 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
             raise ValueError(f'Unknown device-to-pin OP mode: {mode}')
         _pin_prep(prep)
         self.mode, self.model_config = mode, _config(config)
-        self.gate_config = validate_gate_config_pin(gate_config)
+        self.gate_config = validate_gate_config_pin(gate_config, version=gate_version_pin(mode))
         self.use_op_features = mode in _FEATURE_MODES
         self.requires_measured_op = mode in GATE_ORACLES_PIN
         self.gate_source = ('none' if mode in _BASE_MODES else
                             'oracle' if self.requires_measured_op else
                             'shuffle' if '_shuffle_' in mode else 'predicted')
         self.attention_scope = ('none' if self.gate_source == 'none' else
-            'fusion_self_attention' if mode == 'device_op_gate_fusion_pin_v1' else
+            'fusion_self_attention' if mode in VERSIONED_JOINT_GATE_MODELS_PIN and '_fusion_' in mode else
             'all_encoder_self_attention')
         needs_predictor = mode != 'device_op_gate_only_base_pin'
         if needs_predictor != (predictor is not None):
@@ -360,13 +371,16 @@ def describe_gate_model_pin(model):
     if not isinstance(model, DeviceOPGateModelPin):
         raise TypeError(f'Unsupported device-OP gate architecture: {type(model).__name__}')
     from final_exam.op_gate_data_pin import describe_shuffle_bank_pin
-    return dict(kind='device_op_gate_pin',mode=model.mode,model_config=deepcopy(model.model_config),
+    recipe = dict(kind='device_op_gate_pin',mode=model.mode,model_config=deepcopy(model.model_config),
                 gate_config=deepcopy(model.gate_config),
                 gate_version=model.gate_version, attention_scope=model.attention_scope,
                 predictor=None if model.predictor is None else describe_gate_model_pin(model.predictor),
                 shuffle_bank=None if model.shuffle_bank is None else describe_shuffle_bank_pin(model.shuffle_bank),
                 use_op_features=model.use_op_features,gate_source=model.gate_source,
                 requires_measured_op=model.requires_measured_op)
+    if model.gate_version == 'v2':
+        recipe['gate_normalization'] = deepcopy(model.gate.normalization_contract)
+    return recipe
 
 
 def rebuild_gate_model_pin(recipe, config, prep):
@@ -387,9 +401,11 @@ def rebuild_gate_model_pin(recipe, config, prep):
     saved_version = recipe.get('gate_version', 'none' if model.gate is None else 'v0')
     if saved_version != model.gate_version:
         raise ValueError('Gate checkpoint version disagrees with its model mode')
-    saved_scope = recipe.get('attention_scope', model.attention_scope if saved_version != 'v1' else None)
+    saved_scope = recipe.get('attention_scope', model.attention_scope if saved_version == 'v0' or model.gate is None else None)
     if saved_scope != model.attention_scope:
         raise ValueError('Gate checkpoint scope disagrees with its model mode')
+    if model.gate_version == 'v2' and recipe.get('gate_normalization') != model.gate.normalization_contract:
+        raise ValueError('Gate checkpoint normalization disagrees with its v2 contract')
     for name in ('use_op_features','gate_source','requires_measured_op'):
         if recipe.get(name) != getattr(model,name):
             raise ValueError(f'Gate checkpoint metadata disagrees with model mode: {name}')

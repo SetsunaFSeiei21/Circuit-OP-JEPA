@@ -1,5 +1,14 @@
 # 端口级单电路实验
 
+门控 **v2** 的独立入口为 `train_op_gate_pin_v2.sh`，默认选择六个 `_pin_v2` 门控模型和原有无门控基线。编辑该脚本的 `CIRCUITS`、`MODELS`、`SEEDS`，在 `final_exam/configs/op_gate_pin_v2.json` 中设置训练预算、`op_gate_pin.norm_eps` 及 `dataset.max_samples_per_circuit`。运行：
+
+```bash
+bash final_exam/single_circuit_pin/train_op_gate_pin_v2.sh --dry-run
+bash final_exam/single_circuit_pin/train_op_gate_pin_v2.sh
+```
+
+v2 将原标准化 OP 与当前样本内所有有效 MOS 的逐字段相对 OP 拼接，再拼接有序引脚 one-hot，送入一个共享门控 MLP。输出 run ID 含 `op_gate_v2`，结果、实验日志与 HPC 日志仍分别保存在 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`。教师、OP 预测器、各模型配置和自动 Excel 保留。完整定义和续训命令见 [v2 说明](../OP_GATE_V2_pin.md)，历史版本记录见 [record.txt](../record.txt)。
+
 门控 **v1** 的独立入口为 `train_op_gate_pin_v1.sh`，默认包含六个 `_pin_v1` 门控模型和 `device_op_cascade_pin` 无门控对照。编辑脚本顶部的 `CIRCUITS`、`MODELS`、`SEEDS` 后运行：
 
 ```bash

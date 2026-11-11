@@ -4,7 +4,7 @@ Keep this module free of torch so login-node launch and recovery inspection can
 validate model names without importing the training runtime.
 """
 
-from .gate_version_registry_pin import V1_STAGED_GATE_MODELS_PIN
+from .gate_version_registry_pin import VERSIONED_STAGED_GATE_MODELS_PIN
 
 STAGED_GATE_MODELS_PIN = (
     'device_op_distill_gate_pin',
@@ -19,14 +19,14 @@ FUSION_STAGED_GATE_MODELS_PIN = (
 )
 
 LEGACY_STAGED_GATE_MODELS_PIN = STAGED_GATE_MODELS_PIN + FUSION_STAGED_GATE_MODELS_PIN
-ALL_STAGED_GATE_MODELS_PIN = LEGACY_STAGED_GATE_MODELS_PIN + V1_STAGED_GATE_MODELS_PIN
+ALL_STAGED_GATE_MODELS_PIN = LEGACY_STAGED_GATE_MODELS_PIN + VERSIONED_STAGED_GATE_MODELS_PIN
 
 
 def staged_gate_spec_pin(mode):
     """Return a fresh contract for one model; scope follows its saved name."""
     if mode not in ALL_STAGED_GATE_MODELS_PIN:
         raise ValueError(f'Unknown staged OP gate mode: {mode}')
-    if mode in V1_STAGED_GATE_MODELS_PIN:
+    if mode in VERSIONED_STAGED_GATE_MODELS_PIN:
         return dict(
             attention_scope=('fusion_self_attention' if '_fusion_pin_' in mode
                              else 'all_encoder_self_attention'),

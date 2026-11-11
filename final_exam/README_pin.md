@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**门控 v2 实验**见 [OP_GATE_V2_pin.md](OP_GATE_V2_pin.md)。入口为 `single_circuit_pin/train_op_gate_pin_v2.sh`，配置为 `configs/op_gate_pin_v2.json`。六个 `_pin_v2` 模型保留原 OP 通道，并拼接当前样本所有有效 MOS 上按字段归一化的相对 OP；NMOS/PMOS 一起统计、全部有效字段参与。训练方式和层范围对应 v1，旧版本继续保留。抽样数量仍在配置的 `dataset.max_samples_per_circuit` 中设置。
+
 本次交付在器件级流程旁新增独立的端口级单电路实验。所有新增模型实现文件、模型 ID、脚本和生成的结果/日志使用 `_pin` 后缀。器件级代码与入口继续保留。后续多电路、消融、迁移学习不属于本次已完成范围。
 
 **门控 v1 实验**使用 `single_circuit_pin/train_op_gate_pin_v1.sh` 和 `configs/op_gate_pin_v1.json`。新模型在原有完整名称后增加 `_v1`，例如 `device_op_gate_pin_v1`。输入改为归一化 OP＋两个有序引脚独热编码，经一个跨层共享 MLP 产生逐头门控。提供“联合优化、蒸馏后分段、监督后分段”×“全层、仅融合层”六个模型，默认另选无门控基线；自动 Excel 的 `GateStudy` 同时展示蒸馏无门控基座。完整版本差异、模型清单、预算与文件架构见 [record.txt](record.txt)。旧名称继续使用 v0，不会被静默替换。

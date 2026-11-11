@@ -4,6 +4,8 @@
 
 对应的端口级单电路流程见 [final_exam/README_pin.md](final_exam/README_pin.md)：器件引脚与外部端口分别成节点，13 个模型、脚本和产物均以 `_pin` 区分；OP predictor 聚合同器件引脚，按器件监督一次，再广播到引脚。
 
+新增的 [门控 v2 单电路实验](final_exam/OP_GATE_V2_pin.md) 在原预测 OP 上增加样本内相对 OP 通道，使用 `final_exam/single_circuit_pin/train_op_gate_pin_v2.sh`。六个 `_pin_v2` 模型独立于旧版，配置和样本数量设置位于 `final_exam/configs/op_gate_pin_v2.json`。
+
 新增 [器件级 OP 引导的 pin attention 实验](final_exam/OP_GATE_pin.md)：使用真正的器件级 ZeroSim OP 预测器，冻结后控制 pin 编码器全部 self-attention 层。包含“OP 特征＋门控”和“仅门控”两组共 8 个独立对照，入口为 `bash final_exam/single_circuit_pin/train_op_gate_pin.sh --dry-run`；不改变上面原有 13 个模型的默认选择。
 
 器件级结构编码、OP 表示对齐，以及可按需选择的八个模式：

@@ -6,6 +6,7 @@
 
 | 实验入口 | 默认配置文件 |
 |---|---|
+| 门控 v2：`final_exam/single_circuit_pin/train_op_gate_pin_v2.sh` | `final_exam/configs/op_gate_pin_v2.json` |
 | 门控 v1：`final_exam/single_circuit_pin/train_op_gate_pin_v1.sh` | `final_exam/configs/op_gate_pin_v1.json` |
 | 端口级普通模型：`final_exam/single_circuit_pin/train_pin.sh` | `final_exam/configs/default_pin.json` |
 | 端口级门控 v0：`final_exam/single_circuit_pin/train_op_gate_pin.sh` | `final_exam/configs/op_gate_pin.json` |

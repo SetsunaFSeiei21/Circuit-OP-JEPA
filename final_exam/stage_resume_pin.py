@@ -29,9 +29,16 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     if record.get('granularity') != 'pin':
         raise ValueError('Resume source is not a pin training run')
     if not set(models) <= set(allowed_models):
-        raise ValueError('Resume supports registered staged gates, v1 joint gates and their cascade baseline')
+        raise ValueError('Resume supports registered staged gates, versioned joint gates and their cascade baseline')
     if not set(models) <= set(record.get('models', [])) or not set(seeds) <= set(record.get('seeds', [])):
         raise ValueError('Resume models and seeds must be selected from the source run')
+    # A cascade-only subset still belongs to its original v2 study. Resolve
+    # the v2 default even when the requested subset no longer names a v2 gate;
+    # explicit values must still match exactly (never copy source settings).
+    from final_exam.gate_version_registry_pin import V2_GATE_MODELS_PIN
+    if set(record.get('models', [])) & set(V2_GATE_MODELS_PIN):
+        from final_exam.models.op_gate_pin import validate_gate_config_pin
+        config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version='v2')
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):
