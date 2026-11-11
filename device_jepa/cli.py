@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .data import build_manifest, load_dataset, synthetic_dataset, verify_manifest
 from .methods import BASELINE_MODES, JEPA_MODES, add_model_arguments, method_spec, select_models
+from .sampling import apply_dataset_sampling, sampling_options
 
 
 def _write(path, value):
@@ -15,6 +16,12 @@ def _write(path, value):
 
 def _read(path):
     return json.loads(Path(path).read_text())
+
+
+def _import_sampling_options(config):
+    """Validate the data budget before opening any large raw source."""
+    cap, seed = sampling_options(config.get("dataset"))
+    return dict(max_samples_per_circuit=cap, sampling_seed=seed)
 
 
 def _max_table_rows(value):
@@ -49,13 +56,17 @@ def main(argv=None):
     imp = commands.add_parser("import_analog_agent", help="Read supplied netlist/SQLite safely; no simulation or feasibility filtering")
     imp.add_argument("--input", nargs="+", required=True, help="One or more per-circuit dataset directories")
     imp.add_argument("--output", required=True)
-    imp.add_argument("--config", help="Optional OP-state configuration; default collector_checked")
+    imp.add_argument("--config", help="Optional dataset sampling and OP-state configuration; default all samples/collector_checked")
     imp.add_argument("--max-table-rows", type=_max_table_rows, default=1_000_000,
                      help="Per-source-table safety limit (default: 1000000); raise explicitly or use 'none'. Canonical data is retained in memory.")
     synth = commands.add_parser("make_synthetic", help="Generate toy fixtures, not analog simulation data")
     synth.add_argument("--output", required=True)
     synth.add_argument("--per-circuit", type=int, default=24)
     synth.add_argument("--seed", type=int, default=17)
+    sample = commands.add_parser("sample", help="Persist a configured per-circuit subset before splitting; never overwrite")
+    sample.add_argument("--data", required=True)
+    sample.add_argument("--config", required=True)
+    sample.add_argument("--output", required=True)
     split = commands.add_parser("split", help="Create or verify a persisted grouped experiment manifest")
     split.add_argument("--data", required=True)
     split.add_argument("--config", help="Explicit dataset.train_circuits/ood_circuits and split settings")
@@ -103,11 +114,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "import_analog_agent":
         from .adapter import adapt_analog_agent, combine_datasets
-        datasets = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True) for path in args.input]
+        config = _read(args.config) if args.config else {}
+        sampling = _import_sampling_options(config)
+        datasets = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True,
+                                      **sampling) for path in args.input]
         dataset = datasets[0] if len(datasets) == 1 else combine_datasets(datasets)
         del datasets
         from .states import apply_op_states
-        dataset = apply_op_states(dataset, _read(args.config).get("op_state") if args.config else None)
+        dataset = apply_op_states(dataset, config.get("op_state"))
         print(f"Import: writing {len(dataset['samples'])} samples to canonical JSON", flush=True)
         _write(args.output, dataset)
         print(json.dumps({"samples": len(dataset["samples"]), "circuits": sorted({s["circuit_id"] for s in dataset["samples"]}),
@@ -119,14 +133,30 @@ def main(argv=None):
         _write(args.output, apply_op_states(synthetic_dataset(args.per_circuit, args.seed)))
         print(f"Wrote SYNTHETIC fixture: {args.output}")
         return
+    if args.command == "sample":
+        output = Path(args.output)
+        if output.exists():
+            raise ValueError("Sample output must be a new file; refusing to overwrite existing data")
+        config = _read(args.config)
+        cap, seed = sampling_options(config.get("dataset"))
+        dataset = load_dataset(args.data, sampling_config=config.get("dataset"))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x", encoding="utf-8") as handle:
+            json.dump(dataset, handle, allow_nan=False)
+            handle.write("\n")
+        print(json.dumps(dict(samples=len(dataset["samples"]),
+            max_samples_per_circuit=cap, sampling_seed=seed, output=str(output))))
+        return
     if args.command == "split":
-        dataset = load_dataset(args.data)
-        if Path(args.output).exists():
-            manifest = _read(args.output)
+        config = _read(args.config) if args.config else None
+        manifest = _read(args.output) if Path(args.output).exists() else None
+        sampling = (manifest or {}).get("sampling", config.get("dataset") if config is not None else None)
+        dataset = load_dataset(args.data, sampling_config=sampling)
+        if manifest is not None:
             verify_manifest(dataset, manifest)
             if args.config:
                 # Pure data command: do not import PyTorch just to check config.
-                expected = build_manifest(dataset, config=_read(args.config)["dataset"])
+                expected = build_manifest(dataset, config=config["dataset"])
                 if expected != manifest:
                     raise ValueError("Existing manifest/config differ; choose a new experiment path explicitly")
             elif args.ood_circuit and manifest.get("ood_circuit") != args.ood_circuit:
@@ -134,7 +164,7 @@ def main(argv=None):
             print("Existing manifest verified; no resplit performed")
         else:
             if args.config:
-                manifest = build_manifest(dataset, config=_read(args.config)["dataset"])
+                manifest = build_manifest(dataset, config=config["dataset"])
             else:
                 manifest = build_manifest(dataset, args.ood_circuit, args.seed, args.val_fraction, args.test_fraction)
             _write(args.output, manifest)
@@ -150,6 +180,7 @@ def main(argv=None):
             raise ValueError("Smoke output must be a new or empty directory; refusing to overwrite existing artifacts")
         default = "smoke.json" if args.command == "smoke" else "opamp2_smoke.json"
         config = _read(args.config) if args.config else json.loads(files("device_jepa").joinpath("defaults", default).read_text())
+        sampling = _import_sampling_options(config)
         # The old direct smoke command remains JEPA-only unless a selection is
         # supplied in the CLI/config. Comparison scripts keep their own default.
         models = select_models(config, args.models, default=('jepa_zerosim',))
@@ -164,11 +195,13 @@ def main(argv=None):
             label = "SYNTHETIC"
         else:
             from .adapter import adapt_analog_agent, combine_datasets
-            sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True) for path in args.input]
+            sources = [adapt_analog_agent(path, max_table_rows=args.max_table_rows, progress=True,
+                                         **sampling) for path in args.input]
             dataset = sources[0] if len(sources) == 1 else combine_datasets(sources)
             del sources
             label = "REAL-DATA PIPELINE CHECK (NOT ACCURACY EVIDENCE)"
         from .states import apply_op_states
+        dataset = apply_dataset_sampling(dataset, config.get("dataset"))
         dataset = apply_op_states(dataset, config.get("op_state"))
         manifest = _new_manifest(dataset, config, output / "manifest.json")
         _write(output / "data.json", dataset)
@@ -205,19 +238,31 @@ def main(argv=None):
         print("Smoke complete: mechanics only. No real performance claim.")
         return
     print(f"Loading canonical dataset for {args.command}: {args.data}", flush=True)
-    dataset = load_dataset(args.data)
+    if args.command == "evaluate":
+        from .training import load_checkpoint
+        checkpoint = load_checkpoint(args.checkpoint)
+        sampling = checkpoint["manifest"].get("sampling", checkpoint["options"].get("dataset"))
+        dataset = load_dataset(args.data, sampling_config=sampling)
+    else:
+        config = _read(args.config)
+        if args.command in {"pretrain", "train_baseline"}:
+            manifest = _read(args.manifest)
+            sampling = manifest.get("sampling", config.get("dataset"))
+        else:
+            from .training import load_checkpoint
+            sampling = load_checkpoint(args.pretrained)["manifest"].get("sampling", config.get("dataset"))
+        dataset = load_dataset(args.data, sampling_config=sampling)
     if args.command == "pretrain":
-        print(pretrain(dataset, _read(args.manifest), _read(args.config), args.output, args.device, mode=args.mode))
+        print(pretrain(dataset, manifest, config, args.output, args.device, mode=args.mode))
     elif args.command == "train_baseline":
         from .baselines import train_baseline
-        print(train_baseline(dataset, _read(args.manifest), _read(args.config), args.output, mode=args.mode, device=args.device))
+        print(train_baseline(dataset, manifest, config, args.output, mode=args.mode, device=args.device))
     elif args.command == "train_decoder":
-        print(train_decoder(dataset, args.pretrained, _read(args.config), args.output, args.device))
+        print(train_decoder(dataset, args.pretrained, config, args.output, args.device))
     else:
         seed_everything(17)
-        from .training import load_checkpoint
         evaluator = evaluate
-        if load_checkpoint(args.checkpoint)["stage"] == "baseline":
+        if checkpoint["stage"] == "baseline":
             from .baselines import evaluate_baseline
             evaluator = evaluate_baseline
         report = evaluator(dataset, args.checkpoint, args.split, args.batch_size, args.device, args.output)

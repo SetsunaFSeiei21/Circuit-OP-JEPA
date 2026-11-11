@@ -57,6 +57,8 @@ python -m device_jepa smoke_real \
 
 ## 数据处理流程
 
+可在所用配置的 `dataset` 中设置 `"max_samples_per_circuit": 20000, "sampling_seed": 17`：每个电路先随机抽取最多 20,000 条，再划分。单电路和原有联合训练/OOD 入口共用此设置；默认 `null` 保留全量，全部模型与训练 seeds 使用同一批样本。各脚本的配置位置、OOD 数量规则和续训约束见 [按电路抽样说明](docs/DATA_SUBSAMPLING_ZH.md)。
+
 ```bash
 python -m device_jepa import_analog_agent \
   --input /path/to/Opamp2 \

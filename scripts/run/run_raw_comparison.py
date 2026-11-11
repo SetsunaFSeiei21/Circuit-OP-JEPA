@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from device_jepa.cli import _max_table_rows
 from device_jepa.methods import add_model_arguments, select_models
 from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
+from device_jepa.sampling import sampling_options
 from scripts.run.result_paths import create_default_output
 
 
@@ -96,7 +97,7 @@ def main(argv=None):
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--max-table-rows', type=_max_table_rows, default=1_000_000,
                         help="Importer row safety limit; raise explicitly or use 'none'")
-    parser.add_argument('--smoke', action='store_true', help='JEPA 1+1 epochs, baselines 2; does not subsample data')
+    parser.add_argument('--smoke', action='store_true', help='JEPA 1+1 epochs, baselines 2; sample count follows dataset config')
     args = parser.parse_args(argv)
 
     output = Path(args.output).resolve() if args.output is not None else None
@@ -111,6 +112,7 @@ def main(argv=None):
         if not directory.is_dir():
             parser.error(f'Input must be a per-circuit directory: {directory}')
     config = copy.deepcopy(json.loads(Path(args.config).read_text()))
+    cap, sampling_seed = sampling_options(config.get('dataset'))
     models = select_models(config, args.models)
     membership, count, label = source_plan(directories, args.train_circuits, args.ood_circuits)
     config['dataset'].update(membership)
@@ -129,7 +131,9 @@ def main(argv=None):
     print(f'Experiment: {label} | source samples: {count} | output: {output}', flush=True)
     print('Circuit membership: ' + json.dumps(membership), flush=True)
     print('Selected models: ' + ', '.join(models), flush=True)
-    print('Raw import runs in this process allocation; canonical data still requires full dataset memory.', flush=True)
+    print(f'Sampling: max_samples_per_circuit={cap}, sampling_seed={sampling_seed}; '
+          'selection occurs before importing OP records and before splitting.', flush=True)
+    print('Raw import runs in this process allocation; selected canonical data is retained in memory.', flush=True)
 
     def run(command):
         print('+ ' + ' '.join(map(str, command)), flush=True)

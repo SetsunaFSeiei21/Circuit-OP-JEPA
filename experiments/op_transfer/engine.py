@@ -661,10 +661,13 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
     device = require_device(device)
     seed_everything(seeds[0], options['torch_threads'])
     print(f'Loading canonical dataset: {data_path}', flush=True)
-    dataset = load_dataset(data_path)
-    manifest = (json.loads(Path(manifest_path).read_text()) if manifest_path else
-                build_manifest(dataset, config=config['dataset']))
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
+    dataset = load_dataset(data_path, sampling_config=(manifest or {}).get('sampling', config.get('dataset')))
+    if manifest is None:
+        manifest = build_manifest(dataset, config=config['dataset'])
     verify_manifest(dataset, manifest)
+    from device_jepa.sampling import check_sampling_config
+    check_sampling_config(config.get('dataset'), manifest.get('sampling'))
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / 'config.json', config)
     write_json(output / 'manifest.json', manifest)

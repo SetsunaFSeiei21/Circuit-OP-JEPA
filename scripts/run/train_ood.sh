@@ -8,6 +8,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TRAIN_CIRCUITS=(5t_ota Opamp0 Opamp1)
 OOD_CIRCUITS=("${OOD_CIRCUIT:-two_stage_folded_opamp}")
 RAW_ROOT="${RAW_ROOT:-$PROJECT_ROOT/runs/raw/full_data}"
+# Set dataset.max_samples_per_circuit (null/all or a positive count) and sampling_seed in CONFIG.
 CONFIG="${CONFIG:-$PROJECT_ROOT/configs/default.json}"
 MODELS=(
   zerosim_pin

@@ -21,7 +21,7 @@ bash final_exam/single_circuit/train.sh --smoke
 bash final_exam/single_circuit/train.sh
 ```
 
-烟测只缩短训练轮次，仍会导入完整输入；大数据的导入时间和内存需求不会因为 `--smoke` 消失。输入默认 `runs/raw/full_data/<电路名>/`，需要 SQLite 和对应网表。原始 W/L 单位必须已经正确，导入仍严格校验与 OP 几何的一致性，不自动猜单位或改写原始文件。
+烟测只缩短训练轮次；样本数量由配置的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量。设为 `20000` 时每电路先抽取最多 20,000 条再划分，见 [数据抽样说明](../docs/DATA_SUBSAMPLING_ZH.md)。输入默认 `runs/raw/full_data/<电路名>/`，需要 SQLite 和对应网表。原始 W/L 单位必须已经正确，导入仍严格校验与 OP 几何的一致性，不自动猜单位或改写原始文件。
 
 只运行需要的模型，直接在 bash 的数组中删减。仅选择学生模型时，会自动训练必需的教师和 OP predictor；它们保存在共享依赖目录，不会因此运行其他无关 baseline。
 

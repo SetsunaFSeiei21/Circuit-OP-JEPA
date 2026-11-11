@@ -120,6 +120,20 @@ class StagedResumePinTests(unittest.TestCase):
         self.assertEqual(json.loads((source / 'preprocessing_pin.json').read_text()),
                          json.loads((output / 'preprocessing_pin.json').read_text()))
 
+    def test_sampled_failure_reuses_saved_ids_without_resampling_full_canonical(self):
+        self.config['dataset'].update(max_samples_per_circuit=12, sampling_seed=29)
+        self.cfg_path.write_text(json.dumps(self.config))
+        source = self.failed_source('sampled_failure_pin')
+        before = self.snapshot(source)
+        manifest = json.loads((source / 'manifest_pin.json').read_text())
+        self.assertEqual(sum(len(manifest[k]) for k in ('train', 'val', 'test')), 12)
+        self.assertEqual(manifest['sampling']['circuits']['synthetic_0']['source_count'], 24)
+        with patch('device_jepa.sampling.select_sample_ids', side_effect=AssertionError('redrew samples')):
+            output, result = self.run_models('sampled_recovery_pin', source=source)
+        self.assertEqual(json.loads((output / 'manifest_pin.json').read_text()), manifest)
+        self.assertEqual(self.snapshot(source), before)
+        self.assertEqual(len(result['results']), 3)
+
     def test_completed_experiment_replays_without_optimizer_steps(self):
         source, original = self.run_models('completed_pin')
         before = self.snapshot(source)

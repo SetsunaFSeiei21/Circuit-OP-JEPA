@@ -21,7 +21,7 @@ bash final_exam/single_circuit_pin/train_pin.sh --smoke
 bash final_exam/single_circuit_pin/train_pin.sh
 ```
 
-`--dry-run` 不提交、不创建输出目录。`--smoke` 提交短轮次训练，但仍导入完整原始数据；不会把 60,000 条输入自动裁成小样本。原始输入继续使用 `runs/raw/full_data/<电路名>/`，无需复制或重命名 SQLite/网表。输入单位检查和器件级入口相同，不自动猜测几何单位。
+`--dry-run` 不提交、不创建输出目录。`--smoke` 提交短轮次训练，不自动改变样本数。在所用配置中设置 `dataset.max_samples_per_circuit: 20000` 可先按电路抽取最多 20,000 条再划分；默认 `null` 为全量，见 [数据抽样说明](../../docs/DATA_SUBSAMPLING_ZH.md)。原始输入继续使用 `runs/raw/full_data/<电路名>/`，无需复制或重命名 SQLite/网表。输入单位检查和器件级入口相同，不自动猜测几何单位。
 
 `train_pin.sh`、`train_op_gate_pin.sh`、`train_staged_op_gate_pin.sh` 和 `train_staged_op_gate_fusion_pin.sh` 均通过 `JEPA_PROJECT_ROOT` 传递仓库绝对路径。Slurm 会将 `run_pin.sh` 复制到 `/var/spool/...` 执行，因此计算节点入口不再直接用该副本的位置推算项目根目录；它依次检查显式路径、`--chdir` 对应的工作目录和 `SLURM_SUBMIT_DIR`，最后才尝试本地脚本相对路径。找不到 `final_exam/common/launch_pin.py` 时提前报错，启动日志打印 `Project root:`。这同样适用于新增的 OP 门控实验，结果仍保存在当前仓库。修复后需要重新提交失败的作业。
 
@@ -51,7 +51,7 @@ MODELS=(
 | 数据导入和命令日志 | `logs_pin/<run_id_pin>/launch_pin.log` |
 | 实验总日志 | `logs_pin/<run_id_pin>/experiment_pin.log` |
 | 各 seed/模型训练、评估日志 | `logs_pin/<run_id_pin>/seed_<seed>_pin/<model_pin>/train_pin.log`、`evaluate_pin.log` |
-| 完整输入数据及启动配置 | `results_pin/<run_id_pin>/data_pin.json`、`config_pin.json` |
+| 本次选中的输入数据及启动配置 | `results_pin/<run_id_pin>/data_pin.json`、`config_pin.json` |
 | 作业状态与路径关联 | `results_pin/<run_id_pin>/run_pin.json` |
 | 模型结果与训练状态 | `results_pin/<run_id_pin>/training_pin/` |
 | 自动生成 Excel | `results_pin/<run_id_pin>/training_pin/summary_pin.xlsx` |

@@ -256,7 +256,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     device = require_device(device)
     options = engine.settings(config)
     seed_everything(seeds[0], options['torch_threads'])
-    dataset = load_dataset(data_path)
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else source_manifest
+    dataset = load_dataset(data_path, sampling_config=(manifest or {}).get('sampling', config.get('dataset')))
     circuit = config['dataset']['train_circuits'][0]
     if {row['circuit_id'] for row in dataset['samples']} != {circuit}:
         raise ValueError('Canonical dataset must contain only the configured single circuit')
@@ -272,8 +273,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     too_small = [mode for mode, capacity in capacities.items() if capacity < pin_count]
     if too_small:
         raise ValueError(f'{pin_count} pin/port tokens exceed max_devices capacity for {too_small}; no truncation')
-    manifest = (json.loads(Path(manifest_path).read_text()) if manifest_path else source_manifest if resume_source else
-                build_manifest(dataset, config=config['dataset']))
+    if manifest is None:
+        manifest = build_manifest(dataset, config=config['dataset'])
     verify_manifest(dataset, manifest)
     _check_dataset_options(config, manifest)
     if manifest['ood'] or not all(manifest[k] for k in ('train', 'val', 'test')):

@@ -76,6 +76,8 @@ def _save_json(path, value):
 
 
 def _check_options(options):
+    from .sampling import sampling_options
+    sampling_options(options.get('dataset'))
     tr = options["training"]
     early_stopping_config(tr)
     for key in ('batch_size', 'pretrain_epochs', 'decoder_epochs'):
@@ -97,6 +99,8 @@ def _check_dataset_options(options, manifest):
     config = options.get("dataset")
     if config is None:
         return
+    from .sampling import check_sampling_config
+    check_sampling_config(config, manifest.get('sampling'))
     for key in ("train_circuits", "ood_circuits"):
         if sorted(config.get(key, [])) != manifest[key]:
             raise ValueError(f"Config {key} differs from persisted manifest; create an explicit new experiment")

@@ -155,7 +155,8 @@ def run_experiment(data_path, config_path, output, models, seeds, device, *, log
     device = require_device(device)
     options = engine.settings(config)
     seed_everything(seeds[0], options['torch_threads'])
-    dataset = load_dataset(data_path)
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
+    dataset = load_dataset(data_path, sampling_config=(manifest or {}).get('sampling', config.get('dataset')))
     circuit = config['dataset']['train_circuits'][0]
     if {row['circuit_id'] for row in dataset['samples']} != {circuit}:
         raise ValueError('Canonical dataset must contain only the configured single circuit')
@@ -163,8 +164,8 @@ def run_experiment(data_path, config_path, output, models, seeds, device, *, log
     identities = {tuple(engine.group_keys(row)) for row in dataset['samples']}
     if len(identities) != 1:
         raise ValueError('Single-circuit task requires one fixed topology/device identity')
-    manifest = (json.loads(Path(manifest_path).read_text()) if manifest_path else
-                build_manifest(dataset, config=config['dataset']))
+    if manifest is None:
+        manifest = build_manifest(dataset, config=config['dataset'])
     verify_manifest(dataset, manifest)
     _check_dataset_options(config, manifest)
     if manifest['ood'] or not all(manifest[k] for k in ('train', 'val', 'test')):

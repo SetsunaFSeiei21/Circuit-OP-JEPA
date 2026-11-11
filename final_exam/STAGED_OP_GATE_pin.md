@@ -122,7 +122,7 @@ bash final_exam/single_circuit_pin/train_staged_op_gate_pin.sh --dry-run
 bash final_exam/single_circuit_pin/train_staged_op_gate_pin.sh
 ```
 
-每个电路提交一个 Slurm 作业，默认 8 CPU、1 GPU、80G 主机内存，账户 `b_phzhwu`、分区 `ex01A800`、Conda 环境 `newbase`。GPU 用于训练；SQLite/JSON 读取和静态数据准备仍需 CPU。`--smoke` 缩短训练，但仍导入完整原始源数据。`--dry-run` 只预览，不提交也不创建输出目录。
+每个电路提交一个 Slurm 作业，默认 8 CPU、1 GPU、80G 主机内存，账户 `b_phzhwu`、分区 `ex01A800`、Conda 环境 `newbase`。GPU 用于训练；SQLite/JSON 读取和静态数据准备仍需 CPU。`--smoke` 缩短训练；样本数由配置的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量，见 [数据抽样说明](../docs/DATA_SUBSAMPLING_ZH.md)。`--dry-run` 只预览，不提交也不创建输出目录。
 
 脚本在提交时保存配置快照，并通过 `JEPA_PROJECT_ROOT` 传递当前仓库根目录，避免 Slurm `/var/spool/` 副本引起路径错误。不会创建另一个仓库副本。程序仅尝试记录 Git commit；计算节点没有 Git 时会继续训练并将版本标为 `unavailable`。
 

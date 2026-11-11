@@ -25,6 +25,8 @@
       0.1
     ],
     "split_seed": 17,
+    "max_samples_per_circuit": null,
+    "sampling_seed": 17,
     "finetune_label_fraction": 1.0
   },
   "normalization": {

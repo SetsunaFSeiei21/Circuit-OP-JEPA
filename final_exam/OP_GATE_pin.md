@@ -164,7 +164,7 @@ bash final_exam/single_circuit_pin/train_op_gate_pin.sh --dry-run
 bash final_exam/single_circuit_pin/train_op_gate_pin.sh --smoke
 ```
 
-烟测只缩短训练轮数，仍然导入所选目录下的完整原始数据。要验证小数据流程，应把脚本的 `RAW_ROOT` 指向已准备好的小样本来源。
+烟测只缩短训练轮数；样本数由配置的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量。可设置小的正整数，在导入时按电路随机抽取该总数，再划分 train/val/test，见 [数据抽样说明](../docs/DATA_SUBSAMPLING_ZH.md)。
 
 正式提交：
 

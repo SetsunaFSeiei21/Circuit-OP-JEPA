@@ -166,9 +166,14 @@ only the timestamp/PID folder and job-ID filenames; `JEPA_JOB_KIND` still contro
 the job name. Dry runs create no log directories. This setting applies at
 submission and does not move logs from already submitted jobs.
 
-This workflow does not subsample the source. `--smoke` uses one JEPA
-pretraining epoch plus one decoder epoch and two epochs per baseline while
-importing all source samples. Explicitly raising or
+Set `dataset.max_samples_per_circuit` to a positive count (for example 20000)
+in the chosen config to sample each circuit before importing expensive OP rows
+and splitting. The default `null` imports every sample; `dataset.sampling_seed`
+defaults to 17 and is independent of model seeds. Held-out circuits are capped
+separately, and their selected samples all remain OOD. See
+[sampling rules and config locations](../docs/DATA_SUBSAMPLING_ZH.md).
+`--smoke` uses one JEPA pretraining epoch plus one decoder epoch and two epochs
+per baseline; it does not override the configured sample count. Explicitly raising or
 disabling the source row limit does not provide out-of-core storage: canonical
 objects, state encoding and JSON still require dataset-sized memory. Capacity
 for the user's full 60,000-point sources must be measured in their jobs.

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from device_jepa.methods import add_model_arguments, method_spec, select_models
 from device_jepa.budgets import comparison_epoch_budget, smoke_epochs
+from device_jepa.sampling import sampling_options
 
 
 def main(argv=None):
@@ -41,6 +42,7 @@ def main(argv=None):
     from device_jepa.resident import require_device
     require_device(args.device)
     from device_jepa.early_stopping import early_stopping_config
+    cap, sampling_seed = sampling_options(config.get('dataset'))
     print('Selected models: ' + ', '.join(models), flush=True)
     print('Maximum epoch budgets (equal total): ' + json.dumps(budgets, sort_keys=True), flush=True)
     print('Validation early stopping: ' + json.dumps(early_stopping_config(config['training']), sort_keys=True), flush=True)
@@ -51,6 +53,13 @@ def main(argv=None):
         subprocess.run(command, cwd=ROOT, check=True)
     base_config = out/'config.json'
     base_config.write_text(json.dumps(config, indent=2)+'\n')
+    if cap is not None:
+        # A short-lived data-only child releases the full JSON object graph
+        # before any training process starts. All seeds reuse the smaller file.
+        selected_data = out / 'sampled_data.json'
+        print(f'Sampling: at most {cap} per circuit before splitting; seed={sampling_seed}', flush=True)
+        run('sample', '--data', data, '--config', base_config, '--output', selected_data)
+        data = selected_data
     manifest = out/'manifest.json'
     run('split', '--data', data, '--config', base_config, '--output', manifest)
     split = json.loads(manifest.read_text())

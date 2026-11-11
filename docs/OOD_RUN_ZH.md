@@ -68,8 +68,9 @@ python scripts/run/check_raw_geometry.py \
 单电路与 OOD 作业相互独立；反复启动会创建新实验目录，不会续跑旧结果。
 
 原始数据导入仍严格检查 W/L/m、器件身份与单位；脚本不会自动猜测或修改单位。
-联合实验需要保存全部导入对象及对应数值缓存，四个 60,000 点数据集的内存容量需在实际集群验证；
-`--max-table-rows none` 只解除单表行数保护，不是分块训练。`--smoke` 只缩短 epoch，不减少导入样本。
+联合实验需要保存本次选中样本的导入对象及对应数值缓存，完整数据集的内存容量仍需在实际集群验证。
+可在 `CONFIG` 的 `dataset` 中设置 `"max_samples_per_circuit": 20000, "sampling_seed": 17`，先从每个训练电路和 OOD 电路各抽取最多 20,000 条；训练电路再划分 train/val/test，留出电路的所选样本全部进入 OOD。默认 `null` 为全量，详见 [数据抽样说明](DATA_SUBSAMPLING_ZH.md)。
+`--max-table-rows none` 只解除单表行数保护，不是分块训练。`--smoke` 只缩短 epoch，样本数量仍由上述配置控制。
 
 ## 底层原始数据入口
 

@@ -16,7 +16,7 @@ OOD 直接编辑 `experiments/op_transfer/train_ood.sh` 开头的 `TRAIN_CIRCUIT
 bash experiments/op_transfer/train_ood.sh
 ```
 
-两个脚本均默认提交完整数据的 GPU 作业；可加 `--dry-run` 仅预览。原始数据目录 `RAW_ROOT` 和配置路径 `CONFIG` 也写在脚本开头。batch size、各阶段 epoch 和模型结构参数在 `CONFIG` 指定的 JSON 中设置。脚本自动完成导入和新训练，不需要填写旧实验目录。结果、日志和 Excel 的位置与下面的 raw 入口相同。
+两个脚本默认提交 GPU 作业；可加 `--dry-run` 仅预览。样本数量由配置的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量。设为 `20000` 时，每个训练电路和 OOD 电路分别随机抽最多 20,000 条，再进行划分，见 [数据抽样说明](../../docs/DATA_SUBSAMPLING_ZH.md)。原始数据目录 `RAW_ROOT` 和配置路径 `CONFIG` 也写在脚本开头。batch size、各阶段 epoch 和模型结构参数在 `CONFIG` 指定的 JSON 中设置。脚本自动完成导入和新训练，不需要填写旧实验目录。结果、日志和 Excel 的位置与下面的 raw 入口相同。
 
 模型选择以两个 bash 脚本各自的 `MODELS` 为准，新增的分阶段学生也已加入其中。单电路脚本保留用户设置的 `Opamp1`、seed 17 和原五个对照模型；OOD 脚本保留自己的电路与种子设置。若只验证“预测 OP 的教师补偿”，可使用：
 
@@ -45,7 +45,7 @@ bash experiments/op_transfer/submit.sh --submit \
   --seeds 17 29 43 --device cuda
 ```
 
-修改 `--circuit` 选择电路，修改 `--models` 选择模型。默认使用本目录 `example_config.json`；`--config` 可指定其他配置，电路角色由命令覆盖配置中的示例电路。此命令使用完整数据，从头训练；导入、创建新划分、必要前置阶段、性能训练、测试和 Excel 汇总都在作业内自动执行。新划分使用配置的 `split_seed`，相同数据与种子可复现划分；无需旧 checkpoint 或 manifest。默认资源仍是 1 GPU、8 CPU。
+修改 `--circuit` 选择电路，修改 `--models` 选择模型。默认使用本目录 `example_config.json`；`--config` 可指定其他配置，电路角色由命令覆盖配置中的示例电路。此命令按配置决定全量或抽样，从头训练；导入、创建新划分、必要前置阶段、性能训练、测试和 Excel 汇总都在作业内自动执行。新划分使用配置的 `split_seed`，相同数据与种子可复现划分；无需旧 checkpoint 或 manifest。默认资源仍是 1 GPU、8 CPU。
 
 原始目录不在默认位置时加 `--raw-root /path/to/full_data`。`--max-table-rows` 默认 `none`，可显式设置导入安全上限。几何单位仍由原有严格 importer 检查，不修改原始网表或自动猜测单位。`--max-train/val/test` 仅限制训练/评估子集，不减少原始数据导入量。
 

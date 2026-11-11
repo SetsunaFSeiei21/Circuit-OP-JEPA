@@ -28,6 +28,7 @@ MODELS=(
 # design_op_oracle and student_predicted_op above.
 # SEEDS=(17 29 43)
 SEEDS=(17)
+# Set dataset.max_samples_per_circuit (null/all or a positive count) and sampling_seed in CONFIG.
 CONFIG="$HERE/example_config.json"
 RAW_ROOT="$PROJECT_ROOT/runs/raw/full_data"
 DEVICE="cuda"

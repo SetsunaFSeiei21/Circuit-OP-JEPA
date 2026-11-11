@@ -63,7 +63,7 @@ bash final_exam/single_circuit_pin/train_pin.sh --smoke
 bash final_exam/single_circuit_pin/train_pin.sh
 ```
 
-`--dry-run` 只打印，不提交或写目录。`--smoke` 实际提交、缩短训练轮次，但仍导入完整原始源；使用完整 60,000 点源时不会自动裁成小数据。默认 Slurm 8 CPU/1 GPU、80G、`b_phzhwu`/`ex01A800`、环境 `newbase`。
+`--dry-run` 只打印，不提交或写目录。`--smoke` 实际提交并缩短训练轮次；样本数量由配置中的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量，设为 `20000` 则先抽取每电路总计最多 20,000 条再划分，见 [数据抽样说明](../docs/DATA_SUBSAMPLING_ZH.md)。默认 Slurm 8 CPU/1 GPU、80G、`b_phzhwu`/`ex01A800`、环境 `newbase`。
 
 只选学生会自动训练必需的教师和 predictor，每个 seed 各一次，不训练其他无关模型。例如：
 

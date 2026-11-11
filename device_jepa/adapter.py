@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .data import TERMINAL_NAMES, validate_dataset
+from .sampling import (validate_sampling_options, select_sample_ids,
+                       build_selection_record, make_sampling_metadata)
 
 
 class AdapterError(ValueError):
@@ -412,7 +414,9 @@ def _vector(raw: str | None, names: list[str], location: str, *, missing: bool) 
 
 
 @contextmanager
-def _read_database(path: Path, *, max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS):
+def _read_database(path: Path, *, max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS,
+                   max_samples_per_circuit: int | None = None,
+                   sampling_seed: int = 17):
     """Preflight counts, then stream fixed SELECTs in one read-only snapshot.
 
     The safety bound is per table, not per sample. Raising it or passing None
@@ -423,6 +427,10 @@ def _read_database(path: Path, *, max_table_rows: int | None = DEFAULT_MAX_TABLE
     """
     if max_table_rows is not None and (type(max_table_rows) is not int or max_table_rows < 1):
         raise AdapterError("max_table_rows must be a positive integer or None")
+    try:
+        cap, sampling_seed = validate_sampling_options(max_samples_per_circuit, sampling_seed)
+    except ValueError as exc:
+        raise AdapterError(str(exc)) from exc
     connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -464,6 +472,40 @@ def _read_database(path: Path, *, max_table_rows: int | None = DEFAULT_MAX_TABLE
                     "set an explicit larger limit or None (--max-table-rows none) after checking memory/disk capacity"
                 )
         output = {"op_names": numeric, "table_counts": counts}
+        # Select only IDs before opening the expensive sample/OP row cursors.
+        # A fixed membership predicate avoids both huge SQL parameter lists and
+        # rereading unindexed OP tables once per selected-ID chunk. SQLite still
+        # scans source tables where needed, but discarded rows never become
+        # Python dictionaries, parsed JSON, or canonical device objects.
+        if cap is not None:
+            schema_rows = [dict(row) for row in connection.execute(statements['dataset_schema'])]
+            if len(schema_rows) != 1:
+                raise AdapterError("Expected exactly one dataset_schema row")
+            circuit = schema_rows[0]['circuit_name']
+            if not isinstance(circuit, str) or not circuit.strip():
+                raise AdapterError("dataset_schema.circuit_name must be nonempty")
+            raw_ids = [row[0] for row in connection.execute('SELECT sample_id FROM samples ORDER BY sample_id')]
+            if not raw_ids or len(set(raw_ids)) != len(raw_ids):
+                raise AdapterError("Samples must be nonempty and have unique sample_id values")
+            canonical_ids = [f'{circuit}:{sample_id}' for sample_id in raw_ids]
+            selected_ids = select_sample_ids(canonical_ids, circuit, cap, sampling_seed)
+            selected_set = set(selected_ids)
+            raw_selected = {sample_id for sample_id in raw_ids if f'{circuit}:{sample_id}' in selected_set}
+            output['sampling'] = build_selection_record(circuit, canonical_ids, selected_ids, cap, sampling_seed)
+            output['max_samples_per_circuit'] = cap
+            output['sampling_seed'] = sampling_seed
+            output['selected_sample_count'] = len(raw_selected)
+            if len(raw_selected) < len(raw_ids):
+                all_source_ids = set(raw_ids)
+                # Preserve orphan identity checks even when their ID was not
+                # selectable. Only rows belonging to discarded valid samples
+                # are omitted from payload validation.
+                connection.create_function('jepa_selected_sample', 1,
+                    lambda sample_id: int(sample_id in raw_selected or sample_id not in all_source_ids),
+                    deterministic=True)
+                for name in ('samples', 'dc_device_operating_points', 'dc_operating_points'):
+                    statements[name] = statements[name].replace(
+                        ' ORDER BY ', ' WHERE jepa_selected_sample(sample_id) ORDER BY ')
         for name, statement in statements.items():
             rows = map(dict, connection.execute(statement)) if name in tables else iter(())
             output[name] = list(rows) if name == "dataset_schema" else rows
@@ -518,16 +560,20 @@ def _observation(row: dict, source_sample: dict) -> dict:
 def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
                        strict: bool = True, *,
                        max_table_rows: int | None = DEFAULT_MAX_TABLE_ROWS,
+                       max_samples_per_circuit: int | None = None,
+                       sampling_seed: int = 17,
                        progress: bool = False) -> dict[str, Any]:
-    """Import every sample, including infeasible and performance-failed samples.
+    """Import all samples or a reproducible uniform subset selected by ID.
 
     strict=False relaxes only input-geometry vs measured-geometry consistency;
-    unsupported syntax, unknown models, ambiguous identities, and malformed
-    vectors always fail. Missing OP rows/features and metrics remain explicit
+    unsupported syntax and ambiguous source IDs always fail; selected samples
+    retain all model/identity/vector checks. Missing OP rows/features and metrics remain explicit
     null values, never zero-imputed. Source status labels are not model inputs.
     The default per-table safety bound can be raised explicitly or disabled with
     max_table_rows=None. Source rows are streamed, but the returned canonical
     object remains in memory; this is not an out-of-core training data format.
+    max_samples_per_circuit selects at most that many samples before decoding
+    source payloads. Selection never filters by feasibility or observed labels.
     """
     root = Path(root).resolve()
     if not root.is_dir():
@@ -535,7 +581,9 @@ def adapt_analog_agent(root: str | Path, netlist: str | Path | None = None,
     database = _inside(root / "sampling_history.sqlite3", root)
     if progress:
         print(f"Import: opening read-only SQLite source {root.name}", flush=True)
-    with _read_database(database, max_table_rows=max_table_rows) as source:
+    with _read_database(database, max_table_rows=max_table_rows,
+                        max_samples_per_circuit=max_samples_per_circuit,
+                        sampling_seed=sampling_seed) as source:
         return _adapt_source(root, netlist, strict, database, source, progress=progress)
 
 
@@ -566,6 +614,10 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
     pending_ops, pending_observation = next(op_groups, None), next(observation_groups, None)
     sample_ids = set()
     samples, parameter_names, warnings = [], [], []
+    selected_count = source.get('selected_sample_count', source['table_counts']['samples'])
+    if progress and 'sampling' in source:
+        print(f"Import {circuit}: selected {selected_count}/{source['table_counts']['samples']} "
+              "samples before decoding", flush=True)
     for row in source["samples"]:
         sample_id = row["sample_id"]
         if sample_id in sample_ids:
@@ -661,8 +713,8 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
                         "source_observation": merged_observation,
                         "source_sampling": {key: row[key] for key in ("run_id", "sample_index", "sample_method", "success", "error_type", "access_level", "is_real_spice_call", "cache_hit_sample_id") if key in row}})
         if progress and (len(samples) == 1 or len(samples) % 5000 == 0
-                         or len(samples) == source['table_counts']['samples']):
-            print(f"Import {circuit}: {len(samples)}/{source['table_counts']['samples']} samples", flush=True)
+                         or len(samples) == selected_count):
+            print(f"Import {circuit}: {len(samples)}/{selected_count} samples", flush=True)
     if pending_ops is not None:
         raise AdapterError(f"Orphan OP sample_id: {pending_ops[0]}")
     if pending_observation is not None:
@@ -691,7 +743,7 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
                "provenance": {"source_format": "Analog-Agent", "sqlite_open_mode": "read-only",
                               "join_key": ["sample_id", "device_name (SPICE case-insensitive, exact full name)"],
                               "source_hashes_sha256": {str(p.relative_to(root)): _sha256(p) for p in files},
-                              "source_counts": {"samples": len(samples), "design_parameters": len(design_names),
+                              "source_counts": {"samples": source['table_counts']['samples'], "design_parameters": len(design_names),
                                                 "devices_per_sample": len(parsed["devices"]),
                                                 "mos_devices_per_sample": sum(d["op_target"] for d in parsed["devices"]),
                                                 "device_op_rows": source["table_counts"]["dc_device_operating_points"], "op_fields": len(op_names), "metrics": len(metric_names)},
@@ -701,6 +753,12 @@ def _adapt_source(root: Path, netlist: str | Path | None, strict: bool,
                               "runs": runs, "warnings": warnings,
                               "filtering": "none; infeasible samples and missing metrics retained",
                               "op_semantics": "source numeric columns preserved without abs, normalization, or recomputation; some columns are upstream-derived"}}
+    if 'sampling' in source:
+        dataset['sampling'] = make_sampling_metadata(
+            {circuit: source['sampling']}, source['max_samples_per_circuit'], source['sampling_seed'])
+        dataset['provenance']['source_counts']['selected_samples'] = len(samples)
+        dataset['provenance']['filtering'] = (
+            'uniform per-circuit sample selection before splitting; no feasibility or label filtering')
     if progress:
         print(f"Import {circuit}: validating complete canonical dataset", flush=True)
     return validate_dataset(dataset)
@@ -810,6 +868,22 @@ def combine_datasets(datasets: list[dict[str, Any]]) -> dict[str, Any]:
                 raise AdapterError(f"Conflicting provenance for source_id {source_id}")
             sources[source_id] = leaf
     combined["provenance"]["sources"] = list(sources.values())
+    sampling = [dataset.get('sampling') for dataset in datasets]
+    if any(item is not None for item in sampling):
+        if any(item is None for item in sampling):
+            raise AdapterError('Cannot combine sampled and unsampled datasets; use the same sampling options for every circuit')
+        cap, seed = sampling[0]['max_samples_per_circuit'], sampling[0]['sampling_seed']
+        records = {}
+        for item in sampling:
+            if (item.get('schema_version'), item.get('algorithm'),
+                    item.get('max_samples_per_circuit'), item.get('sampling_seed')) != (
+                    sampling[0].get('schema_version'), sampling[0].get('algorithm'), cap, seed):
+                raise AdapterError('Cannot combine datasets with different sampling options')
+            for circuit, record in item['circuits'].items():
+                if circuit in records and records[circuit] != record:
+                    raise AdapterError(f'Conflicting sampling selection for circuit {circuit}')
+                records[circuit] = copy.deepcopy(record)
+        combined['sampling'] = make_sampling_metadata(records, cap, seed)
     return validate_dataset(combined)
 
 

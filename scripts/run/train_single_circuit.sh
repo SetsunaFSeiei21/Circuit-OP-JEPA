@@ -7,6 +7,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Experiment settings: change these for the next run.
 CIRCUIT="${CIRCUIT:-two_stage_opamp_otaf}"
+# Set dataset.max_samples_per_circuit (null/all or a positive count) and sampling_seed in CONFIG.
 CONFIG="${CONFIG:-$PROJECT_ROOT/configs/default.json}"
 MODELS=(
   zerosim_device

@@ -238,6 +238,8 @@ def validate_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
             "sample context must be fixed across the dataset: context is metadata, not a model input; "
             "use one fixed condition or explicitly encode varying conditions as model features in a future converter"
         )
+    from .sampling import validate_sampling_metadata
+    validate_sampling_metadata(dataset)
     return dataset
 
 
@@ -250,10 +252,16 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def load_dataset(path: str | Path) -> dict[str, Any]:
-    """Load UTF-8 JSON, validate it, and preserve context/terminal metadata."""
+def load_dataset(path: str | Path, *, sampling_config=None) -> dict[str, Any]:
+    """Load JSON, apply a fixed per-circuit cap, and validate selected data.
+
+    Canonical JSON still needs to be parsed in full. Raw SQLite import applies
+    the same selection before decoding sample and OP payloads instead.
+    """
     with Path(path).open("r", encoding="utf-8") as handle:
         dataset = json.load(handle, object_pairs_hook=_reject_duplicate_keys)
+    from .sampling import apply_dataset_sampling
+    dataset = apply_dataset_sampling(dataset, sampling_config)
     return validate_dataset(dataset)
 
 
@@ -510,6 +518,8 @@ def build_manifest(
     creates a new experiment, and must not silently overwrite a saved split.
     """
     validate_dataset(dataset)
+    from .sampling import check_sampling_config
+    check_sampling_config(config, dataset.get('sampling'))
     train_circuits, ood_circuits, ratios, seed, fraction = _manifest_config(
         dataset, ood_circuit, seed, val_fraction, test_fraction, config)
     groups = _design_groups(dataset)
@@ -525,6 +535,8 @@ def build_manifest(
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "grouping": "circuit-scoped design_key/design_id/group_id plus model-aware signed-zero-normalized design fingerprint v2",
     })
+    if 'sampling' in dataset:
+        manifest['sampling'] = copy.deepcopy(dataset['sampling'])
     for circuit in train_circuits:
         try:
             _, n_val, n_test = _group_counts(len(groups[circuit]), ratios)
@@ -553,6 +565,8 @@ def verify_manifest(dataset: dict[str, Any], manifest: dict[str, Any]) -> None:
     if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
             or manifest["schema_version"] != MANIFEST_VERSION):
         raise ValueError("manifest schema_version must be 2; create a new explicit experiment")
+    if manifest.get('sampling') != dataset.get('sampling'):
+        raise ValueError('manifest sampling does not match dataset; do not silently redraw samples')
     if (type(manifest.get("design_fingerprint_version")) is not int
             or manifest["design_fingerprint_version"] != DESIGN_FINGERPRINT_VERSION):
         raise ValueError(

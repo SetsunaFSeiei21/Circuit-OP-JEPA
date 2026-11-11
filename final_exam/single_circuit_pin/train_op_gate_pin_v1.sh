@@ -20,6 +20,7 @@ MODELS=(
     device_op_supervised_gate_fusion_pin_v1
 )
 SEEDS=(17 29 43)
+# Set dataset.max_samples_per_circuit (null/all or a positive count) and sampling_seed in CONFIG.
 CONFIG="$PROJECT_ROOT/final_exam/configs/op_gate_pin_v1.json"
 RAW_ROOT="$PROJECT_ROOT/runs/raw/full_data"
 DEVICE="cuda"
@@ -48,7 +49,7 @@ for argument in "$@"; do
             echo 'Usage: bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh [--dry-run] [--smoke]'
             echo 'Edit CIRCUITS, MODELS, SEEDS, CONFIG and cluster settings at the top.'
             echo 'Each circuit submits an independent job. --dry-run creates no output directories.'
-            echo '--smoke shortens training, but still imports the complete raw source.'
+            echo '--smoke shortens training; dataset.max_samples_per_circuit controls sample count.'
             exit 0 ;;
         *) echo "Unknown option: $argument; use --help" >&2; exit 2 ;;
     esac

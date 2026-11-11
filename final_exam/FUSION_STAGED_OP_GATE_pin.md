@@ -67,7 +67,7 @@ bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh --dry-run
 bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh
 ```
 
-`--dry-run` 仅预览，不创建结果目录、不提交作业。`--smoke` 可以与入口一起使用，缩短训练轮数，但仍导入完整原始数据。默认每个电路提交一个 Slurm 作业，8 CPU、1 GPU、80G 主机内存，账户 `b_phzhwu`、分区 `ex01A800`、conda 环境 `newbase`。数据仍读取 `runs/raw/full_data/<电路名>/`。
+`--dry-run` 仅预览，不创建结果目录、不提交作业。`--smoke` 可以与入口一起使用，缩短训练轮数；样本数由配置的 `dataset.max_samples_per_circuit` 控制，默认 `null` 为全量，见 [数据抽样说明](../docs/DATA_SUBSAMPLING_ZH.md)。默认每个电路提交一个 Slurm 作业，8 CPU、1 GPU、80G 主机内存，账户 `b_phzhwu`、分区 `ex01A800`、conda 环境 `newbase`。数据仍读取 `runs/raw/full_data/<电路名>/`。
 
 原 `train_staged_op_gate_pin.sh` 和原配置的默认模型保持不变。需要六模型同作业对照时，在新脚本的 `MODELS` 中另外加入原三个名称。
 
