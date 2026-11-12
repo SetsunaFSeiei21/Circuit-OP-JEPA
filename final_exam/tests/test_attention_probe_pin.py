@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from final_exam.attention_probe_pin import (
@@ -21,6 +22,7 @@ from final_exam.tests.test_gate_probe_pin import snapshot
 from final_exam.tests.test_run_pin import tiny_inputs
 from final_exam.tests.test_summary_pin import text_values, workbook
 from final_exam.run_pin import load_checkpoint_pin, run_experiment_pin
+from final_exam.attention_full_circuit_pin import full_circuit_records, FullCircuitReport
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,6 +97,39 @@ class AttentionMathTests(unittest.TestCase):
             self.assertAlmostEqual(sum(row[key] for key in (
                 'intra_device_mass', 'other_device_mass', 'external_port_mass', 'graph_token_mass', 'padding_mass')), 1.)
 
+        # Full matrices must contain CROSS-device entries, resistor terminals,
+        # external ports and the graph token, with no padding or row re-fit.
+        sample['ports'] = {'VOUT': 'output'}
+        batch['device_ids'] = [['port:VOUT', 'pin:Z_R:p', 'pin:A_M:s', 'pin:A_M:d',
+                               'pin:Z_R:n', 'pin:A_M:b', 'pin:A_M:g']]
+        records = list(full_circuit_records(batch, [sample], capture,
+            mode='device_op_cascade_pin', seed=17, terminal_names=terms))
+        meta, arrays = records[0]
+        self.assertEqual(meta['shape'], [1, 3, 8, 8])
+        self.assertEqual(meta['heads'], [1, 2, 'mean'])
+        self.assertEqual([t['label'] for t in meta['tokens']],
+                         ['GRAPH', 'PORT:VOUT', 'Z_R.P', 'A_M.S', 'A_M.D', 'Z_R.N', 'A_M.B', 'A_M.G'])
+        np.testing.assert_allclose(arrays['attention_weight'][0, :2], weights[0, :, :8, :8].numpy(), rtol=1e-6)
+        np.testing.assert_allclose(arrays['attention_weight'][0, 2], weights[0, :, :8, :8].mean(0).numpy(), rtol=1e-6)
+        np.testing.assert_allclose(arrays['attention_weight'].sum(-1), 1., atol=1e-6)
+        self.assertGreater(arrays['attention_weight'][0, 0, 4, 2], 0.)  # M.d -> R.p
+        self.assertAlmostEqual(float(arrays['attention_weight'][0, 0, 4, 2]), float(weights[0, 0, 4, 2]), places=7)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = FullCircuitReport(tmp, ['s1'])
+            report.add(records)
+            report.finish()
+            with np.load(Path(tmp) / 'full_attention_pin/000001_pin.npz', allow_pickle=False) as archive:
+                self.assertEqual(json.loads(str(archive['metadata_json'])), meta)
+                for field, values in arrays.items():
+                    np.testing.assert_array_equal(archive[field], values)
+            import base64
+            compact = np.frombuffer(base64.b64decode(report.viewer[0]['weights_f32le_b64']), dtype='<f4')
+            np.testing.assert_array_equal(compact.reshape(meta['shape']), arrays['attention_weight'])
+        batch['device_ids'][0][3] = 'pin:Z_R:d'
+        with self.assertRaisesRegex(ValueError, 'physical device/terminal disagree'):
+            list(full_circuit_records(batch, [sample], capture,
+                mode='device_op_cascade_pin', seed=17, terminal_names=terms))
+
 
 class AttentionProbeTests(unittest.TestCase):
     @classmethod
@@ -159,6 +194,23 @@ class AttentionProbeTests(unittest.TestCase):
         self.assertEqual({str(r['head']) for r in payload['records']}, {'1', '2', 'mean'})
         self.assertTrue(all(len(r['attention_weight']) == 4 for r in payload['records']))
         self.assertTrue(all(all(v is not None for v in r['masses']) for r in payload['records']))
+        self.assertEqual(len(payload['full_circuit']), len(UNGATED_MODELS_PIN))
+        full_index = json.loads((output / 'full_attention_pin/manifest_pin.json').read_text())
+        self.assertEqual(len(full_index['entries']), len(UNGATED_MODELS_PIN) * len(meta['selected_sample_ids']))
+        # Full archives reuse precisely the same probabilities as the original
+        # intra-MOS CSV, while retaining entries between different devices.
+        entry = full_index['entries'][0]
+        with np.load(output / 'full_attention_pin' / entry['file'], allow_pickle=False) as archive:
+            saved = json.loads(str(archive['metadata_json']))
+            positions = {token['sequence_index']: i for i, token in enumerate(saved['tokens'])}
+            for row in scores:
+                if row['model'] != entry['model'] or row['sample_id'] != entry['sample_id']:
+                    continue
+                layer = next(i for i, item in enumerate(saved['layers']) if str(item['pe_layer']) == row['pe_layer'])
+                head = [str(h) for h in saved['heads']].index(row['head'])
+                q, k = positions[int(row['query_sequence_index'])], positions[int(row['key_sequence_index'])]
+                self.assertAlmostEqual(float(archive['attention_weight'][layer, head, q, k]),
+                                       float(row['attention_weight']), places=6)
 
     def test_capture_preserves_predictions_and_cleans_hooks_even_on_failure(self):
         from final_exam.data_pin import PinResidentDataset

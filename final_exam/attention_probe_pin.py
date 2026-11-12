@@ -3,7 +3,7 @@
 
 Observe the actual downstream attention inputs without changing the forward.
 Reconstruct scaled QK, original additive bias, logits and full-sequence softmax;
-only then select each physical MOS's D/G/S/B submatrix. No gate is disabled.
+save whole-circuit pin matrices and each MOS's D/G/S/B submatrix. No gate is disabled.
 """
 from __future__ import annotations
 
@@ -250,6 +250,7 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
     from device_jepa.resident import require_device
     from device_jepa.training import state_digest
     from final_exam.attention_probe_report_pin import AttentionReport
+    from final_exam.attention_full_circuit_pin import full_circuit_records
     from final_exam.data_pin import PinResidentDataset
     from final_exam.logging_utils import log_to
     from final_exam.run_pin import load_checkpoint_pin
@@ -357,6 +358,9 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
                         captures = capture_pe_forward(model, batch)
                         info['native_output_max_abs_error'] = max(info['native_output_max_abs_error'],
                                                                  *(item['output_max_abs_error'] for item in captures))
+                        report.add_full_circuit(full_circuit_records(
+                            batch, [rows[i] for i in indices], captures, mode=mode, seed=seed,
+                            terminal_names=prep['feature_spec']['terminal_names']))
                         report.add_rows(attention_rows(batch, [rows[i] for i in indices], captures,
                             mode=mode, seed=seed, terminal_names=prep['feature_spec']['terminal_names']))
                         print(f'{mode}: {start + len(indices)}/{len(rows)} samples, '
@@ -369,7 +373,9 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
                 report.finish(record)
             record['status'] = 'complete'
             save_record()
-            print(f'Viewer: {output / "attention_viewer_pin.html"}\nExcel: {output / "attention_scores_pin.xlsx"}', flush=True)
+            print(f'Full-circuit heatmaps + MOS details: {output / "attention_viewer_pin.html"}\n'
+                  f'Full matrices: {output / "full_attention_pin/manifest_pin.json"}\n'
+                  f'Excel: {output / "attention_scores_pin.xlsx"}', flush=True)
     except BaseException as exc:
         record.update(status='failed', error_type=type(exc).__name__, error=str(exc))
         save_record()

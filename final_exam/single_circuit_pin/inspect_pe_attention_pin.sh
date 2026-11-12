@@ -98,3 +98,4 @@ printf '\n' >> "$hpc_dir/submission_pin.txt"
 job_id="$("${command[@]}")"
 printf 'Submitted PE attention probe job %s\nResults: %s\nExperiment log: %s\nHPC logs: %s\n' \
     "$job_id" "$result_dir" "$log_dir" "$hpc_dir"
+printf 'Full-circuit heatmaps after job completion: %s/attention_viewer_pin.html\n' "$result_dir"

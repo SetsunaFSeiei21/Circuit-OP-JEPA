@@ -6,6 +6,9 @@ from pathlib import Path
 
 from device_jepa.excel import Cell, Sheet, _column, _write_workbook
 from final_exam.gate_probe_report_pin import Moments
+from final_exam.attention_full_circuit_pin import (
+    FullCircuitReport, FULL_CIRCUIT_SECTION, FULL_CIRCUIT_JS,
+)
 
 ROLES = ('d', 'g', 's', 'b')
 BASE_FIELDS = ('model', 'seed', 'sample_id', 'circuit', 'pe_layer', 'encoder_layer',
@@ -72,6 +75,7 @@ class AttentionReport:
         self.mass_groups = defaultdict(lambda: {name: Moments() for name in MASS_VALUES})
         self.preview, self.handles = [], []
         self.score_count = self.mass_count = 0
+        self.full_circuit = FullCircuitReport(output, self.viewer_ids)
 
     def _writer(self, name, fields):
         stream = (self.output / name).open('x', newline='', encoding='utf-8-sig')
@@ -95,6 +99,9 @@ class AttentionReport:
 
     def add_model(self, mode, info):
         self.models[mode] = info
+
+    def add_full_circuit(self, records):
+        self.full_circuit.add(records)
 
     def add_rows(self, rows):
         for kind, row in rows:
@@ -159,7 +166,10 @@ class AttentionReport:
         writer = self._writer('attention_mass_summary_pin.csv', MASS_SUMMARY_FIELDS)
         writer.writerows(mass_summary)
         record.update(score_rows=self.score_count, mass_rows=self.mass_count,
-                      viewer_matrices=len(self.viewer), excel_detail_preview_rows=len(self.preview))
+                      viewer_matrices=len(self.viewer), excel_detail_preview_rows=len(self.preview),
+                      full_circuit_archives=len(self.full_circuit.entries),
+                      full_circuit_viewer_samples=len(self.full_circuit.viewer))
+        self.full_circuit.finish()
         overview = [
             ['Scope', 'Downstream PE Self-Attention only; natively ungated checkpoints; no training'],
             ['Layer count', 'PE = cross_layers; SE = encoder_layers - cross_layers; read from saved checkpoint'],
@@ -175,6 +185,8 @@ class AttentionReport:
             ['ScoreSummary / std', 'Per-device/layer/head/role statistics across selected samples; population std (ddof=0)'],
             ['Preview', f'First {len(self.preview)} of {self.score_count} raw score rows; CSV contains all'],
             ['Full probe metadata', 'probe_pin.json contains source fingerprint, checkpoint SHA-256 and exact config'],
+            ['Full-circuit heatmaps', 'HTML: one full device-pin heatmap per PE, all heads, PNG download; graph/ports optional.'],
+            ['Full-circuit raw scores', 'full_attention_pin/manifest_pin.json indexes NPZ arrays for every inspected sample. All four scores, all heads and head mean; no pickle.'],
         ]
         sheets = [table_sheet('ReadMe', ('Item', 'Meaning'), overview, 'Inspect attention redistribution; scores are not physical conduction probabilities.'),
                   matrix_sheet('SampleMatrices', [v for v in self.viewer.values() if v['head'] == 'mean'],
@@ -191,6 +203,7 @@ class AttentionReport:
                               'Original checkpoint weights and fitted preprocessing are reused without modification.')]
         _write_workbook(self.output / 'attention_scores_pin.xlsx', sheets)
         payload = dict(records=list(self.viewer.values()), models=self.models,
+                       full_circuit=self.full_circuit.viewer,
                        selected_sample_count=len(record['selected_sample_ids']), viewer_samples=record['viewer_samples'])
         write_viewer(self.output / 'attention_viewer_pin.html', payload)
         for stream in self.handles:
@@ -201,7 +214,8 @@ def write_viewer(path, payload):
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
     # Both fresh probes and report-only refreshes keep existing artifacts intact.
     with Path(path).open('x', encoding='utf-8') as stream:
-        stream.write(HTML.replace('__PAYLOAD__', encoded))
+        stream.write(HTML.replace('__FULL_CIRCUIT_SECTION__', FULL_CIRCUIT_SECTION)
+                     .replace('__FULL_CIRCUIT_JS__', FULL_CIRCUIT_JS).replace('__PAYLOAD__', encoded))
 
 
 def refresh_viewer(source, output=None):
@@ -223,9 +237,10 @@ def refresh_viewer(source, output=None):
 
 HTML = r'''<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PE Self-Attention · MOS 引脚得分</title>
+<title>PE Self-Attention · 全电路引脚热图</title>
 <style>
 body{font:15px system-ui,sans-serif;background:#f3f6fb;color:#182b40;margin:0}main{max-width:1320px;margin:auto;padding:30px}
+[hidden]{display:none!important}
 h1{font-size:26px;margin-bottom:8px}p{line-height:1.6;color:#4a5e74}.controls{display:flex;flex-wrap:wrap;gap:14px;background:white;padding:20px;border-radius:12px}
 label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#41576f}select{max-width:500px;padding:8px;border:1px solid #c2ccda;border-radius:5px;color:#182b40}
 section{background:white;border-radius:12px;padding:22px;margin-top:18px;overflow:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
@@ -236,15 +251,20 @@ th,td{padding:14px;text-align:center;border:1px solid #dae2ed}th{background:#edf
 .pe-card th,.pe-card td{padding:10px 5px;font-size:12px}.pe-card table{table-layout:fixed}.pe-card .sub{overflow-wrap:anywhere;font-size:10px}
 .pe-card button{margin-top:12px;border:1px solid #c2ccda;border-radius:5px;background:#f3f6fb;color:#244b72;padding:7px 12px;cursor:pointer}
 .scale{display:inline-block;width:150px;height:12px;border-radius:3px;vertical-align:middle;margin:0 8px}
+.full-pe-card{border:1px solid #dae2ed;border-radius:10px;padding:18px;margin-top:20px}.full-pe-card canvas{display:block;margin:auto}
+.full-pe-card button{border:1px solid #c2ccda;border-radius:5px;background:#edf4ff;padding:10px 16px;cursor:pointer;color:#244b72}
 @media(max-width:600px){main{padding:14px}section{padding:14px}.pe-grid{grid-template-columns:1fr}select{max-width:100%}.controls{padding:14px}}
-</style><main><h1>PE Self-Attention · MOS 引脚得分</h1>
-<p>无门控 checkpoint 的下游 PE 自注意力。行是 Query，列是 Key。Softmax 在完整序列上计算，再截取器件内子矩阵。</p>
+</style><main><h1>PE Self-Attention · 全电路引脚热图</h1>
+<p>无门控 checkpoint 的下游 PE 自注意力。行是 Query，列是 Key。上方展示所有器件引脚构成的大矩阵，下方保留单个 MOS 的局部图。</p>
 <p class="note">每个 PE 块先 Self-Attention，后 Cross-Attention。固定拓扑下第一个 PE 的自注意力可能跨样本完全相同；后续层才接收到此前融合的信息。</p>
 <div class="controls"><label>模型<select id="model"></select></label><label>样本<select id="sample"></select></label>
-<label>MOS<select id="device"></select></label><label>Head<select id="head"></select></label>
-<label>得分<select id="value"><option value="attention_weight">Softmax 注意力权重</option><option value="attention_logit">Softmax 前 logit</option>
+<label>Head<select id="head"></select></label></div>
+__FULL_CIRCUIT_SECTION__
+<section><h2>单个 MOS · 各 PE 的 4×4 局部热图</h2>
+<div class="controls"><label>MOS<select id="device"></select></label>
+<label>局部图得分<select id="value"><option value="attention_weight">Softmax 注意力权重</option><option value="attention_logit">Softmax 前 logit</option>
 <option value="qk_scaled">QK / √head_dim</option><option value="additive_bias">原始偏置 / 掩码</option></select></label></div>
-<section><h2>所有 PE 层 · Self-Attention 热图</h2><p class="note" id="overview-meta"></p>
+<p class="note" id="overview-meta"></p>
 <p class="note" id="overview-legend"></p><div id="pe-overview" class="pe-grid"></div>
 <p class="note">所有图对应同一个模型、样本、MOS 和 head，每个 PE 独立显示一张热图。各层共用色标；数值保持原始得分，不做器件内重新归一化。</p></section>
 <section><label>PE 层（详细查看）<select id="layer"></select></label><h2 id="title"></h2><p class="note" id="meta"></p><table id="matrix"></table>
@@ -278,10 +298,11 @@ for(const r of rows){const card=document.createElement('article');card.className
 const meta=document.createElement('p');meta.className='note';meta.textContent=`encoder 第 ${r.encoder_layer} 层 · ${r.mask_scope} · head ${r.head}`;card.appendChild(meta);
 const table=document.createElement('table');table.setAttribute('aria-label',`${r.device_id} PE ${r.pe_layer} head ${r.head} ${field}`);drawMatrix(table,r,field,scale);card.appendChild(table);
 const button=document.createElement('button');button.type='button';button.textContent='查看该层详情';button.addEventListener('click',()=>{byId('layer').value=String(r.pe_layer);drawDetail();byId('title').scrollIntoView?.({behavior:'smooth',block:'start'});});card.appendChild(button);grid.appendChild(card);}
-drawDetail();}
-function refresh(level){let rows=payload.records;const controls=[['model','model'],['sample','sample_id'],['device','device_id'],['head','head'],['layer','pe_layer']];for(let i=0;i<controls.length;i++){const [id,key]=controls[i];if(i>=level){let values=[...new Set(rows.map(r=>r[key]))];if(id==='layer')values.sort((a,b)=>Number(a)-Number(b));options(id,values,id==='head'&&level===0?'mean':undefined);}rows=rows.filter(r=>String(r[key])===byId(id).value)}draw();}
-['model','sample','device','head'].forEach((id,i)=>byId(id).addEventListener('change',()=>refresh(i+1)));byId('layer').addEventListener('change',drawDetail);byId('value').addEventListener('change',draw);
-byId('coverage').textContent=`HTML 展示 ${payload.viewer_samples}/${payload.selected_sample_count} 个抽取样本，所有 PE 层和 heads；完整采样明细见 attention_scores_pin.csv。`;refresh(0);
+drawDetail();drawFullCircuit();}
+function refresh(level){let rows=payload.records;const controls=[['model','model'],['sample','sample_id'],['head','head'],['device','device_id'],['layer','pe_layer']];for(let i=0;i<controls.length;i++){const [id,key]=controls[i];if(i>=level){let values=[...new Set(rows.map(r=>r[key]))];if(id==='layer')values.sort((a,b)=>Number(a)-Number(b));options(id,values,id==='head'&&level===0?'mean':undefined);}rows=rows.filter(r=>String(r[key])===byId(id).value)}draw();}
+['model','sample','head','device'].forEach((id,i)=>byId(id).addEventListener('change',()=>refresh(i+1)));byId('layer').addEventListener('change',drawDetail);byId('value').addEventListener('change',draw);
+__FULL_CIRCUIT_JS__
+byId('coverage').textContent=`HTML 展示 ${payload.viewer_samples}/${payload.selected_sample_count} 个抽取样本，所有 PE 层和 heads；MOS 局部明细见 attention_scores_pin.csv，全电路矩阵见 full_attention_pin/。`;refresh(0);
 </script></html>'''
 
 

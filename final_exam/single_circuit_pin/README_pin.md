@@ -2,7 +2,7 @@
 
 **无门控 PE 注意力检查**：编辑 `inspect_pe_attention_pin.sh` 顶部的结果路径、电路、样本数、模型和 seed，运行 `bash final_exam/single_circuit_pin/inspect_pe_attention_pin.sh`。默认加载 `device_op_cascade_pin`，按样本、PE 层、head、MOS 输出 D/G/S/B 的 4×4 QK/logit/softmax 矩阵及权重去向，生成离线 HTML、Excel 和完整 CSV。只读取原本没有门控的 checkpoint，不重训，不在门控模型上临时关门控；详见 [PE 注意力检查说明](../PE_ATTENTION_PROBE_pin.md)。
 
-HTML 同时展示所有 PE 层的热图，各层共用色标。已有探测结果可运行 `python -m final_exam.attention_probe_report_pin --source /path/to/pe_attention_probe_result`，直接新增 `attention_pe_overview_pin.html`，不重新推理。
+HTML 顶部同时展示所有 PE 的**全电路 N×N 引脚大图**，一层一张，包含跨器件注意力，各层共用色标，支持每张图下载 PNG；下方保留 MOS 4×4 局部图。完整矩阵另存 `full_attention_pin/` 的 NPZ。旧版只有 MOS 子矩阵，缺少跨器件数据，需要重新运行同一探测脚本（无需重新训练）。`python -m final_exam.attention_probe_report_pin --source /path/to/pe_attention_probe_result` 仅刷新已有页面数据，不能补出旧报告缺失的完整矩阵。
 
 **门控＋decoder 分段微调**：v1/v2/v3 各增加全层和仅融合层两个变体，最终冻结 OP predictor 与 encoder，同时更新门控和 decoder。完整名称、轮数与续训规则见 [版本化门控＋decoder 说明](../GATE_DECODER_VERSIONS_pin.md)。
 
