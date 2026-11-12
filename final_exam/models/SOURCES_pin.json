@@ -637,6 +637,175 @@
       "training": "supervised base then gate-only",
       "measured_op_at_inference": false,
       "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_distill_gate_decoder_pin_v1": {
+      "implementation": "Repository extension: post-training OP attention gate on a pretrained pin-level ZeroSim model",
+      "source_files_pin": [
+        "gates_pin/v1_pin.py",
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "architecture": "Shared OP + ordered pin-role one-hot MLP gate (F+8 input).",
+      "attention_scope": "All encoder self-attention; same-MOS different-net terminal pairs. Feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "All base stages bypass the gate exactly; final stage freezes encoder weights but preserves autograd from the decoder output to the attention gate.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements.",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "epoch_key": "op_transfer.epochs.gate"
+    },
+    "device_op_distill_gate_decoder_fusion_pin_v1": {
+      "implementation": "Repository extension: staged OP gate applied only to fusion-block self-attention",
+      "source_files_pin": [
+        "gates_pin/v1_pin.py",
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "architecture": "Shared OP + ordered pin-role one-hot MLP gate (F+8 input).",
+      "attention_scope": "Fusion-block self-attention only (cfg.cross_layers blocks); same-MOS different-net terminal pairs. Structure prefix, feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "Same staged training, initialization and budgets as the paired all-encoder-gate model. All base stages bypass gates exactly; selected variants share the same ungated base per family/seed.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements.",
+      "paired_all_encoder_gate_model": "device_op_distill_gate_decoder_pin_v1",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "epoch_key": "op_transfer.epochs.gate"
+    },
+    "device_op_distill_gate_decoder_pin_v2": {
+      "implementation": "Repository extension: post-training OP attention gate on a pretrained pin-level ZeroSim model",
+      "source_files_pin": [
+        "gates_pin/v2_pin.py",
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "architecture": "Shared global OP + sample-relative OP + ordered pin-role one-hot MLP gate (2F+8 input).",
+      "attention_scope": "All encoder self-attention; same-MOS different-net terminal pairs. Feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "All base stages bypass the gate exactly; final stage freezes encoder weights but preserves autograd from the decoder output to the attention gate.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements.",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "epoch_key": "op_transfer.epochs.gate"
+    },
+    "device_op_distill_gate_decoder_fusion_pin_v2": {
+      "implementation": "Repository extension: staged OP gate applied only to fusion-block self-attention",
+      "source_files_pin": [
+        "gates_pin/v2_pin.py",
+        "staged_op_gate_pin.py",
+        "op_gate_pin.py",
+        "op_transfer_pin.py"
+      ],
+      "op_predictor_granularity": "device",
+      "downstream_encoder_granularity": "pin",
+      "predicted_op_as_node_features": true,
+      "gate_source": "predicted",
+      "measured_op_at_inference": false,
+      "teacher_required_during_training": true,
+      "base_training": "Real-OP teacher; encoder-only latent distillation; frozen-encoder performance readout",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "architecture": "Shared global OP + sample-relative OP + ordered pin-role one-hot MLP gate (2F+8 input).",
+      "attention_scope": "Fusion-block self-attention only (cfg.cross_layers blocks); same-MOS different-net terminal pairs. Structure prefix, feature cross-attention and decoder receive no direct gate bias.",
+      "training_boundary": "Same staged training, initialization and budgets as the paired all-encoder-gate model. All base stages bypass gates exactly; selected variants share the same ungated base per family/seed.",
+      "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements.",
+      "paired_all_encoder_gate_model": "device_op_distill_gate_decoder_pin_v2",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "epoch_key": "op_transfer.epochs.gate"
+    },
+    "device_op_distill_gate_decoder_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "all_encoder_self_attention",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction.",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "epoch_key": "op_transfer.epochs.gate"
+    },
+    "device_op_distill_gate_decoder_fusion_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "fusion_self_attention",
+      "training": "distilled encoder then decoder readout, followed by gate-and-decoder optimization with encoder and OP predictor frozen",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction.",
+      "final_trainable_modules": [
+        "gate",
+        "decoder"
+      ],
+      "epoch_key": "op_transfer.epochs.gate",
+      "paired_all_encoder_gate_model": "device_op_distill_gate_decoder_pin_v3"
     }
   }
 }

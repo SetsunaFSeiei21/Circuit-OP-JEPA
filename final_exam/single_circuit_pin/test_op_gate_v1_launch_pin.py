@@ -12,6 +12,7 @@ class GateV1LauncherPinTests(staged_tests.StagedGateLauncherPinTests):
         'device_op_gate_pin_v1', 'device_op_gate_fusion_pin_v1',
         'device_op_distill_gate_pin_v1', 'device_op_distill_gate_fusion_pin_v1',
         'device_op_supervised_gate_pin_v1', 'device_op_supervised_gate_fusion_pin_v1',
+        'device_op_distill_gate_decoder_pin_v1', 'device_op_distill_gate_decoder_fusion_pin_v1',
     ]
     SCRIPT_NAME = 'train_op_gate_pin_v1.sh'
     CONFIG_NAME = 'op_gate_pin_v1.json'

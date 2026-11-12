@@ -44,13 +44,13 @@ class GateV2RunnerPinTests(unittest.TestCase):
         return {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in directory.rglob('*') if path.is_file()}
 
-    def test_seven_models_preserve_cohort_controls_inference_and_completed_resume(self):
+    def test_nine_models_preserve_cohort_controls_inference_and_completed_resume(self):
         from final_exam.data_pin import PinDataContext
         models = ('device_op_cascade_pin',) + V2_GATE_MODELS_PIN
         output, result = self.run_models('study_pin', models)
         self.assertEqual([row['mode'] for row in result['results']], list(models))
         stage_names = [row['stage_id'].split('/')[-1] for row in result['stages']]
-        self.assertEqual(len(stage_names), 12)  # six fits, six shared prerequisites/cache
+        self.assertEqual(len(stage_names), 14)  # eight fits, six shared prerequisites/cache
         self.assertEqual(len(set(stage_names)), len(stage_names))
         self.assertNotIn('device_op_cascade_pin', stage_names)
         self.assertFalse(any('_v2_pin' in name for name in stage_names))
@@ -99,8 +99,15 @@ class GateV2RunnerPinTests(unittest.TestCase):
                     self.assertEqual(contract['gate_relative_normalization'], 'per_sample_per_field_all_valid_mos')
                 if mode not in V2_JOINT_GATE_MODELS_PIN:
                     audit = audits[mode]
-                    for key in ('predictor', 'encoder', 'decoder'):
+                    for key in ('predictor', 'encoder'):
                         self.assertEqual(audit[f'initial_{key}_digest'], audit[f'final_{key}_digest'])
+                    if '_gate_decoder_' in mode:
+                        self.assertEqual(audit['final_trainable'], 'gate_and_decoder')
+                        self.assertFalse(audit['decoder_frozen'])
+                        self.assertNotEqual(audit['initial_decoder_digest'], audit['final_decoder_digest'])
+                    else:
+                        self.assertTrue(audit['decoder_frozen'])
+                        self.assertEqual(audit['initial_decoder_digest'], audit['final_decoder_digest'])
                     comparison = json.loads((directory / 'gate_comparison_pin.json').read_text())
                     self.assertEqual(comparison['gate_version'], 'v2')
                     self.assertEqual(comparison['post_gate_test'], report)

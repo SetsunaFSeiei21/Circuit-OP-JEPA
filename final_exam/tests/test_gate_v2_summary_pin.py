@@ -48,7 +48,7 @@ def versioned_run(directory, seeds=(17, 29), mixed=False):
                 mae=5e6 if item['seed'] == 17 else 7e6, rmse=9e6, r2=.3)
         comparison = dict(base_checkpoint=f'../shared_pin/device_op_{family}_base_pin/checkpoint_pin.pt',
             base_test=before, post_gate_test=item['report'], attention_scope=spec['attention_scope'],
-            gate_version=gate_version_pin(mode))
+            gate_version=gate_version_pin(mode), base_family=family, final_phase=spec['final_phase'])
         path = directory / f'seed_{item["seed"]}_pin' / mode / 'gate_comparison_pin.json'
         path.write_text(json.dumps(comparison))
     return records
@@ -67,15 +67,15 @@ class GateV2SummaryPinTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 summary_rows_pin([record(invalid)])
 
-    def test_v2_workbook_shows_normalization_and_eight_rows_without_extra_stage_costs(self):
+    def test_v2_workbook_shows_normalization_and_all_models_without_extra_stage_costs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             records = versioned_run(root)
             stage_count = len(json.loads((root / 'stages_pin.json').read_text())['unique_stages'])
             sheets = workbook(export_results_pin(root))
-            self.assertEqual(len(summary_rows_pin(records)), 7)
+            self.assertEqual(len(summary_rows_pin(records)), len(V2_GATE_MODELS_PIN) + 1)
             study = sheets['GateStudy']
-            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + 8)
+            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + len(V2_GATE_MODELS_PIN) + 2)
             self.assertEqual(text_values(study).count('device_op_distilled_base_pin'), 1)
             self.assertEqual(text_values(study).count('device_op_cascade_pin'), 1)
             self.assertNotIn('device_op_supervised_base_pin', text_values(study))
@@ -96,7 +96,7 @@ class GateV2SummaryPinTests(unittest.TestCase):
                 self.assertEqual(float(cells['M'].find('x:v', NS).text), 90)
                 self.assertEqual(float(cells['N'].find('x:v', NS).text), 128)
                 self.assertEqual(float(cells['O'].find('x:v', NS).text), 1e-5)
-            self.assertEqual(v2_rows, 6)
+            self.assertEqual(v2_rows, len(V2_GATE_MODELS_PIN))
 
     def test_mixed_v1_v2_studies_keep_names_and_share_each_base_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +104,7 @@ class GateV2SummaryPinTests(unittest.TestCase):
             versioned_run(root, mixed=True)
             sheets = workbook(export_results_pin(root))
             study = sheets['GateStudy']
-            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + 14)
+            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + len(V1_GATE_MODELS_PIN) + len(V2_GATE_MODELS_PIN) + 2)
             text = text_values(study)
             self.assertEqual(text.count('device_op_distilled_base_pin'), 1)
             self.assertEqual(text.count('device_op_cascade_pin'), 1)

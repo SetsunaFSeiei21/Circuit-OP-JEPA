@@ -4,7 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
-# Experiment settings. Original + sample-relative OP; one shared v3 M-MLP gate; three strategies x two layer scopes.
+# Experiment settings. Original + sample-relative OP; one shared v3 M-MLP gate; four strategies x two layer scopes.
 CIRCUITS=(two_stage_folded_opamp)
 MODELS=(
     # Ungated supervised reference; the distilled ungated base is also reported.
@@ -18,6 +18,9 @@ MODELS=(
     # Supervise an ungated base, then freeze encoder/decoder and train the gate.
     device_op_supervised_gate_pin_v3
     device_op_supervised_gate_fusion_pin_v3
+    # Distill encoder, train decoder, then freeze encoder and train gate + decoder.
+    device_op_distill_gate_decoder_pin_v3
+    device_op_distill_gate_decoder_fusion_pin_v3
 )
 SEEDS=(17 29 43)
 # Set gate n_experts/mlp_dropout in op_gate_pin; architecture/epochs stay in model/op_transfer.

@@ -33,13 +33,13 @@ class GateV1RunnerPinTests(unittest.TestCase):
                 [17], 'cpu', smoke=True, resume_from=resume_from)
         return output, result
 
-    def test_complete_seven_models_share_controls_replay_and_resume(self):
+    def test_complete_nine_models_share_controls_replay_and_resume(self):
         from final_exam.data_pin import PinDataContext
         models = ('device_op_cascade_pin',) + V1_GATE_MODELS_PIN
         output, result = self.run_models('study_pin', models)
         self.assertEqual([r['mode'] for r in result['results']], list(models))
         ids = [s['stage_id'].split('/')[-1] for s in result['stages']]
-        self.assertEqual(len(ids), 12)  # six fits plus six unique prerequisites/cache
+        self.assertEqual(len(ids), 14)  # eight fits plus six unique prerequisites/cache
         self.assertEqual(len(set(ids)), len(ids))
         self.assertNotIn('device_op_cascade_pin', ids)
         self.assertFalse(any('_v1_pin' in name for name in ids))

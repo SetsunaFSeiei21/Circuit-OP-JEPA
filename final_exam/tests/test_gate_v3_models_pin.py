@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from device_jepa.training import state_digest
+from final_exam.staged_gate_registry_pin import staged_gate_spec_pin
 from final_exam.gate_version_registry_pin import (
     V3_GATE_MODELS_PIN, V3_JOINT_GATE_MODELS_PIN, V3_STAGED_GATE_MODELS_PIN,
     gate_version_pin,
@@ -102,7 +103,7 @@ class GateV3ModelsPinTests(unittest.TestCase):
         config = {'n_experts': 3, 'mlp_dropout': .1, **(gate_config or {})}
         if mode in V3_STAGED_GATE_MODELS_PIN:
             return StagedOPGateModelPin(self.cfg, self.prep, predictor,
-                mode=mode, gate_config=config).set_phase('gate_only').eval()
+                mode=mode, gate_config=config).set_phase(staged_gate_spec_pin(mode)['final_phase']).eval()
         return DeviceOPGateModelPin(mode, self.cfg, self.prep, predictor,
                                    gate_config=config).eval()
 
@@ -191,7 +192,7 @@ class GateV3ModelsPinTests(unittest.TestCase):
                         self.assertGreater(float(layer.weight.grad.abs().sum()), 0.)
                 for key in ('encoder', 'decoder'):
                     grads = [p.grad for p in getattr(model, key).parameters() if p.grad is not None]
-                    if mode in V3_STAGED_GATE_MODELS_PIN:
+                    if mode in V3_STAGED_GATE_MODELS_PIN and (key == 'encoder' or model.phase == 'gate_only'):
                         self.assertFalse(grads)
                         self.assertFalse(getattr(model, key).training)
                     else:

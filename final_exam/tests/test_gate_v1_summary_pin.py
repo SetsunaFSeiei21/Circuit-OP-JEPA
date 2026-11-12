@@ -36,7 +36,8 @@ def v1_run(directory, seeds=(17, 29)):
                 mae=5e6 if item['seed'] == 17 else 7e6, rmse=9e6, r2=.3)
         value = dict(base_checkpoint=f'../shared_pin/device_op_{family}_base_pin/checkpoint_pin.pt',
                      base_test=before, post_gate_test=item['report'],
-                     attention_scope=spec['attention_scope'], gate_version='v1')
+                     attention_scope=spec['attention_scope'], gate_version='v1',
+                     base_family=family, final_phase=spec['final_phase'])
         path = directory / f'seed_{item["seed"]}_pin' / item['mode'] / 'gate_comparison_pin.json'
         path.write_text(json.dumps(value))
     return records
@@ -55,7 +56,7 @@ class GateV1SummaryPinTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summary_rows_pin([record('unregistered_pin_v1')])
 
-    def test_workbook_has_eight_comparisons_and_original_seven_selected_models(self):
+    def test_workbook_keeps_all_models_and_one_shared_base(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             records = v1_run(root)
@@ -66,7 +67,7 @@ class GateV1SummaryPinTests(unittest.TestCase):
             self.assertIn('fusion_self_attention', inputs)
             self.assertIn('encoder, decoder and gate', inputs)
             study = sheets['GateStudy']
-            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + 8)
+            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + len(V1_GATE_MODELS_PIN) + 2)
             study_text = text_values(study)
             self.assertEqual(study_text.count('device_op_distilled_base_pin'), 1)
             self.assertNotIn('device_op_supervised_base_pin', study_text)
@@ -78,7 +79,7 @@ class GateV1SummaryPinTests(unittest.TestCase):
                          for cell in row.findall('x:c', NS)}
                 self.assertEqual(float(cells['M'].find('x:v', NS).text), 6e6)
                 self.assertAlmostEqual(float(cells['N'].find('x:v', NS).text), 2**.5 * 1e6)
-            self.assertEqual(len(summary_rows_pin(records)), 7)
+            self.assertEqual(len(summary_rows_pin(records)), len(V1_GATE_MODELS_PIN) + 1)
             self.assertNotIn('device_op_distilled_base_pin', text_values(sheets['MAE']))
             self.assertIn('Gate version', text_values(sheets['GateBeforeAfter']))
 

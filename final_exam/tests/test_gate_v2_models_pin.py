@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from device_jepa.training import state_digest
+from final_exam.staged_gate_registry_pin import staged_gate_spec_pin
 from final_exam.gate_version_registry_pin import (
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
     gate_version_pin,
@@ -37,7 +38,7 @@ class GateV2ModelsPinTests(unittest.TestCase):
         predictor = DeviceOPPredictorPin(self.cfg, self.prep, self.support)
         if mode in V2_STAGED_GATE_MODELS_PIN:
             return StagedOPGateModelPin(self.cfg, self.prep, predictor,
-                mode=mode, gate_config=gate_config).set_phase('gate_only').eval()
+                mode=mode, gate_config=gate_config).set_phase(staged_gate_spec_pin(mode)['final_phase']).eval()
         return DeviceOPGateModelPin(mode, self.cfg, self.prep, predictor,
                                     gate_config=gate_config).eval()
 
@@ -170,7 +171,7 @@ class GateV2ModelsPinTests(unittest.TestCase):
                 self.assertTrue(all(bool(torch.isfinite(p.grad).all()) for p in model.gate.parameters() if p.grad is not None))
                 for name in ('encoder', 'decoder'):
                     grads = [p.grad for p in getattr(model, name).parameters() if p.grad is not None]
-                    if mode in V2_STAGED_GATE_MODELS_PIN:
+                    if mode in V2_STAGED_GATE_MODELS_PIN and (name == 'encoder' or model.phase == 'gate_only'):
                         self.assertFalse(grads)
                     else:
                         self.assertGreater(sum(float(g.abs().sum()) for g in grads), 0.)

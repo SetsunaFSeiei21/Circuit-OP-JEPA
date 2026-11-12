@@ -56,17 +56,23 @@ FUSION_STAGED_GATE_INPUTS_PIN = {
 }
 V1_STAGED_GATE_INPUTS_PIN = {
     mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
-           else 'supervised ungated model', 'gate only')
+           else 'supervised ungated model',
+           'gate and decoder' if staged_gate_spec_pin(mode)['final_phase'] == 'gate_decoder'
+           else 'gate only')
     for mode in V1_STAGED_GATE_MODELS_PIN
 }
 V2_STAGED_GATE_INPUTS_PIN = {
     mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
-           else 'supervised ungated model', 'gate only')
+           else 'supervised ungated model',
+           'gate and decoder' if staged_gate_spec_pin(mode)['final_phase'] == 'gate_decoder'
+           else 'gate only')
     for mode in V2_STAGED_GATE_MODELS_PIN
 }
 V3_STAGED_GATE_INPUTS_PIN = {
     mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
-           else 'supervised ungated model', 'gate only')
+           else 'supervised ungated model',
+           'gate and decoder' if staged_gate_spec_pin(mode)['final_phase'] == 'gate_decoder'
+           else 'gate only')
     for mode in V3_STAGED_GATE_MODELS_PIN
 }
 ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN,
@@ -111,6 +117,12 @@ def _validate_gate_report_contract(mode, contract):
     for key, expected in (('gate_version', gate_version_pin(mode)), ('attention_scope', _gate_scope(mode))):
         if contract.get(key, expected) != expected:
             raise ValueError(f'Gate report {key} differs from the model name')
+    if mode in ALL_STAGED_GATE_INPUTS_PIN:
+        spec = staged_gate_spec_pin(mode)
+        final = 'gate_and_decoder' if spec['final_phase'] == 'gate_decoder' else 'gate_only'
+        for key, expected in (('base_training', spec['base_training']), ('final_trainable', final)):
+            if contract.get(key, expected) != expected:
+                raise ValueError(f'Gate report {key} differs from the model name')
     if mode not in RELATIVE_GATE_MODELS_PIN:
         return
     if contract.get('gate_relative_normalization', V2_RELATIVE_NORMALIZATION_PIN) != V2_RELATIVE_NORMALIZATION_PIN:
@@ -588,9 +600,13 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete, base_records
         comparison = _read_json(path)
         if not isinstance(comparison, dict):
             raise ValueError(f'Invalid gate comparison object: {path}')
-        scope = staged_gate_spec_pin(mode)['attention_scope']
+        spec = staged_gate_spec_pin(mode)
+        scope = spec['attention_scope']
         if comparison.get('attention_scope', scope) != scope:
             raise ValueError(f'Gate comparison attention scope differs from the model: {path}')
+        for key, expected in (('base_family', spec['base_training']), ('final_phase', spec['final_phase'])):
+            if comparison.get(key, expected) != expected:
+                raise ValueError(f'Gate comparison {key} differs from the model: {path}')
         if comparison.get('gate_version', _gate_version(mode)) != _gate_version(mode):
             raise ValueError(f'Gate comparison version differs from the model: {path}')
         checkpoint = comparison.get('base_checkpoint')

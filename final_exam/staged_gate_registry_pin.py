@@ -31,7 +31,7 @@ def staged_gate_spec_pin(mode):
             attention_scope=('fusion_self_attention' if '_fusion_pin_' in mode
                              else 'all_encoder_self_attention'),
             base_training='supervised' if '_supervised_' in mode else 'distilled',
-            final_phase='gate_only',
+            final_phase='gate_decoder' if '_gate_decoder_' in mode else 'gate_only',
         )
     fusion = mode in FUSION_STAGED_GATE_MODELS_PIN
     family = FUSION_STAGED_GATE_MODELS_PIN if fusion else STAGED_GATE_MODELS_PIN

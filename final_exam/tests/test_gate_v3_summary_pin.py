@@ -60,14 +60,15 @@ def v3_run(directory, mixed=False):
             before['metrics']['UGF_Hz']['mae'] += 1e6
         comparison = dict(base_checkpoint=f'../shared_pin/device_op_{family}_base_pin/checkpoint_pin.pt',
             base_test=before, post_gate_test=item['report'], attention_scope=spec['attention_scope'],
-            gate_version=item['report']['op_gate_pin']['gate_version'])
+            gate_version=item['report']['op_gate_pin']['gate_version'],
+            base_family=family, final_phase=spec['final_phase'])
         path = directory / f'seed_{item["seed"]}_pin' / mode / 'gate_comparison_pin.json'
         path.write_text(json.dumps(comparison))
     return records
 
 
 class GateV3SummaryPinTests(unittest.TestCase):
-    def test_all_six_models_report_expert_budget_and_shared_base_once(self):
+    def test_all_models_report_expert_budget_and_shared_base_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             records = v3_run(root)
@@ -76,12 +77,12 @@ class GateV3SummaryPinTests(unittest.TestCase):
             self.assertEqual(records, original)
             self.assertEqual({r['mode'] for r in rows}, {'device_op_cascade_pin', *V3_GATE_MODELS_PIN})
             sheets = workbook(export_results_pin(root))
-            self.assertEqual(len(sheets['GateStudy'].findall('x:sheetData/x:row', NS)), 5 + 8)
+            self.assertEqual(len(sheets['GateStudy'].findall('x:sheetData/x:row', NS)), 5 + len(V3_GATE_MODELS_PIN) + 2)
             self.assertEqual(text_values(sheets['GateStudy']).count('device_op_distilled_base_pin'), 1)
             self.assertIn('Gate experts per layer', text_values(sheets['ModelInputs']))
             self.assertIn('Gate network parameters', text_values(sheets['ModelInputs']))
             names = text_values(sheets['ModelInputs'])
-            self.assertEqual(names.count('mixed_mlp'), 6)
+            self.assertEqual(names.count('mixed_mlp'), len(V3_GATE_MODELS_PIN))
             self.assertIn('v3', text_values(sheets['GateBeforeAfter']))
             for row in sheets['ModelInputs'].findall('x:sheetData/x:row', NS):
                 if not any(mode in text_values(row) for mode in V3_GATE_MODELS_PIN):
@@ -99,7 +100,7 @@ class GateV3SummaryPinTests(unittest.TestCase):
             v3_run(root, mixed=True)
             sheets = workbook(export_results_pin(root))
             study = sheets['GateStudy']
-            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + 14)
+            self.assertEqual(len(study.findall('x:sheetData/x:row', NS)), 5 + len(V2_GATE_MODELS_PIN) + len(V3_GATE_MODELS_PIN) + 2)
             for mode in (*V2_GATE_MODELS_PIN, *V3_GATE_MODELS_PIN):
                 self.assertEqual(text_values(study).count(mode), 1)
             self.assertEqual(text_values(study).count('device_op_distilled_base_pin'), 1)

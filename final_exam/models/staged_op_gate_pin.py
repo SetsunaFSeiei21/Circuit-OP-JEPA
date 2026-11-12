@@ -213,6 +213,12 @@ def rebuild_staged_gate_model_pin(recipe, config, prep):
         mode=recipe['mode'], gate_config=recipe['gate_config']).set_phase(recipe['phase'])
     if recipe.get('gate_version', 'v0') != model.gate_version:
         raise ValueError('Staged gate recipe version disagrees with its model mode')
+    # Active versioned checkpoints must preserve the trained module policy:
+    # renaming a gate-only checkpoint cannot turn it into a decoder-tuned one.
+    # Ungated preparatory stages remain valid for shared-base reconstruction.
+    if (model.gate_version != 'v0' and model.gate_enabled
+            and model.phase != staged_gate_spec_pin(model.mode)['final_phase']):
+        raise ValueError('Staged gate recipe phase disagrees with its model mode')
     if model.gate_version in ('v2', 'v3') and recipe.get('gate_normalization') != model.gate.normalization_contract:
         raise ValueError('Staged gate recipe normalization disagrees with its sample-relative contract')
     if model.gate_version == 'v3' and recipe.get('gate_architecture') != model.gate.architecture_contract:

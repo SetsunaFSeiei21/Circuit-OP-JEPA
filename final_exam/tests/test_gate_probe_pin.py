@@ -70,7 +70,7 @@ class GateProbeTests(unittest.TestCase):
         before = snapshot(self.source)
         with (patch('device_jepa.data.fit_preprocessor', side_effect=AssertionError('refit')),
               patch('torch.optim.AdamW', side_effect=AssertionError('training'))):
-            out = self.probe('all_v2_pin', self.models[:7], num_samples=3, viewer_samples=1, batch_size=2)
+            out = self.probe('all_v2_pin', ['device_op_cascade_pin', *V2_GATE_MODELS_PIN], num_samples=3, viewer_samples=1, batch_size=2)
         record = json.loads((out / 'probe_pin.json').read_text())
         self.assertEqual(record['status'], 'complete')
         selected = record['selected_sample_ids']

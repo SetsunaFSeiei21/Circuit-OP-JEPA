@@ -2,7 +2,7 @@
 
 v2 检验的假设是：在保留现有 OP 绝对尺度信息的同时，显式提供同一电路内部的相对器件状态，是否有助于门控学习。代码实现本身不证明低电流差异已导致 v1 性能退步，也不预设 v2 优于 v0、v1。版本演进和工程边界统一记录在 [record.txt](record.txt)。
 
-## 六个新模型与对照
+## 八个模型与对照
 
 | 模型 ID | 最终训练策略 | 门控位置 |
 |---|---|---|
@@ -12,10 +12,12 @@ v2 检验的假设是：在保留现有 OP 绝对尺度信息的同时，显式�
 | `device_op_distill_gate_fusion_pin_v2` | 同上 | 仅融合层 Self-Attention |
 | `device_op_supervised_gate_pin_v2` | 关门控监督训练 encoder＋decoder→冻结二者，仅训练门控 | 结构层＋融合层 Self-Attention |
 | `device_op_supervised_gate_fusion_pin_v2` | 同上 | 仅融合层 Self-Attention |
+| `device_op_distill_gate_decoder_pin_v2` | 教师→蒸馏 encoder→训练 decoder→冻结 encoder，同时训练门控＋decoder | 结构层＋融合层 Self-Attention |
+| `device_op_distill_gate_decoder_fusion_pin_v2` | 同上 | 仅融合层 Self-Attention |
 
-这六个模型都先训练器件级 OP 预测器，再将其冻结。表中的“联合训练”不包含 OP 预测器。下游保持引脚级 ZeroSim 编码器框架。
+这八个模型都先训练器件级 OP 预测器，再将其冻结。表中的“联合训练”不包含 OP 预测器。下游保持引脚级 ZeroSim 编码器框架。
 
-默认还选择已有的 `device_op_cascade_pin` 无门控监督基线。蒸馏路线会自动保存、评估 `device_op_distilled_base_pin` 无门控基座，不需要额外写入 `MODELS`。默认七个选择入口对应 Excel `GateStudy` 中八个去重模型/基座结果；相同依赖的训练成本只计一次。
+默认还选择已有的 `device_op_cascade_pin` 无门控监督基线。蒸馏路线会自动保存、评估 `device_op_distilled_base_pin` 无门控基座，不需要额外写入 `MODELS`。默认九个选择入口对应 Excel `GateStudy` 中十个去重模型/基座结果；相同依赖的训练成本只计一次。
 
 ## 门控输入和统计范围
 
@@ -48,6 +50,8 @@ concat(safe_original_z, safe_relative_z, one_hot(query_role,4), one_hot(key_role
 例如 `F=41, dim=128, heads=8` 时为 **90→128→8**。两个 OP 通道先在器件级计算，再扩展到有序 D/G/S/B 引脚对。只有一个门控 MLP，产生各头分数，并在模型指定的 encoder Self-Attention 层复用；不为每层创建独立门控。主编码器原有预测 OP 特征通道不改变。
 
 门控物理作用范围继续限制为同一 MOS、不同实际网络的引脚对。R/C、端口、graph token、自环、跨器件和同网短接的附加偏置保持零。偏置公式仍为 `strength * log(epsilon + (1-epsilon) * gate)`，默认 `initial_gate=0.99`；它是学习到的注意力调节，不是经过校准的导通概率。
+
+新增的 `distill_gate_decoder` 最后阶段使用 `op_transfer.epochs.gate`（默认 30），与只调门控的变体共用同一个蒸馏无门控基座；OP predictor 和 encoder 冻结，decoder 保留基座权重后继续训练，不重新初始化。前面的 decoder 预训练仍由 `predicted_op_distill_decoder` 控制。完整流程、六个新增名称及续训规则见 [GATE_DECODER_VERSIONS_pin.md](GATE_DECODER_VERSIONS_pin.md)。
 
 ## 配置与启动
 

@@ -53,7 +53,7 @@ MoLinear(2F+8, D, E)
 - 只有同一 MOS 内、不同实际电气网络的有序引脚对接收附加偏置。R/C、不同器件、外部端口、graph token、自环和同网连接的附加偏置为零；这不删除它们原有注意力。
 - 偏置仍为 `strength * log(epsilon + (1-epsilon) * sigmoid(logits))`。结构/融合块的 Cross-Attention 和性能 decoder 不插入门控。
 
-## 六个模型与无门控对照
+## 八个模型与无门控对照
 
 | 模型 ID | 训练方法 | 门控层范围 |
 |---|---|---|
@@ -63,12 +63,16 @@ MoLinear(2F+8, D, E)
 | `device_op_distill_gate_fusion_pin_v3` | 同上 | 仅融合层 Self-Attention |
 | `device_op_supervised_gate_pin_v3` | 关闭门控监督训练 encoder＋decoder→冻结二者只训练门控 | 结构层＋融合层 Self-Attention |
 | `device_op_supervised_gate_fusion_pin_v3` | 同上 | 仅融合层 Self-Attention |
+| `device_op_distill_gate_decoder_pin_v3` | 教师→蒸馏 encoder→训练 decoder→冻结 encoder，同时训练门控＋decoder | 结构层＋融合层 Self-Attention |
+| `device_op_distill_gate_decoder_fusion_pin_v3` | 同上 | 仅融合层 Self-Attention |
 
 默认同时选择已有 `device_op_cascade_pin`，不创建虚假的 `device_op_cascade_pin_v3`。蒸馏路线还会自动保存并评估 `device_op_distilled_base_pin`；监督分段使用 `device_op_supervised_base_pin`。相同 seed、配置下的共享阶段去重，Excel 中门控前后比较使用各自真实无门控基座。
 
+新增的 `distill_gate_decoder` 最后阶段使用 `op_transfer.epochs.gate`（默认 30），与只调门控的变体共用同一个蒸馏无门控基座；OP predictor 和 encoder 冻结，decoder 保留基座权重后继续训练，不重新初始化。前面的 decoder 预训练仍由 `predicted_op_distill_decoder` 控制。完整流程、六个新增名称及续训规则见 [GATE_DECODER_VERSIONS_pin.md](GATE_DECODER_VERSIONS_pin.md)。
+
 ## 配置和启动
 
-编辑 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`。默认一个电路 `two_stage_folded_opamp`、上述六个 v3 加无门控基线、三个 seeds `17 29 43`。需要只训练部分模型时直接删减 `MODELS`，依赖阶段自动补齐。
+编辑 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`。默认一个电路 `two_stage_folded_opamp`、上述八个 v3 加无门控基线、三个 seeds `17 29 43`。需要只训练部分模型时直接删减 `MODELS`，依赖阶段自动补齐。
 
 训练配置为 `final_exam/configs/op_gate_pin_v3.json`。JSON 不支持 `//` 或 `#` 注释。
 
@@ -92,7 +96,7 @@ bash final_exam/single_circuit_pin/train_op_gate_pin_v3.sh
 
 `--dry-run` 仅预览，不提交、不创建输出目录。`--smoke` 会提交短训练，样本量仍由 JSON 控制。每电路独立提交，默认 8 CPU/1 GPU/80G、账户 `b_phzhwu`、分区 `ex01A800`、Conda 环境 `newbase`。使用已有的 Slurm wrapper，通过提交端导出的项目根目录解析路径，避免从 `/var/spool` 拼错项目位置。训练张量使用请求的 CUDA，数据 IO 和静态准备仍需要 CPU。
 
-最大阶段预算与 v2 相同：predictor 30、teacher 60、学生 encoder 蒸馏 30、decoder 30、直接监督/联合下游 60、独立门控 30。早停 patience=10、batch_size=32。教师和 predictor 是额外成本，三种训练方法并非总计算预算相等；结果记录实际轮数和去重阶段成本。
+最大阶段预算与 v2 相同：predictor 30、teacher 60、学生 encoder 蒸馏 30、decoder 30、直接监督/联合下游 60、独立门控 30。早停 patience=10、batch_size=32。教师和 predictor 是额外成本，四种训练方法并非总计算预算相等；结果记录实际轮数和去重阶段成本。
 
 ## 结果、HPC 日志与实验日志
 

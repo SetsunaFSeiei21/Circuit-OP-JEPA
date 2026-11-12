@@ -65,7 +65,9 @@
       "device_op_distill_gate_pin_v2",
       "device_op_distill_gate_fusion_pin_v2",
       "device_op_supervised_gate_pin_v2",
-      "device_op_supervised_gate_fusion_pin_v2"
+      "device_op_supervised_gate_fusion_pin_v2",
+      "device_op_distill_gate_decoder_pin_v2",
+      "device_op_distill_gate_decoder_fusion_pin_v2"
     ],
     "model_overrides": {},
     "xgboost": {

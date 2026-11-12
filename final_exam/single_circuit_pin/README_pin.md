@@ -1,6 +1,8 @@
 # 端口级单电路实验
 
-**门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](../OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。六个 `_pin_v3` 模型对应三种训练方法与两个层范围，默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。
+**门控＋decoder 分段微调**：v1/v2/v3 各增加全层和仅融合层两个变体，最终冻结 OP predictor 与 encoder，同时更新门控和 decoder。完整名称、轮数与续训规则见 [版本化门控＋decoder 说明](../GATE_DECODER_VERSIONS_pin.md)。
+
+**门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](../OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。八个 `_pin_v3` 模型对应四种训练方法与两个层范围（含冻结 encoder、联合调整门控＋decoder），默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。
 
 ## 检查已训练模型的门控分数
 
@@ -14,7 +16,7 @@ bash final_exam/single_circuit_pin/inspect_op_gate_pin.sh
 
 ## 训练入口
 
-门控 **v2** 的独立入口为 `train_op_gate_pin_v2.sh`，默认选择六个 `_pin_v2` 门控模型和原有无门控基线。编辑该脚本的 `CIRCUITS`、`MODELS`、`SEEDS`，在 `final_exam/configs/op_gate_pin_v2.json` 中设置训练预算、`op_gate_pin.norm_eps` 及 `dataset.max_samples_per_circuit`。运行：
+门控 **v2** 的独立入口为 `train_op_gate_pin_v2.sh`，默认选择八个 `_pin_v2` 门控模型和原有无门控基线。编辑该脚本的 `CIRCUITS`、`MODELS`、`SEEDS`，在 `final_exam/configs/op_gate_pin_v2.json` 中设置训练预算、`op_gate_pin.norm_eps` 及 `dataset.max_samples_per_circuit`。运行：
 
 ```bash
 bash final_exam/single_circuit_pin/train_op_gate_pin_v2.sh --dry-run
@@ -23,14 +25,14 @@ bash final_exam/single_circuit_pin/train_op_gate_pin_v2.sh
 
 v2 将原标准化 OP 与当前样本内所有有效 MOS 的逐字段相对 OP 拼接，再拼接有序引脚 one-hot，送入一个共享门控 MLP。输出 run ID 含 `op_gate_v2`，结果、实验日志与 HPC 日志仍分别保存在 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`。教师、OP 预测器、各模型配置和自动 Excel 保留。完整定义和续训命令见 [v2 说明](../OP_GATE_V2_pin.md)，历史版本记录见 [record.txt](../record.txt)。
 
-门控 **v1** 的独立入口为 `train_op_gate_pin_v1.sh`，默认包含六个 `_pin_v1` 门控模型和 `device_op_cascade_pin` 无门控对照。编辑脚本顶部的 `CIRCUITS`、`MODELS`、`SEEDS` 后运行：
+门控 **v1** 的独立入口为 `train_op_gate_pin_v1.sh`，默认包含八个 `_pin_v1` 门控模型和 `device_op_cascade_pin` 无门控对照。编辑脚本顶部的 `CIRCUITS`、`MODELS`、`SEEDS` 后运行：
 
 ```bash
 bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh --dry-run
 bash final_exam/single_circuit_pin/train_op_gate_pin_v1.sh
 ```
 
-配置为 `final_exam/configs/op_gate_pin_v1.json`；结果、实验日志、HPC 日志仍分别位于本目录的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `op_gate_v1`。默认七个评测入口之外，蒸馏无门控基座也会在 Excel `GateStudy` 中比较。各版本输入结构、六个新模型的训练流程、预算与 checkpoint 兼容规则集中记录在 [../record.txt](../record.txt)。原有脚本继续启动原有版本。
+配置为 `final_exam/configs/op_gate_pin_v1.json`；结果、实验日志、HPC 日志仍分别位于本目录的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `op_gate_v1`。默认九个评测入口之外，蒸馏无门控基座也会在 Excel `GateStudy` 中比较。各版本输入结构、八个门控模型的训练流程、预算与 checkpoint 兼容规则集中记录在 [../record.txt](../record.txt)。原有脚本继续启动原有版本。
 
 本入口与器件级 `single_circuit/` 并列。每个被观测到的器件引脚是一个节点，命名外部端口也有独立节点；MOS 的 D/G/S/B 不合并成一个学习节点。图上保留同器件关系、同网络连接及端口接入关系。编码、输入权重和教师均使用端口级版本。
 

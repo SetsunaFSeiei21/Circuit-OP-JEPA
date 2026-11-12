@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from device_jepa.training import state_digest
+from final_exam.staged_gate_registry_pin import staged_gate_spec_pin
 from final_exam.gate_version_registry_pin import (
     V1_GATE_MODELS_PIN, V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
 )
@@ -34,7 +35,7 @@ class GateV1ModelsPinTests(unittest.TestCase):
         predictor = DeviceOPPredictorPin(self.cfg, self.prep, self.support)
         if mode in V1_STAGED_GATE_MODELS_PIN:
             return StagedOPGateModelPin(self.cfg, self.prep, predictor,
-                mode=mode).set_phase('gate_only').eval()
+                mode=mode).set_phase(staged_gate_spec_pin(mode)['final_phase']).eval()
         return DeviceOPGateModelPin(mode, self.cfg, self.prep, predictor).eval()
 
     def test_exact_concatenation_has_no_mask_or_learned_role_embeddings(self):
@@ -132,7 +133,7 @@ class GateV1ModelsPinTests(unittest.TestCase):
                 self.assertTrue(all(bool(torch.isfinite(p.grad).all()) for p in model.gate.parameters() if p.grad is not None))
                 for name in ('encoder', 'decoder'):
                     grads = [p.grad for p in getattr(model, name).parameters() if p.grad is not None]
-                    if mode in V1_STAGED_GATE_MODELS_PIN:
+                    if mode in V1_STAGED_GATE_MODELS_PIN and (name == 'encoder' or model.phase == 'gate_only'):
                         self.assertFalse(grads)
                         self.assertFalse(getattr(model, name).training)
                     else:

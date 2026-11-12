@@ -355,3 +355,31 @@ strength * log(epsilon + (1-epsilon)*sigmoid(logits)) 加到注意力 logits。
 本版本同时引入专家混合、额外隐藏层和 Dropout；直接 v2/v3 对比不能把所有差异只
 归因于 MoL。记录参数量与实际时间，不由参数比推断总训练时间比，也不在没有
 实际多 seed 结果前声称解决了门控极化、震荡或学习到了物理导通区域。
+
+十二、v1/v2/v3 补充 gate + decoder 分段微调（2026-11-12）
+
+各版本新增两个名称，不覆盖已有只调 gate 的模型：
+  device_op_distill_gate_decoder_pin_v1
+  device_op_distill_gate_decoder_fusion_pin_v1
+  device_op_distill_gate_decoder_pin_v2
+  device_op_distill_gate_decoder_fusion_pin_v2
+  device_op_distill_gate_decoder_pin_v3
+  device_op_distill_gate_decoder_fusion_pin_v3
+
+流程：训练并冻结器件 OP predictor；训练并冻结真实 OP 教师；门控关闭时蒸馏
+学生 encoder；冻结 encoder 训练 decoder；随后启用门控、继续冻结 predictor
+和 encoder，同时更新 gate 与 decoder。decoder 从同一蒸馏无门控基座继续训练，
+不重新初始化。冻结 encoder 权重时仍保留门控经过 encoder 的可微前向路径。
+无 fusion 表示结构与融合 Self-Attention，有 fusion 表示仅融合 Self-Attention。
+最后阶段 phase=gate_decoder，报告 final_trainable=gate_and_decoder。
+
+最后阶段继续使用 op_transfer.epochs.gate，模板上限 30；前面的 decoder 预训练
+使用 predicted_op_distill_decoder，模板上限 30。没有新增 epoch 配置项。
+相同实验内共享 predictor、教师与蒸馏基座，并为各新增模型单独训练最后阶段；
+保存配置、checkpoint、模块冻结审计、实际成本和 gate_comparison_pin.json。
+Excel 与探针保留完整模型名称、版本及作用范围；旧模型策略不变。
+
+train_op_gate_pin_v1.sh/v2.sh/v3.sh 和对应 JSON 均加入两个新选项，默认八个门控
+加 device_op_cascade_pin，共九个评测入口。HPC / 实验日志 / 结果目录规则不变。
+源实验不含新模型时不可通过改名冒充续训；增加模型应创建新实验。
+完整清单、预算、使用方式见 final_exam/GATE_DECODER_VERSIONS_pin.md。

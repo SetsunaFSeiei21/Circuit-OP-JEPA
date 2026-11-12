@@ -1,14 +1,16 @@
 # final_exam 端口级第一阶段
 
-**门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。六个 `_pin_v3` 模型对应三种训练方法与两个层范围，默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。
+**门控＋decoder 分段微调**：v1/v2/v3 各增加全层和仅融合层两个变体，最终冻结 OP predictor 与 encoder，同时更新门控和 decoder。完整名称、轮数与续训规则见 [版本化门控＋decoder 说明](GATE_DECODER_VERSIONS_pin.md)。
+
+**门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。八个 `_pin_v3` 模型对应四种训练方法与两个层范围（含冻结 encoder、联合调整门控＋decoder），默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。
 
 **查看已训练模型的门控分数**：编辑 `single_circuit_pin/inspect_op_gate_pin.sh` 顶部的结果路径、电路、样本数、模型与 seed 后运行。只加载 checkpoint 推理，输出有向引脚对/各 head 的分数、实际偏置、离线热力图和 XLSX/CSV；详见 [检查说明](OP_GATE_INSPECTION_pin.md)。
 
-**门控 v2 实验**见 [OP_GATE_V2_pin.md](OP_GATE_V2_pin.md)。入口为 `single_circuit_pin/train_op_gate_pin_v2.sh`，配置为 `configs/op_gate_pin_v2.json`。六个 `_pin_v2` 模型保留原 OP 通道，并拼接当前样本所有有效 MOS 上按字段归一化的相对 OP；NMOS/PMOS 一起统计、全部有效字段参与。训练方式和层范围对应 v1，旧版本继续保留。抽样数量仍在配置的 `dataset.max_samples_per_circuit` 中设置。
+**门控 v2 实验**见 [OP_GATE_V2_pin.md](OP_GATE_V2_pin.md)。入口为 `single_circuit_pin/train_op_gate_pin_v2.sh`，配置为 `configs/op_gate_pin_v2.json`。八个 `_pin_v2` 模型保留原 OP 通道，并拼接当前样本所有有效 MOS 上按字段归一化的相对 OP；NMOS/PMOS 一起统计、全部有效字段参与。训练方式和层范围对应 v1，旧版本继续保留。抽样数量仍在配置的 `dataset.max_samples_per_circuit` 中设置。
 
 本次交付在器件级流程旁新增独立的端口级单电路实验。所有新增模型实现文件、模型 ID、脚本和生成的结果/日志使用 `_pin` 后缀。器件级代码与入口继续保留。后续多电路、消融、迁移学习不属于本次已完成范围。
 
-**门控 v1 实验**使用 `single_circuit_pin/train_op_gate_pin_v1.sh` 和 `configs/op_gate_pin_v1.json`。新模型在原有完整名称后增加 `_v1`，例如 `device_op_gate_pin_v1`。输入改为归一化 OP＋两个有序引脚独热编码，经一个跨层共享 MLP 产生逐头门控。提供“联合优化、蒸馏后分段、监督后分段”×“全层、仅融合层”六个模型，默认另选无门控基线；自动 Excel 的 `GateStudy` 同时展示蒸馏无门控基座。完整版本差异、模型清单、预算与文件架构见 [record.txt](record.txt)。旧名称继续使用 v0，不会被静默替换。
+**门控 v1 实验**使用 `single_circuit_pin/train_op_gate_pin_v1.sh` 和 `configs/op_gate_pin_v1.json`。新模型在原有完整名称后增加 `_v1`，例如 `device_op_gate_pin_v1`。输入改为归一化 OP＋两个有序引脚独热编码，经一个跨层共享 MLP 产生逐头门控。提供“联合优化、蒸馏后只调门控、蒸馏后调门控＋decoder、监督后只调门控”×“全层、仅融合层”八个模型，默认另选无门控基线；自动 Excel 的 `GateStudy` 同时展示蒸馏无门控基座。完整版本差异、模型清单、预算与文件架构见 [record.txt](record.txt)。旧名称继续使用 v0，不会被静默替换。
 
 新增的 **器件级 OP → pin attention 门控** 单电路对照见 [OP_GATE_pin.md](OP_GATE_pin.md)，独立提供 8 个模型（OP 特征＋门控、仅门控两组），使用 `single_circuit_pin/train_op_gate_pin.sh`。
 
