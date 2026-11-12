@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**查看已训练模型的门控分数**：编辑 `single_circuit_pin/inspect_op_gate_pin.sh` 顶部的结果路径、电路、样本数、模型与 seed 后运行。只加载 checkpoint 推理，输出有向引脚对/各 head 的分数、实际偏置、离线热力图和 XLSX/CSV；详见 [检查说明](OP_GATE_INSPECTION_pin.md)。
+
 **门控 v2 实验**见 [OP_GATE_V2_pin.md](OP_GATE_V2_pin.md)。入口为 `single_circuit_pin/train_op_gate_pin_v2.sh`，配置为 `configs/op_gate_pin_v2.json`。六个 `_pin_v2` 模型保留原 OP 通道，并拼接当前样本所有有效 MOS 上按字段归一化的相对 OP；NMOS/PMOS 一起统计、全部有效字段参与。训练方式和层范围对应 v1，旧版本继续保留。抽样数量仍在配置的 `dataset.max_samples_per_circuit` 中设置。
 
 本次交付在器件级流程旁新增独立的端口级单电路实验。所有新增模型实现文件、模型 ID、脚本和生成的结果/日志使用 `_pin` 后缀。器件级代码与入口继续保留。后续多电路、消融、迁移学习不属于本次已完成范围。

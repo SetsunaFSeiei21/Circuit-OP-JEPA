@@ -1,5 +1,17 @@
 # 端口级单电路实验
 
+## 检查已训练模型的门控分数
+
+编辑 `inspect_op_gate_pin.sh` 顶部的 `SOURCE_RUN`、`CIRCUIT`、`N_SAMPLES`、`MODELS`、`SEED`，然后运行：
+
+```bash
+bash final_exam/single_circuit_pin/inspect_op_gate_pin.sh
+```
+
+默认提交只做推理的 Slurm 作业，从原实验 test 集抽样，不重训、不覆盖原结果。输出离线 HTML 热力图、XLSX 与完整 CSV；各模型共用选中样本，D→S/S→D 分开，逐 head 记录原始门控和实际 attention 偏置。结果、实验日志、HPC 日志分别在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/` 新目录。路径参数、`--dry-run`、`--local` 及分数解释见 [门控检查说明](../OP_GATE_INSPECTION_pin.md)。
+
+## 训练入口
+
 门控 **v2** 的独立入口为 `train_op_gate_pin_v2.sh`，默认选择六个 `_pin_v2` 门控模型和原有无门控基线。编辑该脚本的 `CIRCUITS`、`MODELS`、`SEEDS`，在 `final_exam/configs/op_gate_pin_v2.json` 中设置训练预算、`op_gate_pin.norm_eps` 及 `dataset.max_samples_per_circuit`。运行：
 
 ```bash

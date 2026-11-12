@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OP gate inspection</title>
+<style>
+body{font:15px/1.6 system-ui,sans-serif;color:#1c2939;background:#f4f6f9;margin:0}main{max-width:1180px;margin:24px auto;padding:24px;background:white;border-radius:12px}h1{font-size:25px;margin:0 0 8px}h2{font-size:19px;margin-top:24px}.muted{color:#526176}section.controls{display:flex;gap:14px;flex-wrap:wrap;margin:20px 0}label{font-size:13px;display:flex;flex-direction:column;gap:5px}select{max-width:440px;padding:8px;border:1px solid #b8c4d1;border-radius:5px;font:inherit;background:white}table{border-collapse:collapse;width:100%;margin:12px 0}th,td{padding:9px 12px;border-bottom:1px solid #dce2ea;text-align:right}th{background:#edf1f6;font-weight:600}td:first-child,th:first-child{text-align:left}#matrix{max-width:780px;table-layout:fixed}#matrix td{font-variant-numeric:tabular-nums;text-align:center;border:4px solid white;height:70px;font-size:20px}#matrix td small{display:block;font-size:11px;color:#455368}.note{padding:12px;background:#eef3fa;border-radius:6px}.row{display:flex;flex-wrap:wrap;gap:20px}.row>div{flex:1;min-width:300px}code{overflow-wrap:anywhere}#state{font-weight:600}#opTable{font-size:13px}#opTable td{font-variant-numeric:tabular-nums}@media(max-width:600px){main{margin:0;padding:16px}select{max-width:90vw}#matrix td{font-size:15px;padding:4px}}
+</style></head><body><main>
+<h1>OP 门控分数检查</h1><div id="context" class="muted"></div>
+<p class="note">这是实际模型前向计算中的门控输出，不是 softmax attention，也不是校准后的物理导通概率。行是 query 引脚，列是 key 引脚。灰色表示该引脚对受到保护，实际附加偏置为 0。所有指定层共享同一张门控表。</p>
+<section class="controls">
+<label>模型<select id="model"></select></label><label>样本<select id="sample"></select></label>
+<label>MOS<select id="device"></select></label><label>Attention head<select id="head"></select></label>
+<label>显示值<select id="measure"><option value="3">Gate score：sigmoid 输出</option><option value="4">实际附加 attention bias</option><option value="5">实际乘数：exp(bias)</option></select></label>
+</section>
+<p id="scope" class="muted"></p><p id="state"></p><div id="matrixWrap"><table id="matrix"></table></div>
+<p class="muted">Gate score 越小，通常抑制越强；实际作用同时取决于 epsilon、strength 和连接保护。乘数作用于 softmax 归一化前的权重，不等于最终 attention 权重下降比例。各头平均是显示汇总，模型实际分别使用每个 head。</p>
+<details><summary>查看该 MOS 输入门控的归一化 OP</summary><p class="muted">全局通道沿用 checkpoint 的训练集统计；相对通道仅 v2 有值。未支持字段在 MLP 输入中填 0。这里的 support 标记用于解释，不作为 v1/v2 的额外 MLP 输入。</p><table id="opTable"></table></details>
+<p class="muted">完整样本、全部 head 的精确数值在 <code>gate_scores_pin.csv</code>；跨样本变化统计在 <code>gate_summary_pin.csv</code> 和 <code>gate_scores_pin.xlsx</code>。</p>
+</main><script>
+const payload=__GATE_DATA_PIN__;
+const byId=id=>document.getElementById(id),roles=['D','G','S','B'];
+function options(id,values,labels){const e=byId(id);e.replaceChildren();values.forEach((v,i)=>{const o=document.createElement('option');o.value=v;o.textContent=labels?labels[i]:v;e.append(o);});}
+function cell(tag,text){const e=document.createElement(tag);e.textContent=text;return e;}
+function num(x){return x===null||x===undefined?'—':(x!==0&&Math.abs(x)<1e-5?x.toExponential(4):x.toFixed(6));}
+function samples(){const m=byId('model').value,info=payload.models[m];options('sample',Object.keys(payload.data[m]||{}));options('head',['mean',...Array.from({length:info.heads},(_,i)=>String(i+1))],['各头平均',...Array.from({length:info.heads},(_,i)=>String(i+1))]);devices();}
+function devices(){options('device',Object.keys((payload.data[byId('model').value]||{})[byId('sample').value]||{}));render();}
+function render(){const m=byId('model').value,info=payload.models[m],entry=((payload.data[m]||{})[byId('sample').value]||{})[byId('device').value];
+byId('scope').textContent=`版本 ${info.gate_version} · OP 来源 ${info.gate_source} · Self-Attention 层 ${info.self_attention_layers_1based.join(', ')||'无'} · checkpoint seed ${payload.seed}`;
+const table=byId('matrix');table.replaceChildren();byId('opTable').replaceChildren();
+if(!entry){byId('state').textContent=info.gate_active?'所选样本没有可显示的 MOS 引脚对。':'无门控对照：模型不调用门控，不存在可报告的门控分数。';return;}
+const h=byId('head').value,measure=Number(byId('measure').value),tr=document.createElement('tr');tr.append(cell('th','Query / Key'));roles.forEach(r=>tr.append(cell('th',r)));table.append(tr);let active=[];
+for(const q of roles){const row=document.createElement('tr');row.append(cell('th',q));for(const k of roles){const ps=entry.pairs.filter(p=>p[0]===q&&p[1]===k&&(h==='mean'||p[2]===Number(h)));const td=document.createElement('td');
+if(!ps.length){td.textContent='—';td.style.background='#eef0f4';row.append(td);continue;}
+const value=ps.reduce((s,p)=>s+p[measure],0)/ps.length,applied=ps.every(p=>p[6]);td.textContent=num(value);
+if(applied){active.push(value);const intensity=measure===4?Math.min(1,Math.abs(value)/Math.max(1e-9,Math.abs(info.gate_settings.strength*Math.log(info.gate_settings.epsilon)))):1-Math.max(0,Math.min(1,value));td.style.background=`hsl(212 65% ${94-intensity*48}%)`;if(intensity>.65)td.style.color='white';}
+else{td.style.background='#e9edf1';td.append(cell('small',ps[0][7]||'protected'));}
+td.title=`query=${q}, key=${k}; ${applied?'门控生效':'受保护，实际 bias=0'}`;row.append(td);}table.append(row);}
+byId('state').textContent=active.length?`生效引脚对显示范围：${num(Math.min(...active))} ～ ${num(Math.max(...active))}`:'该 MOS 没有生效的门控引脚对。';
+const op=byId('opTable'),header=document.createElement('tr');['字段','全局归一化 OP','样本内相对 OP','支持'].forEach(v=>header.append(cell('th',v)));op.append(header);entry.op.forEach(r=>{const tr=document.createElement('tr');[r[0],num(r[1]),num(r[2]),r[3]?'是':'否'].forEach(v=>tr.append(cell('td',v)));op.append(tr);});}
+byId('context').textContent=`${payload.circuit} · ${payload.split} · 共检测 ${payload.total_samples} 个样本，HTML 展示其中 ${payload.viewer_samples} 个；CSV 保留全部样本。`;
+options('model',Object.keys(payload.models));byId('model').addEventListener('change',samples);byId('sample').addEventListener('change',devices);['device','head','measure'].forEach(id=>byId(id).addEventListener('change',render));samples();
+</script></body></html>
