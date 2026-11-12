@@ -97,6 +97,15 @@ bash final_exam/single_circuit_pin/summarize_pin.sh \
 
 输出文件名必须以 `_pin.xlsx` 结尾。默认拒绝覆盖，明确指定 `--overwrite` 才替换。未完成实验默认拒绝导出；`--allow-incomplete` 可生成明确标注的临时表，并禁用最优高亮。
 
+若所有训练/测试完成，但最后导出失败，`training_pin/run_pin.json` 的状态是 `failed_export`，可在**新 Python 进程**中只恢复 Excel：
+
+```bash
+bash final_exam/single_circuit_pin/summarize_pin.sh \
+  final_exam/single_circuit_pin/results_pin/<run_id_pin> --recover-export
+```
+
+此操作仍严格检查原计划的模型、seed、split、每模型配置、训练成本及门控前后对照；不能跳过缺失结果。只写 `training_pin/summary_pin.xlsx`，不读取完整数据、不加载 checkpoint、不训练，也不修改原始失败状态或 HPC 日志。Excel 显式注明导出已恢复。普通 `failed`/`running` 状态不能用这个参数代替训练恢复。版本混用排查及详情见 [导出恢复说明](../EXPORT_RECOVERY_pin.md)。
+
 Excel 含 MAE、RMSE、R2、PerSeed、Statistics、TrainingCost、Configuration。跨 seeds 使用样本标准差；只有一个 seed 时留空标准差。真实 OP 参考与无需真实 OP 的模型分组比较；样本数或 seeds 不匹配时不高亮最优。每个模型名称保留 `_pin`，不与器件级结果混合统计。
 
 本入口完成的是第一阶段单电路流程，不代表多电路/OOD、消融或迁移学习已经实现。

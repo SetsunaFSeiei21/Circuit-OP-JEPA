@@ -233,7 +233,7 @@ def summary_rows_pin(results, config=None):
     return rows
 
 
-def _validate_plan(results, run, *, allow_incomplete, finalizing):
+def _validate_plan(results, run, *, allow_incomplete, finalizing, recover_export=False):
     if not isinstance(run, dict):
         raise ValueError('run_pin.json must contain an object')
     models, seeds = run.get('models'), run.get('seeds')
@@ -270,6 +270,11 @@ def _validate_plan(results, run, *, allow_incomplete, finalizing):
     accepted_statuses = {'complete'}
     if finalizing:
         accepted_statuses.add('ready_to_export')
+    if recover_export:
+        if run.get('status') != 'failed_export':
+            raise ValueError('--recover-export requires status=failed_export; '
+                             'it cannot recover failed or unfinished training')
+        accepted_statuses.add('failed_export')
     complete = not missing and run.get('status') in accepted_statuses
     if not complete and not allow_incomplete:
         raise ValueError(f'Incomplete experiment: status={run.get("status")!r}, '
@@ -406,7 +411,7 @@ def _score_cell(row, score, divisor, fields, source_row, style, decimals):
     return Cell(text, style, formula)
 
 
-def _comparison_sheets(rows, models, fields, complete, decimals):
+def _comparison_sheets(rows, models, fields, complete, decimals, *, recover_export=False):
     indexed = {(row['circuit'], row['split'], row['metric'], row['mode']): (index + 5, row)
                for index, row in enumerate(rows)}
     metric_order = {metric: index for index, metric in enumerate(METRICS)}
@@ -417,7 +422,10 @@ def _comparison_sheets(rows, models, fields, complete, decimals):
         name = 'R2' if score == 'r2' else score.upper()
         sheet = Sheet(name, [26, 12, 25, 16, *([30] * len(models)), 16], freeze_rows=7, freeze_columns=4)
         sheet.note(f'{name} pin-level model comparison', 1, 34)
-        sheet.note('STATUS: ' + ('COMPLETE' if complete else 'INCOMPLETE — provisional results, no ranking'), 4, 30)
+        status = 'COMPLETE' if complete else 'INCOMPLETE — provisional results, no ranking'
+        if recover_export:
+            status += ' — export recovered; original job failed at export'
+        sheet.note('STATUS: ' + status, 4, 30)
         sheet.note('Mean ± sample std over seeds. One seed displays the mean alone; its std remains blank.')
         sheet.note('Higher R2 is better; lower MAE/RMSE is better. UGF errors are displayed in MHz.')
         sheet.note('Green marks the best unrounded mean within matching inference-input groups and matched seeds/counts.', height=32)
@@ -761,12 +769,19 @@ def _resume_sheet(stages):
     return sheet
 
 
-def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete=False, finalizing=False, decimals=4):
+def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete=False,
+                       finalizing=False, recover_export=False, decimals=4):
     """Validate and export a completed run; finalizing accepts ready_to_export.
 
     An explicit provisional export is possible with allow_incomplete=True. Its
     status is prominent and every comparison highlight is disabled.
+
+    recover_export accepts only failed_export runs and retains every completeness
+    check. It writes only the workbook, preserving original run status, reports,
+    configs, costs and checkpoints. No dataset or training runtime is loaded.
     """
+    if recover_export and (allow_incomplete or finalizing):
+        raise ValueError('--recover-export cannot be combined with provisional export or finalizing')
     if type(decimals) is not int or not 1 <= decimals <= 10:
         raise ValueError('decimals must be an integer between 1 and 10')
     source = _resolve_source(source)
@@ -781,10 +796,14 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if not isinstance(config, dict) or not config:
         raise ValueError('config_pin.json must contain the effective experiment configuration')
     rows = summary_rows_pin(results, config)
-    models, complete, missing = _validate_plan(results, run, allow_incomplete=allow_incomplete, finalizing=finalizing)
+    models, complete, missing = _validate_plan(results, run, allow_incomplete=allow_incomplete,
+                                              finalizing=finalizing, recover_export=recover_export)
     stages = _validate_stages(_read_json(directory / 'stages_pin.json'), results)
     configuration, missing_configs = _configuration_sheet(directory, config, run, results,
                                                            allow_incomplete=allow_incomplete)
+    if recover_export:
+        configuration.note('EXPORT RECOVERED: all planned results/configurations/costs are validated. '
+                           'Original failed_export metadata and Slurm failure are preserved; no retraining.', 4, 42)
     complete = complete and not missing_configs
     if missing:
         configuration.note('MISSING RESULTS: ' + json.dumps(missing), 4, 42)
@@ -797,7 +816,7 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         if missing_gate_comparisons:
             configuration.note('MISSING GATE COMPARISONS: ' + json.dumps(missing_gate_comparisons), 4, 42)
     statistics, fields = _statistics_sheet(rows)
-    sheets = _comparison_sheets(rows, models, fields, complete, decimals)
+    sheets = _comparison_sheets(rows, models, fields, complete, decimals, recover_export=recover_export)
     sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
     if run.get('resume'):
         sheets.append(_resume_sheet(stages))
@@ -828,11 +847,14 @@ def main(argv=None):
     parser.add_argument('source', help='Run directory, raw-run directory, or results_pin.json')
     parser.add_argument('--output', help='New .xlsx filename, default <training-run>/summary_pin.xlsx')
     parser.add_argument('--overwrite', action='store_true', help='Explicitly replace the derived workbook')
-    parser.add_argument('--allow-incomplete', action='store_true', help='Export provisional results without highlighting')
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument('--allow-incomplete', action='store_true', help='Export provisional results without highlighting')
+    recovery.add_argument('--recover-export', action='store_true',
+                          help='Recover a failed_export workbook after strict validation; no retraining or metadata changes')
     args = parser.parse_args(argv)
     try:
         path = export_results_pin(args.source, args.output, overwrite=args.overwrite,
-                              allow_incomplete=args.allow_incomplete)
+                              allow_incomplete=args.allow_incomplete, recover_export=args.recover_export)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         parser.error(str(exc))
     print(path)

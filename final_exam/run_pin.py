@@ -21,6 +21,18 @@ from final_exam.staged_gate_registry_pin import (
 from final_exam.gate_version_registry_pin import (
     VERSIONED_JOINT_GATE_MODELS_PIN, VERSIONED_GATE_MODELS_PIN, gate_version_pin,
 )
+# Resolve the lightweight reporting dependencies before importing raw data or
+# training. A late import can mix a newly pulled reporter with an old registry
+# already cached by a long-running process. Keep this callable for the whole run.
+try:
+    from final_exam.summarize_pin import export_results_pin
+except ImportError as exc:
+    raise ImportError(
+        'Pin report imports failed before training. Synchronize the repository '
+        'files and restart Python; do not update this checkout while a job is '
+        'running. Saved failed_export results can be exported with '
+        'summarize_pin.py --recover-export in a fresh process.'
+    ) from exc
 
 MODEL_NAMES_PIN = ('mlp_pin', 'xgboost_pin', 'gat_pin', 'deepgen_supervised_pin', 'deepgen_op_pretrained_pin',
                'gtn_pin', 'zerosim_supervised_pin', 'accformer_pin', 'predicted_op_pin',
@@ -780,7 +792,6 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                     shared.clear()
                 run['status'] = 'ready_to_export'
                 atomic_json(output / 'run_pin.json', run)
-                from final_exam.summarize_pin import export_results_pin
                 export_results_pin(output, finalizing=True)
                 run.update(status='complete', elapsed_seconds=time.time()-run['started_unix'])
                 atomic_json(output / 'run_pin.json', run)
