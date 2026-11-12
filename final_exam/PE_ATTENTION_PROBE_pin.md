@@ -58,7 +58,7 @@ bash final_exam/single_circuit_pin/inspect_pe_attention_pin.sh
 | 实验日志 | `final_exam/single_circuit_pin/logs_pin/<run_id>/probe_pin.log` |
 | HPC 日志 | `final_exam/single_circuit_pin/hpc_logs_pin/<run_id>/%j_pin.out` 和 `%j_pin.err` |
 
-- `attention_viewer_pin.html`：离线页面，按模型 → 样本 → PE → MOS → head 切换 4×4 热图，可选 scaled QK、原偏置、logit、softmax 权重，附 Query 权重去向。
+- `attention_viewer_pin.html`：离线页面，选择模型、样本、MOS 和 head 后，**所有 PE 的 Self-Attention 各显示一张 4×4 热图**，按层号排列；下方可选一层查看详情和 Query 权重去向。可选 scaled QK、原偏置、logit、softmax 权重。同一次展示的所有层共用色标：权重固定 0–1，其余得分使用所有 PE 的共同对称范围，禁止逐图独立缩放造成视觉误判。
 - `attention_scores_pin.xlsx`：`SampleMatrices` 是预览样本的 head 平均矩阵；`MeanMatrices` 是所有抽取样本平均矩阵；`ScoreSummary` 保留各 head 的统计；`MassSummary` 是权重去向；`DetailPreview` 为前 4000 行原始明细；`Checkpoints` 记录权重身份与重建误差；`ReadMe` 解释统计口径。
 - `attention_scores_pin.csv`：完整逐样本/PE/head/MOS/有向端口对得分，含对角项和同网引脚。
 - `attention_mass_pin.csv`：每个 MOS Query 分配给本器件、其他器件、外部端口、图 token、padding 的概率质量及总和。
@@ -66,6 +66,17 @@ bash final_exam/single_circuit_pin/inspect_pe_attention_pin.sh
 - `probe_pin.json`、`selection_pin.json`：配置、checkpoint SHA-256、源指纹、样本 IDs、实际层数/head 数、是否使用真实 OP、重建误差。
 
 `VIEWER_SAMPLES` 仅限制 HTML 与 Excel `SampleMatrices` 的样本数。完整 CSV、均值和标准差覆盖所有抽取样本。每个 head 独立保存，额外 `head=mean` 为算术平均。所有原实验数据、权重、配置和日志保持原样，输出必须使用单独的新目录。
+
+### 已有探测结果直接生成所有 PE 热图
+
+如果已经生成过 `attention_viewer_pin.html`，在项目根目录执行：
+
+```bash
+python -m final_exam.attention_probe_report_pin \
+  --source /absolute/path/to/results_pin/<pe_attention_probe_run_id>
+```
+
+`--source` 是**注意力探测结果目录**，也可以直接填旧 HTML 的路径。默认在同目录新增 `attention_pe_overview_pin.html`；旧页面、CSV 和 Excel 保持原样。不读取 checkpoint、不需要 Torch/GPU、不重新推理，仅使用旧页面已保存的样本和所有 PE/head 数据。若该输出已存在，可用 `--output /path/to/new_name.html` 指定另一个新文件，不会覆盖已有文件。新运行探测时，默认 `attention_viewer_pin.html` 已直接包含总览。
 
 ## 分数与索引
 
@@ -87,3 +98,5 @@ MOS 通过 `owner_index`、`pin_terminal_index` 和保存的 terminal schema 定
 ## 本次验证
 
 在 PyTorch 2.6.0 CPU 环境完成 31 项相关单元/集成测试，1 项 CUDA 数值测试因无 GPU 跳过。覆盖原生逐 head 权重比对、不同掩码、交错引脚索引、完整归一化质量、8 种无门控 checkpoint、原预测与源文件不变、异常后 hook 清理、拒绝门控模型、数据指纹检查、Slurm 预检及旧门控探测回归。离线页面通过 48 组模型/层/head/得分切换的 DOM 检查，无 JavaScript 错误；未在这里验证 GPU 集群或浏览器实际像素布局。
+
+所有 PE 总览更新后，重新执行探测与启动入口测试：12 项通过、1 项 CUDA 跳过。使用真实小规模探测输出验证 216 组模型/样本/MOS/head/得分切换、6,912 个热图单元格与保存的数据一致，并核对共同色标和层详情选择。旧 HTML 更新在不加载 Torch 的环境中完成，保留全部原 payload，原文件摘要不变，已有输出拒绝覆盖。
