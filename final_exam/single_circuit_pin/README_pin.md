@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**无门控 PE 注意力检查**：编辑 `inspect_pe_attention_pin.sh` 顶部的结果路径、电路、样本数、模型和 seed，运行 `bash final_exam/single_circuit_pin/inspect_pe_attention_pin.sh`。默认加载 `device_op_cascade_pin`，按样本、PE 层、head、MOS 输出 D/G/S/B 的 4×4 QK/logit/softmax 矩阵及权重去向，生成离线 HTML、Excel 和完整 CSV。只读取原本没有门控的 checkpoint，不重训，不在门控模型上临时关门控；详见 [PE 注意力检查说明](../PE_ATTENTION_PROBE_pin.md)。
+
 **门控＋decoder 分段微调**：v1/v2/v3 各增加全层和仅融合层两个变体，最终冻结 OP predictor 与 encoder，同时更新门控和 decoder。完整名称、轮数与续训规则见 [版本化门控＋decoder 说明](../GATE_DECODER_VERSIONS_pin.md)。
 
 **门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](../OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。八个 `_pin_v3` 模型对应四种训练方法与两个层范围（含冻结 encoder、联合调整门控＋decoder），默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。

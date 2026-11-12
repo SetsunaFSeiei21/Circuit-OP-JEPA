@@ -53,7 +53,7 @@ def file_digest(path):
     return digest.hexdigest()
 
 
-def inspect_source(source, circuit, models, seed):
+def inspect_source(source, circuit, models, seed, *, allowed_models=None):
     """Login-node preflight: small metadata only, with no torch dependency."""
     from final_exam.gate_version_registry_pin import VERSIONED_GATE_MODELS_PIN
     from final_exam.staged_gate_registry_pin import ALL_STAGED_GATE_MODELS_PIN
@@ -63,9 +63,11 @@ def inspect_source(source, circuit, models, seed):
         'device_op_gate_only_pin', 'device_op_gate_only_oracle_pin',
         'device_op_gate_only_shuffle_pin',
     }
+    if allowed_models is not None:
+        allowed = set(allowed_models)
     identifier(circuit)
     if not models or len(set(models)) != len(models) or set(models) - allowed:
-        raise ValueError('Choose unique registered device-OP pin gate models or their ungated controls')
+        raise ValueError('Choose unique supported models for this probe')
     for model in models:
         identifier(model)
     if type(seed) is not int or not 0 <= seed < 2**32:
