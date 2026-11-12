@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from final_exam.gate_version_registry_pin import (
-    V1_GATE_MODELS_PIN, V2_GATE_MODELS_PIN, VERSIONED_GATE_MODELS_PIN, gate_version_pin,
+    V1_GATE_MODELS_PIN, V2_GATE_MODELS_PIN, gate_version_pin,
 )
 from final_exam.staged_gate_registry_pin import staged_gate_spec_pin
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
@@ -14,7 +14,7 @@ from final_exam.tests.test_summary_pin import NS, record, text_values, workbook,
 
 
 def versioned_run(directory, seeds=(17, 29), mixed=False):
-    models = ['device_op_cascade_pin', *(VERSIONED_GATE_MODELS_PIN if mixed else V2_GATE_MODELS_PIN)]
+    models = ['device_op_cascade_pin', *((V1_GATE_MODELS_PIN + V2_GATE_MODELS_PIN) if mixed else V2_GATE_MODELS_PIN)]
     records = [record(mode, seed, mae=2e6 if seed == 17 else 4e6)
                for mode in models for seed in seeds]
     for item in records:
@@ -63,7 +63,7 @@ class GateV2SummaryPinTests(unittest.TestCase):
         self.assertEqual(before, records)
         self.assertEqual({row['mode'] for row in rows}, set(modes))
         self.assertTrue(all(row['seed_ids'] == [17, 29] for row in rows))
-        for invalid in ('unregistered_pin_v2', 'device_op_gate_pin_v3', 'device_op_gate_v2_pin_v2'):
+        for invalid in ('unregistered_pin_v2', 'device_op_gate_pin_v4', 'device_op_gate_v2_pin_v2'):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 summary_rows_pin([record(invalid)])
 
@@ -109,7 +109,7 @@ class GateV2SummaryPinTests(unittest.TestCase):
             self.assertEqual(text.count('device_op_distilled_base_pin'), 1)
             self.assertEqual(text.count('device_op_cascade_pin'), 1)
             self.assertNotIn('device_op_supervised_base_pin', text)
-            for mode in VERSIONED_GATE_MODELS_PIN:
+            for mode in V1_GATE_MODELS_PIN + V2_GATE_MODELS_PIN:
                 self.assertEqual(text.count(mode), 1)
             self.assertIn('v1', text)
             self.assertIn('v2', text)

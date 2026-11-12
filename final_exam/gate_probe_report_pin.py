@@ -148,6 +148,7 @@ class GateReport:
             writer.writerow(SUMMARY_FIELDS)
             writer.writerows(group_rows)
         model_rows = []
+        include_network = any(info.get('gate_version') == 'v3' for info in self.models.values())
         for mode, info in self.models.items():
             stats = self.overall.get(mode)
             model_rows.append([mode, info['gate_active'], info['gate_version'], info['attention_scope'],
@@ -156,10 +157,14 @@ class GateReport:
                 stats.score.mean if stats else None, stats.score.std if stats else None,
                 stats.score.minimum if stats else None, stats.score.maximum if stats else None,
                 stats.bias.mean if stats else None, stats.multiplier.mean if stats else None])
+            if include_network:
+                model_rows[-1].extend(info.get(key) for key in ('gate_network', 'gate_n_experts',
+                    'gate_mlp_dropout', 'gate_network_parameters'))
+        network_fields = ('Gate network', 'Experts per layer', 'MLP dropout', 'Gate parameters') if include_network else ()
         sheets = [
             table_sheet('Models', ('Model', 'Gate active', 'Version', 'Scope', 'SA layers (1-based)',
                 'Heads', 'Applied rows', 'Protected rows', 'Gate mean', 'Gate std', 'Gate min', 'Gate max',
-                'Bias mean', 'Effective multiplier mean'), model_rows,
+                'Bias mean', 'Effective multiplier mean', *network_fields), model_rows,
                 'Statistics include applied MOS pairs only. Gate scores are not softmax attention or physical connection probabilities.'),
             table_sheet('ByDeviceHead', SUMMARY_FIELDS, group_rows,
                 'Across selected samples for a fixed MOS / query / key / head. Population std. Protected pairs are excluded.'),

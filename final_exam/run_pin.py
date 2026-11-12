@@ -80,7 +80,8 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
     options = settings(config)
     if set(selected) & set(ALL_GATE_MODELS_PIN) or 'op_gate_pin' in config:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
-        version = 'v2' if any(gate_version_pin(mode) == 'v2' for mode in selected) else None
+        versions = {gate_version_pin(mode) for mode in selected}
+        version = 'v3' if 'v3' in versions else 'v2' if 'v2' in versions else None
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)
     epochs = options['epochs']
     if not epochs['readout'] == epochs['student_predicted_op'] == (
@@ -127,7 +128,7 @@ def gate_contract_pin(mode):
                 uses_predicted_op_features=features, gate_source=source,
                 predictor_granularity='none' if mode == 'device_op_gate_only_base_pin' else 'device',
                 requires_measured_op=mode in REFERENCES_PIN,
-                attention_scope=('fusion_self_attention' if mode in ('device_op_gate_fusion_pin_v1', 'device_op_gate_fusion_pin_v2')
+                attention_scope=('fusion_self_attention' if mode in VERSIONED_JOINT_GATE_MODELS_PIN and '_fusion_' in mode
                                  else 'all_encoder_self_attention' if source != 'none' else 'none'),
                 gate_version=gate_version_pin(mode) if source != 'none' else 'none',
                 diagnostic_control=source in ('true_op', 'shuffled_predicted_op'))
@@ -137,19 +138,26 @@ def _gate_input_dim_pin(model):
     if model.gate is None:
         return None
     fields = len(model.gate.field_names)
-    return (2 * fields + 8 if model.gate_version == 'v2' else
+    return (2 * fields + 8 if model.gate_version in ('v2', 'v3') else
             fields + 8 if model.gate_version == 'v1' else 2 * fields)
 
 
-def _gate_v2_metadata_pin(model):
-    """Persist the exact normalization and MLP contract only for new v2 gates."""
-    if getattr(model, 'gate_version', None) != 'v2':
+def _gate_metadata_pin(model):
+    """Persist sample-relative input and version-specific network contracts."""
+    if getattr(model, 'gate_version', None) not in ('v2', 'v3'):
         return {}
-    return dict(gate_relative_normalization='per_sample_per_field_all_valid_mos',
+    metadata = dict(gate_relative_normalization='per_sample_per_field_all_valid_mos',
                 gate_input_dim=_gate_input_dim_pin(model),
                 gate_hidden_dim=model.gate.cfg.dim,
                 norm_eps=model.gate.settings['norm_eps'],
                 gate_normalization=copy.deepcopy(model.gate.normalization_contract))
+    if model.gate_version == 'v3':
+        metadata.update(gate_network='mixed_mlp',
+                        gate_n_experts=model.gate.settings['n_experts'],
+                        gate_mlp_dropout=model.gate.settings['mlp_dropout'],
+                        gate_network_parameters=sum(p.numel() for p in model.gate.score_head.parameters()),
+                        gate_architecture=copy.deepcopy(model.gate.architecture_contract))
+    return metadata
 
 
 def oracle_gate_coverage_pin(ctx, predictor, split, batch_size):
@@ -193,7 +201,7 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
     else:
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
     if mode in ALL_GATE_MODELS_PIN:
-        payload['input_contract_pin'] = {**gate_contract_pin(mode), **_gate_v2_metadata_pin(model)}
+        payload['input_contract_pin'] = {**gate_contract_pin(mode), **_gate_metadata_pin(model)}
     atomic_torch_save(directory / 'checkpoint_pin.pt', payload)
     atomic_json(directory / 'config_pin.json', config)
     atomic_json(directory / 'dependencies_pin.json', dict(stage_ids=dependencies))
@@ -371,8 +379,10 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     if name in VERSIONED_GATE_MODELS_PIN:
                                         identity.update(gate_version=gate_version_pin(name),
                                             attention_scope=gate_contract_pin(name)['attention_scope'])
-                                    if gate_version_pin(name) == 'v2':
+                                    if gate_version_pin(name) in ('v2', 'v3'):
                                         identity['gate_normalization'] = copy.deepcopy(model.gate.normalization_contract)
+                                    if gate_version_pin(name) == 'v3':
+                                        identity['gate_architecture'] = copy.deepcopy(model.gate.architecture_contract)
                                     if hasattr(model, 'teacher_scaler'):
                                         identity['teacher_scaler_digest'] = scaler_digest_pin(model.teacher_scaler.state_dict())
                                     resume_args = dict(resume_identity=identity,
@@ -567,7 +577,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             # This pairs all-layer/fusion-only variants at identical gate weights.
                             if mode in VERSIONED_GATE_MODELS_PIN:
                                 seed_everything(seed, options['torch_threads'])
-                            if gate_version_pin(mode) == 'v2':
+                            if gate_version_pin(mode) in ('v2', 'v3'):
                                 model.set_mode_pin(mode, gate_config=cfg.get('op_gate_pin'))
                             else:
                                 model.set_mode_pin(mode)
@@ -602,7 +612,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 gate_hidden_dim=cfg['model']['dim'], gate_heads=cfg['model']['heads'],
                                 **{f'initial_{key}_digest': value for key, value in before.items()},
                                 **{f'final_{key}_digest': value for key, value in after.items()})
-                            audit.update(_gate_v2_metadata_pin(model))
+                            audit.update(_gate_metadata_pin(model))
                             atomic_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode == 'device_op_cascade_pin' and versioned_gate_study:
                             # The supervised no-gate control IS the shared supervised base.
@@ -645,7 +655,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 protected_edges='same net, self, external ports, non-MOS',
                                 predictor_checkpoint='../shared_pin/device_op_predictor_pin/checkpoint_pin.pt'
                                     if needs_predictor else None)
-                            audit.update(_gate_v2_metadata_pin(model))
+                            audit.update(_gate_metadata_pin(model))
                             atomic_json(directory / 'op_gate_audit_pin.json', audit)
                         elif mode in REFERENCES_PIN:
                             model = teacher(mode == 'design_op_oracle_pin')
@@ -742,7 +752,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             if mode == 'device_op_cascade_pin' and versioned_gate_study:
                                 report['ungated_base_checkpoint_pin'] = 'shared_pin/device_op_supervised_base_pin/checkpoint_pin.pt'
                             if mode in ALL_GATE_MODELS_PIN:
-                                report['op_gate_pin'] = {**gate_contract_pin(mode), **_gate_v2_metadata_pin(model)}
+                                report['op_gate_pin'] = {**gate_contract_pin(mode), **_gate_metadata_pin(model)}
                                 if mode in REFERENCES_PIN:
                                     report['oracle_gate_coverage_pin'] = oracle_gate_coverage_pin(
                                         ctx, model.predictor, 'test', options['batch_size'])

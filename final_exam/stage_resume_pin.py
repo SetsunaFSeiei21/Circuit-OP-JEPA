@@ -32,13 +32,15 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
         raise ValueError('Resume supports registered staged gates, versioned joint gates and their cascade baseline')
     if not set(models) <= set(record.get('models', [])) or not set(seeds) <= set(record.get('seeds', [])):
         raise ValueError('Resume models and seeds must be selected from the source run')
-    # A cascade-only subset still belongs to its original v2 study. Resolve
-    # the v2 default even when the requested subset no longer names a v2 gate;
+    # A cascade-only subset still belongs to its original versioned study. Resolve
+    # its defaults even when the requested subset no longer names that gate;
     # explicit values must still match exactly (never copy source settings).
-    from final_exam.gate_version_registry_pin import V2_GATE_MODELS_PIN
-    if set(record.get('models', [])) & set(V2_GATE_MODELS_PIN):
+    from final_exam.gate_version_registry_pin import gate_version_pin
+    versions = {gate_version_pin(mode) for mode in record.get('models', [])}
+    version = 'v3' if 'v3' in versions else 'v2' if 'v2' in versions else None
+    if version:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
-        config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version='v2')
+        config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):

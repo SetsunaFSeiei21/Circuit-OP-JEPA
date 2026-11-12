@@ -197,8 +197,10 @@ def describe_staged_gate_model_pin(model):
                 predictor=describe_gate_model_pin(model.predictor),
                 use_op_features=True, gate_source='predicted_op',
                 requires_measured_op=False)
-    if model.gate_version == 'v2':
+    if model.gate_version in ('v2', 'v3'):
         recipe['gate_normalization'] = deepcopy(model.gate.normalization_contract)
+    if model.gate_version == 'v3':
+        recipe['gate_architecture'] = deepcopy(model.gate.architecture_contract)
     return recipe
 
 
@@ -211,8 +213,10 @@ def rebuild_staged_gate_model_pin(recipe, config, prep):
         mode=recipe['mode'], gate_config=recipe['gate_config']).set_phase(recipe['phase'])
     if recipe.get('gate_version', 'v0') != model.gate_version:
         raise ValueError('Staged gate recipe version disagrees with its model mode')
-    if model.gate_version == 'v2' and recipe.get('gate_normalization') != model.gate.normalization_contract:
-        raise ValueError('Staged gate recipe normalization disagrees with its v2 contract')
+    if model.gate_version in ('v2', 'v3') and recipe.get('gate_normalization') != model.gate.normalization_contract:
+        raise ValueError('Staged gate recipe normalization disagrees with its sample-relative contract')
+    if model.gate_version == 'v3' and recipe.get('gate_architecture') != model.gate.architecture_contract:
+        raise ValueError('Staged gate recipe architecture disagrees with its v3 contract')
     expected = dict(gate_enabled=model.gate_enabled, use_op_features=True,
                     gate_source='predicted_op', requires_measured_op=False)
     if any(recipe.get(key) != value for key, value in expected.items()):

@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**门控 v3（FlowNet M-MLP）**见 [OP_GATE_V3_pin.md](../OP_GATE_V3_pin.md)。入口 `final_exam/single_circuit_pin/train_op_gate_pin_v3.sh`，配置 `final_exam/configs/op_gate_pin_v3.json`。保留 v2 的双 OP 通道，将评分网络改为三层 MoLinear，默认每层 16 个专家；`op_gate_pin.n_experts` 和 `mlp_dropout` 可独立设置。六个 `_pin_v3` 模型对应三种训练方法与两个层范围，默认搭配已有无门控基线，旧版本继续保留。结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin/`、`logs_pin/`、`hpc_logs_pin/`，run ID 含 `_op_gate_v3_`。
+
 ## 检查已训练模型的门控分数
 
 编辑 `inspect_op_gate_pin.sh` 顶部的 `SOURCE_RUN`、`CIRCUIT`、`N_SAMPLES`、`MODELS`、`SEED`，然后运行：

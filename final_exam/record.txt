@@ -1,5 +1,5 @@
 Circuit-OP-JEPA / final_exam 门控版本记录
-更新日期：2026-11-11
+更新日期：2026-11-12
 
 一、版本管理与工程边界
 
@@ -304,3 +304,54 @@ bash final_exam/single_circuit_pin/resume_staged_op_gate_pin.sh <失败实验目
 ```
 
 恢复写入新目录，已完成阶段复用；中断阶段使用最近完整 epoch 的优化器、随机数及早停状态。v0/v1 权重不会被当作 v2 门控加载，不能通过改模型名或 `norm_eps` 接续旧门控优化器状态。无门控依赖可以在同一实验、同一 seed 内共享，版本属于各自的门控模型及配方，而不是改写无门控模型名称。
+
+
+十一、v3：样本内相对 OP + FlowNet M-MLP（2026-11-12）
+
+来源：Yutong-Feng/FlowNet 官方仓库，固定提交
+57ad6128c2a1980d0aa73325a844659262271797，参照 src/layers/mo_linear.py
+以及 src/blocks/hyper_flow.py 的 build_mixer。新文件为
+final_exam/models/gates_pin/v3_pin.py；数学运算独立实现，不引入整套 FlowNet。
+
+输入完全保留 v2：concat(训练集全局标准化 OP, 样本内逐字段 MOS 相对 OP,
+query_role 的 4 维 one-hot, key_role 的 4 维 one-hot)，总维度 2F+8。
+支持字段位不拼接到网络；MOS/有效槽位/同器件/不同网络资格保护继续保留。
+
+每层 MoLinear：alpha=softmax(router(x))，y=sum_e alpha_e*(x@W_e+b_e)。
+三层各自有独立的路由器与线性专家。全专家参与，不使用 top-k 或负载均衡损失。
+结构：MoLinear(2F+8,dim,E) -> Dropout -> GELU -> MoLinear(dim,dim,E)
+      -> Dropout -> GELU -> MoLinear(dim,heads,E)。默认 E=16、Dropout=0.1。
+例如 F=41、dim=128、heads=8 时为 90->128->128->8，共 472,656 个评分网络参数。
+整个门控仍跨所选 encoder Self-Attention 层共享，heads 是输出坐标数，不是专家数。
+
+官方代码使用 Xavier，而论文文字写 Kaiming；这里按代码使用 Xavier 初始化隐藏
+专家/路由器。门控输出层特别改为小随机非零专家权重和 logit(initial_gate) 偏置，
+保留 initial_gate=0.99 的近开放初始化。分数仍通过
+strength * log(epsilon + (1-epsilon)*sigmoid(logits)) 加到注意力 logits。
+
+模型名称（完整保留 _pin_v3，不叠加 _v2_v3）：
+  device_op_gate_pin_v3
+  device_op_gate_fusion_pin_v3
+  device_op_distill_gate_pin_v3
+  device_op_distill_gate_fusion_pin_v3
+  device_op_supervised_gate_pin_v3
+  device_op_supervised_gate_fusion_pin_v3
+三种训练方式依次为联合下游优化、教师蒸馏后分段、监督基座后分段；后两种最终只
+训练 gate，冻结 encoder/decoder。无 fusion 表示结构+融合 Self-Attention；有 fusion
+只作用于融合 Self-Attention。OP predictor 均保持器件级并冻结，部署不需要真实 OP。
+无门控基线继续使用 device_op_cascade_pin；自动保存/评估的蒸馏无门控基座也保留。
+
+配置 final_exam/configs/op_gate_pin_v3.json：在 op_gate_pin 增加 n_experts=16
+（正整数）和 mlp_dropout=0.1；保留 norm_eps。主模型层数默认仍为 6/3。
+入口 final_exam/single_circuit_pin/train_op_gate_pin_v3.sh：顶部设置电路、模型、seeds；
+默认 seed 17/29/43，默认数据上限 null。每电路抽样数量在 dataset.max_samples_per_circuit
+中设置，比如 20000 表示先随机选总计最多 20,000 条再划分，不是仅限制 train。
+阶段预算、早停、输出/日志分离与 v2 相同；run ID 含 _op_gate_v3_，以 _pin 结尾。
+
+完整使用和输出路径见 OP_GATE_V3_pin.md。checkpoint、恢复身份、审计、结果、Excel
+与门控检查记录 v3 结构、专家数及 Dropout，不能把 v2 权重/优化器冒充 v3 继续训练。
+恢复仍写新目录并保留源目录；修改专家数或门控 Dropout 需新实验。
+
+本版本同时引入专家混合、额外隐藏层和 Dropout；直接 v2/v3 对比不能把所有差异只
+归因于 MoL。记录参数量与实际时间，不由参数比推断总训练时间比，也不在没有
+实际多 seed 结果前声称解决了门控极化、震荡或学习到了物理导通区域。

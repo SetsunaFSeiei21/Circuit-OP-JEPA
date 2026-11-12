@@ -46,13 +46,15 @@ def validate_gate_config_pin(value=None, *, version=None):
     if not isinstance(value, dict):
         raise ValueError('op_gate_pin must be an object')
     defaults = dict(epsilon=1e-4, strength=1.0, initial_gate=0.99)
-    allowed = set(defaults) | {'norm_eps'}
+    allowed = set(defaults) | {'norm_eps', 'n_experts', 'mlp_dropout'}
     if set(value) - allowed:
         raise ValueError('Unknown op_gate_pin keys: ' + ', '.join(sorted(set(value)-allowed)))
     # Preserve legacy configuration/recipe dictionaries exactly unless the new
     # version (or an explicit caller) needs sample-normalization settings.
-    if version == 'v2':
+    if version in ('v2', 'v3'):
         defaults['norm_eps'] = 1e-5
+    if version == 'v3':
+        defaults.update(n_experts=16, mlp_dropout=0.1)
     result = {**defaults, **value}
     for name, number in result.items():
         if type(number) not in (int, float) or not math.isfinite(number):
@@ -65,7 +67,12 @@ def validate_gate_config_pin(value=None, *, version=None):
         raise ValueError('op_gate_pin.strength must be nonnegative')
     if 'norm_eps' in result and result['norm_eps'] <= 0:
         raise ValueError('op_gate_pin.norm_eps must be positive')
-    return {name: float(number) for name, number in result.items()}
+    if 'n_experts' in result and (type(result['n_experts']) is not int or result['n_experts'] < 1):
+        raise ValueError('op_gate_pin.n_experts must be a positive integer')
+    if 'mlp_dropout' in result and not 0 <= result['mlp_dropout'] < 1:
+        raise ValueError('op_gate_pin.mlp_dropout must be in [0, 1)')
+    return {name: int(number) if name == 'n_experts' else float(number)
+            for name, number in result.items()}
 
 
 class DeviceOPPredictorPin(OPPredictor):
@@ -221,6 +228,9 @@ def gate_class_pin(version):
     if version == 'v2':
         from .gates_pin.v2_pin import OPAttentionGateV2Pin
         return OPAttentionGateV2Pin
+    if version == 'v3':
+        from .gates_pin.v3_pin import OPAttentionGateV3Pin
+        return OPAttentionGateV3Pin
     raise ValueError(f'Unknown OP gate version: {version}')
 
 
@@ -378,8 +388,10 @@ def describe_gate_model_pin(model):
                 shuffle_bank=None if model.shuffle_bank is None else describe_shuffle_bank_pin(model.shuffle_bank),
                 use_op_features=model.use_op_features,gate_source=model.gate_source,
                 requires_measured_op=model.requires_measured_op)
-    if model.gate_version == 'v2':
+    if model.gate_version in ('v2', 'v3'):
         recipe['gate_normalization'] = deepcopy(model.gate.normalization_contract)
+    if model.gate_version == 'v3':
+        recipe['gate_architecture'] = deepcopy(model.gate.architecture_contract)
     return recipe
 
 
@@ -404,8 +416,10 @@ def rebuild_gate_model_pin(recipe, config, prep):
     saved_scope = recipe.get('attention_scope', model.attention_scope if saved_version == 'v0' or model.gate is None else None)
     if saved_scope != model.attention_scope:
         raise ValueError('Gate checkpoint scope disagrees with its model mode')
-    if model.gate_version == 'v2' and recipe.get('gate_normalization') != model.gate.normalization_contract:
-        raise ValueError('Gate checkpoint normalization disagrees with its v2 contract')
+    if model.gate_version in ('v2', 'v3') and recipe.get('gate_normalization') != model.gate.normalization_contract:
+        raise ValueError('Gate checkpoint normalization disagrees with its sample-relative contract')
+    if model.gate_version == 'v3' and recipe.get('gate_architecture') != model.gate.architecture_contract:
+        raise ValueError('Gate checkpoint architecture disagrees with its v3 contract')
     for name in ('use_op_features','gate_source','requires_measured_op'):
         if recipe.get(name) != getattr(model,name):
             raise ValueError(f'Gate checkpoint metadata disagrees with model mode: {name}')

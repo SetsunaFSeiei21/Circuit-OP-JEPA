@@ -172,7 +172,7 @@ def capture_forward(model, batch):
             raise ValueError('Graph-token protection was violated')
         captured['eligible'] = eligible
         captured['relative'] = (gate.relative_op(batch, values, supported)
-                                if gate.version == 'v2' else None)
+                                if gate.version in ('v2', 'v3') else None)
         return {key: value.detach().cpu() if value is not None else None
                 for key, value in captured.items()}
 
@@ -328,6 +328,12 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
                         gate_settings=model.gate.settings if active else None,
                         gate_normalization=getattr(model.gate, 'normalization_contract', None) if active else None,
                         config=metadata['config'])
+                    if active and model.gate_version == 'v3':
+                        info.update(gate_architecture=model.gate.architecture_contract,
+                                    gate_network='mixed_mlp',
+                                    gate_n_experts=model.gate.settings['n_experts'],
+                                    gate_mlp_dropout=model.gate.settings['mlp_dropout'],
+                                    gate_network_parameters=sum(p.numel() for p in model.gate.parameters()))
                     record['checkpoints'][mode] = info
                     report.add_model(mode, info)
                     for start in range(0, len(rows), batch_size):

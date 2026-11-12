@@ -481,6 +481,162 @@
       "training_boundary": "Same staged training, initialization and budgets as the paired all-encoder-gate model. All base stages bypass gates exactly; selected variants share the same ungated base per family/seed.",
       "scope": "Single-circuit training-schedule study, with separately counted prerequisites and extra gate epochs. Does not establish a cause of oscillation or guarantee accuracy improvements.",
       "paired_all_encoder_gate_model": "device_op_supervised_gate_pin"
+    },
+    "device_op_gate_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "all_encoder_self_attention",
+      "training": "joint encoder/decoder/gate with frozen device OP predictor",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_gate_fusion_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "fusion_self_attention",
+      "training": "joint encoder/decoder/gate with frozen device OP predictor",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_distill_gate_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "all_encoder_self_attention",
+      "training": "distilled base then gate-only",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_distill_gate_fusion_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "fusion_self_attention",
+      "training": "distilled base then gate-only",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_supervised_gate_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "all_encoder_self_attention",
+      "training": "supervised base then gate-only",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
+    },
+    "device_op_supervised_gate_fusion_pin_v3": {
+      "implementation": "Independent native-PyTorch adaptation of FlowNet dense mixture-of-linears equations for v2 sample-relative OP gates",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_files": [
+        "src/layers/mo_linear.py",
+        "src/blocks/hyper_flow.py:FlowBlock.build_mixer"
+      ],
+      "code_copied_from_reference": false,
+      "source_files_pin": [
+        "gates_pin/v3_pin.py",
+        "gates_pin/v2_pin.py",
+        "op_gate_pin.py",
+        "staged_op_gate_pin.py"
+      ],
+      "architecture": "Three MoLinear layers (2F+8 -> model.dim -> model.dim -> model.heads); each layer has independent input-softmax routing over all experts, with Dropout then GELU between layers; one gate shared across the selected self-attention layers.",
+      "adaptations": [
+        "Gate-specific input/output widths and train-supported OP handling inherited from v2.",
+        "Hidden expert/router Xavier initialization follows the inspected source; final expert weights use small independent random values and common logit(initial_gate) biases.",
+        "No FlowNet FAM, spatial masking, hyper-connections, new balancing loss, or top-k expert selection."
+      ],
+      "attention_scope": "fusion_self_attention",
+      "training": "supervised base then gate-only",
+      "measured_op_at_inference": false,
+      "scope": "Same pin/device alignment and protected-edge rules as v2. M-MLP adds depth, dropout and parameter capacity; this is not a parameter-matched or full FlowNet reproduction."
     }
   }
 }
