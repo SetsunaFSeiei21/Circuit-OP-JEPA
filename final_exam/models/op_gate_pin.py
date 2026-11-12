@@ -4,7 +4,7 @@ The OP predictor encodes canonical *devices*, not pooled pin representations.
 Every deployed cascade uses its frozen predictions. Oracle gates are explicit
 diagnostics requiring measured OP; they never replace the prediction features.
 The ZeroSim-family structure/fusion/metric-query operators remain unchanged.
-Only encoder self-attention logits receive a finite, directional soft penalty.
+Only encoder self-attention logits receive a finite, directional bias.
 """
 from __future__ import annotations
 
@@ -45,23 +45,24 @@ def validate_gate_config_pin(value=None, *, version=None):
         value = {}
     if not isinstance(value, dict):
         raise ValueError('op_gate_pin must be an object')
-    defaults = dict(epsilon=1e-4, strength=1.0, initial_gate=0.99)
+    signed = version in ('v4', 'v5')
+    defaults = dict(strength=1.0) if signed else dict(epsilon=1e-4, strength=1.0, initial_gate=0.99)
     allowed = set(defaults) | {'norm_eps', 'n_experts', 'mlp_dropout'}
     if set(value) - allowed:
         raise ValueError('Unknown op_gate_pin keys: ' + ', '.join(sorted(set(value)-allowed)))
     # Preserve legacy configuration/recipe dictionaries exactly unless the new
     # version (or an explicit caller) needs sample-normalization settings.
-    if version in ('v2', 'v3'):
+    if version in ('v2', 'v3', 'v4', 'v5'):
         defaults['norm_eps'] = 1e-5
-    if version == 'v3':
+    if version in ('v3', 'v4', 'v5'):
         defaults.update(n_experts=16, mlp_dropout=0.1)
     result = {**defaults, **value}
     for name, number in result.items():
         if type(number) not in (int, float) or not math.isfinite(number):
             raise ValueError(f'op_gate_pin.{name} must be finite numeric data')
-    if not 0 < result['epsilon'] < 1:
+    if not signed and not 0 < result['epsilon'] < 1:
         raise ValueError('op_gate_pin.epsilon must be in (0, 1)')
-    if not 0 < result['initial_gate'] < 1:
+    if not signed and not 0 < result['initial_gate'] < 1:
         raise ValueError('op_gate_pin.initial_gate must be in (0, 1)')
     if result['strength'] < 0:
         raise ValueError('op_gate_pin.strength must be nonnegative')
@@ -150,8 +151,12 @@ different scores to the H attention heads; it is not H separate OP predictors.
         result = cls.__new__(cls)
         nn.Module.__init__(result)
         result.cfg = deepcopy(source.cfg)
+        inherited = dict(source.settings)
+        if cls.version in ('v4', 'v5'):
+            inherited.pop('epsilon', None)
+            inherited.pop('initial_gate', None)
         result.settings = validate_gate_config_pin(
-            {**source.settings, **(gate_config or {})}, version=cls.version)
+            {**inherited, **(gate_config or {})}, version=cls.version)
         result.field_names = list(source.field_names)
         for name in ('terminal_roles', 'mos_types'):
             result.register_buffer(name, getattr(source, name).detach().clone())
@@ -231,6 +236,12 @@ def gate_class_pin(version):
     if version == 'v3':
         from .gates_pin.v3_pin import OPAttentionGateV3Pin
         return OPAttentionGateV3Pin
+    if version == 'v4':
+        from .gates_pin.v4_pin import OPAttentionGateV4Pin
+        return OPAttentionGateV4Pin
+    if version == 'v5':
+        from .gates_pin.v5_pin import OPAttentionGateV5Pin
+        return OPAttentionGateV5Pin
     raise ValueError(f'Unknown OP gate version: {version}')
 
 
@@ -256,6 +267,7 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
                             'oracle' if self.requires_measured_op else
                             'shuffle' if '_shuffle_' in mode else 'predicted')
         self.attention_scope = ('none' if self.gate_source == 'none' else
+            'fusion_after_first_self_attention' if gate_version_pin(mode) in ('v4', 'v5') else
             'fusion_self_attention' if mode in VERSIONED_JOINT_GATE_MODELS_PIN and '_fusion_' in mode else
             'all_encoder_self_attention')
         needs_predictor = mode != 'device_op_gate_only_base_pin'
@@ -358,10 +370,11 @@ The B ungated baseline has no predictor dependency or OP pretraining cost.
             if self.gate is not None:
                 values, support = self.gate_values(batch,predicted,supported)
                 bias = self.gate(batch,values,support)
-        if self.attention_scope == 'fusion_self_attention':
+        if self.attention_scope in ('fusion_self_attention', 'fusion_after_first_self_attention'):
             # OP continues to enter through feature fusion, while the entire
-            # structural prefix sees topology only. The same gate values are
-            # applied to each later fusion block's self-attention logits.
+            # structural prefix sees topology only. Legacy tensors gate every
+            # fusion block; V4/V5 tuples explicitly bypass PE1 and address each
+            # later block, sharing or separating scorer parameters by version.
             structure = self.encoder.structure_encoder(inputs)
             return self.encoder.forward_from_structure(structure, inputs, fusion_attention_bias=bias)
         if self.attention_scope not in ('none', 'all_encoder_self_attention'):
@@ -388,9 +401,9 @@ def describe_gate_model_pin(model):
                 shuffle_bank=None if model.shuffle_bank is None else describe_shuffle_bank_pin(model.shuffle_bank),
                 use_op_features=model.use_op_features,gate_source=model.gate_source,
                 requires_measured_op=model.requires_measured_op)
-    if model.gate_version in ('v2', 'v3'):
+    if model.gate_version in ('v2', 'v3', 'v4', 'v5'):
         recipe['gate_normalization'] = deepcopy(model.gate.normalization_contract)
-    if model.gate_version == 'v3':
+    if model.gate_version in ('v3', 'v4', 'v5'):
         recipe['gate_architecture'] = deepcopy(model.gate.architecture_contract)
     return recipe
 
@@ -416,10 +429,10 @@ def rebuild_gate_model_pin(recipe, config, prep):
     saved_scope = recipe.get('attention_scope', model.attention_scope if saved_version == 'v0' or model.gate is None else None)
     if saved_scope != model.attention_scope:
         raise ValueError('Gate checkpoint scope disagrees with its model mode')
-    if model.gate_version in ('v2', 'v3') and recipe.get('gate_normalization') != model.gate.normalization_contract:
+    if model.gate_version in ('v2', 'v3', 'v4', 'v5') and recipe.get('gate_normalization') != model.gate.normalization_contract:
         raise ValueError('Gate checkpoint normalization disagrees with its sample-relative contract')
-    if model.gate_version == 'v3' and recipe.get('gate_architecture') != model.gate.architecture_contract:
-        raise ValueError('Gate checkpoint architecture disagrees with its v3 contract')
+    if model.gate_version in ('v3', 'v4', 'v5') and recipe.get('gate_architecture') != model.gate.architecture_contract:
+        raise ValueError('Gate checkpoint architecture disagrees with its versioned contract')
     for name in ('use_op_features','gate_source','requires_measured_op'):
         if recipe.get(name) != getattr(model,name):
             raise ValueError(f'Gate checkpoint metadata disagrees with model mode: {name}')

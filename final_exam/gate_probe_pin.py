@@ -132,6 +132,8 @@ def capture_forward(model, batch):
     """
     import torch
     gate = getattr(model, 'gate', None)
+    if gate is not None and gate.version in ('v4', 'v5'):
+        return _capture_layered_forward(model, batch)
     active = gate is not None and getattr(model, 'gate_enabled', True)
     captured = {}
 
@@ -179,8 +181,72 @@ def capture_forward(model, batch):
                 for key, value in captured.items()}
 
 
+def _capture_layered_forward(model, batch):
+    """Observe signed gates once per unique network and retain their actual PE scope."""
+    import torch
+    gate = model.gate
+    layer_heads = list(gate.iter_layer_score_heads())
+    expected_layers = list(range(2, gate.cfg.cross_layers + 1))
+    if [layer for layer, _ in layer_heads] != expected_layers:
+        raise ValueError('Signed gates must expose exactly PE2 and later fusion layers')
+    captured, scores = {}, {}
+
+    def score_hook(module, inputs, output):
+        if id(module) in scores:
+            raise ValueError('Each unique gate score network must execute once per forward')
+        scores[id(module)] = output.detach()
+
+    def gate_hook(module, inputs, output):
+        if captured:
+            raise ValueError('Expected one layer-aware gate call per forward')
+        _, values, supported = inputs
+        if not isinstance(output, tuple) or len(output) != gate.cfg.cross_layers or output[0] is not None:
+            raise ValueError('Signed gate bias sequence must skip PE1')
+        captured.update(values=values.detach(), supported=supported.detach(),
+                        biases=tuple(value.detach() if value is not None else None for value in output))
+
+    model.eval()
+    with ExitStack() as stack, torch.no_grad():
+        unique_heads = {id(head): head for _, head in layer_heads}
+        for head in unique_heads.values():
+            stack.callback(head.register_forward_hook(score_hook).remove)
+        stack.callback(gate.register_forward_hook(gate_hook).remove)
+        prediction = model(batch)
+        if not bool(torch.isfinite(prediction).all()):
+            raise ValueError('Model produced a non-finite prediction')
+        if not getattr(model, 'gate_enabled', True):
+            if captured or scores:
+                raise ValueError('A disabled gate unexpectedly participated in inference')
+            return None
+        if set(scores) != set(unique_heads) or not captured:
+            raise ValueError('Active layer-aware gate did not execute the expected inference path')
+        values, supported = captured['values'], captured['supported']
+        owners, roles, eligible = gate._layout(batch, values, supported)
+        relative = gate.relative_op(batch, values, supported)
+        common = dict(values=values, supported=supported, relative=relative, eligible=eligible)
+        layers = []
+        for pe_layer, head in layer_heads:
+            logits = scores[id(head)]
+            if tuple(logits.shape) != (*values.shape[:2], 4, 4, gate.cfg.heads) or not bool(torch.isfinite(logits).all()):
+                raise ValueError('Unexpected or non-finite layer-aware gate logits')
+            bias = captured['biases'][pe_layer - 1]
+            reproduced = gate._bias_from_logits(logits, owners, roles, eligible)
+            torch.testing.assert_close(reproduced, bias, rtol=0, atol=0)
+            if bool((bias[:, :, 0, :] != 0).any()) or bool((bias[:, :, :, 0] != 0).any()):
+                raise ValueError('Graph-token protection was violated')
+            layers.append(dict(pe_layer=pe_layer,
+                encoder_layer=gate.cfg.encoder_layers-gate.cfg.cross_layers+pe_layer,
+                **{key: value.detach().cpu() for key,value in common.items()},
+                logits=logits.cpu(), gate_score=logits.tanh().cpu(), bias=bias.cpu()))
+        return dict(**{key: value.detach().cpu() for key,value in common.items()}, layer_captures=layers)
+
+
 def gate_rows(model, batch, rows, captured, mode, seed):
     """Report physical MOS pairs only; protected pairs retain raw and applied scores."""
+    if 'layer_captures' in captured:
+        for layer in captured['layer_captures']:
+            yield from gate_rows(model, batch, rows, layer, mode, seed)
+        return
     gate = model.gate
     layout = {key: batch[key].detach().cpu() for key in ('owner_index', 'pin_terminal_index', 'device_mask')}
     terminal_roles = gate.terminal_roles.detach().cpu()
@@ -209,6 +275,8 @@ def gate_rows(model, batch, rows, captured, mode, seed):
                             query_role=ROLES[q].upper(), key_role=ROLES[k].upper(),
                             query_net=dev['terminals'][ROLES[q]], key_net=dev['terminals'][ROLES[k]],
                             head=head + 1, gate_version=gate.version, attention_scope=model.attention_scope,
+                            pe_layer=captured.get('pe_layer'), encoder_layer=captured.get('encoder_layer'),
+                            gate_score_transform='tanh' if gate.version in ('v4', 'v5') else 'sigmoid',
                             applied=applied, protection_reason=reason,
                             gate_logit=float(captured['logits'][b, owner, q, k, head]),
                             gate_score=float(captured['gate_score'][b, owner, q, k, head]),
@@ -276,10 +344,11 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
         viewer_samples=min(viewer_samples, len(selected)), device=str(target_device),
         source_dataset_fingerprint=source['dataset_fingerprint'],
         source_code_commit=source['source_code_commit'], results=str(output), logs=str(logs),
-        score_meaning='sigmoid MLP gate, not softmax attention or a calibrated connection probability',
+        score_meaning='V0-V3: sigmoid(logit); V4-V5: tanh(logit). Not softmax attention or a calibrated connection probability',
         bias_meaning='actual additive gate bias; effective_multiplier=exp(bias)',
         pair_direction='query row, key column; heads are 1-based',
-        shared_layers=True, refit_preprocessing=False, retrained=False, checkpoints={})
+        shared_layers=all(getattr(model.gate, 'version', None) != 'v5' for _,_,model,_ in loaded),
+        refit_preprocessing=False, retrained=False, checkpoints={})
 
     def save_record():
         (output / 'probe_pin.json').write_text(json.dumps(record, indent=2, allow_nan=False), encoding='utf-8')
@@ -320,17 +389,20 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
                         max_tokens=metadata['model_config']['max_devices'], label=f'gate probe {mode}')
                     scope = model.attention_scope if active else 'none'
                     cfg = model.encoder.cfg
-                    first_layer = cfg.encoder_layers - cfg.cross_layers if scope == 'fusion_self_attention' else 0
+                    first_layer = (cfg.encoder_layers - cfg.cross_layers + 1 if scope == 'fusion_after_first_self_attention'
+                                   else cfg.encoder_layers - cfg.cross_layers if scope == 'fusion_self_attention' else 0)
                     info = dict(checkpoint=path, sha256=file_digest(path),
                         gate_active=active, gate_version=model.gate_version if active else 'none',
                         gate_source=model.gate_source if active else 'none',
                         requires_measured_op=measured, attention_scope=scope,
                         self_attention_layers_1based=list(range(first_layer + 1, cfg.encoder_layers + 1)) if active else [],
-                        heads=cfg.heads, shared_gate_across_layers=True,
+                        heads=cfg.heads, shared_gate_across_layers=model.gate_version != 'v5',
+                        gate_score_transform='tanh' if model.gate_version in ('v4', 'v5') else 'sigmoid',
+                        gated_pe_layers=list(range(2, cfg.cross_layers+1)) if scope == 'fusion_after_first_self_attention' else None,
                         gate_settings=model.gate.settings if active else None,
                         gate_normalization=getattr(model.gate, 'normalization_contract', None) if active else None,
                         config=metadata['config'])
-                    if active and model.gate_version == 'v3':
+                    if active and model.gate_version in ('v3', 'v4', 'v5'):
                         info.update(gate_architecture=model.gate.architecture_contract,
                                     gate_network='mixed_mlp',
                                     gate_n_experts=model.gate.settings['n_experts'],

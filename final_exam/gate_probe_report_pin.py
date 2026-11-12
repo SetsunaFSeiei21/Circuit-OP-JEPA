@@ -9,12 +9,14 @@ from device_jepa.excel import Cell, Sheet, _column, _write_workbook
 
 SCORE_FIELDS = ('model', 'seed', 'sample_id', 'circuit', 'device_id', 'device_type',
     'query_role', 'key_role', 'query_net', 'key_net', 'head', 'gate_version', 'attention_scope',
-    'applied', 'protection_reason', 'gate_logit', 'gate_score', 'attention_bias', 'effective_multiplier')
+    'applied', 'protection_reason', 'gate_logit', 'gate_score', 'attention_bias', 'effective_multiplier',
+    'pe_layer', 'encoder_layer', 'gate_score_transform')
 OP_FIELDS = ('model', 'sample_id', 'device_id', 'field', 'supported', 'normalized_gate_op', 'relative_gate_op')
-GROUP_FIELDS = ('model', 'device_id', 'device_type', 'query_role', 'key_role', 'head')
+GROUP_FIELDS = ('model', 'device_id', 'device_type', 'query_role', 'key_role', 'head', 'pe_layer', 'encoder_layer', 'gate_score_transform')
 SUMMARY_FIELDS = (*GROUP_FIELDS, 'samples', 'gate_mean', 'gate_std', 'gate_min', 'gate_max',
                   'fraction_below_0_1', 'fraction_below_0_5', 'fraction_above_0_99',
-                  'bias_mean', 'bias_min', 'bias_max', 'effective_multiplier_mean')
+                  'bias_mean', 'bias_min', 'bias_max', 'effective_multiplier_mean',
+                  'fraction_suppressed', 'fraction_enhanced')
 
 
 class Moments:
@@ -39,6 +41,7 @@ class GateStats:
     def __init__(self):
         self.score, self.bias, self.multiplier = Moments(), Moments(), Moments()
         self.below_01 = self.below_05 = self.above_099 = 0
+        self.suppressed = self.enhanced = 0
 
     def add(self, row):
         value = row['gate_score']
@@ -48,12 +51,15 @@ class GateStats:
         self.below_01 += value < .1
         self.below_05 += value < .5
         self.above_099 += value > .99
+        self.suppressed += row['attention_bias'] < 0
+        self.enhanced += row['attention_bias'] > 0
 
     def values(self):
         n = self.score.n
         return (n, self.score.mean, self.score.std, self.score.minimum, self.score.maximum,
                 self.below_01 / n, self.below_05 / n, self.above_099 / n,
-                self.bias.mean, self.bias.minimum, self.bias.maximum, self.multiplier.mean)
+                self.bias.mean, self.bias.minimum, self.bias.maximum, self.multiplier.mean,
+                self.suppressed / n, self.enhanced / n)
 
 
 def table_sheet(name, fields, rows, note):
@@ -122,7 +128,8 @@ class GateReport:
                 device = self.viewer[row['model']][row['sample_id']].setdefault(row['device_id'],
                     dict(device_type=row['device_type'], pairs=[], op=[]))
                 device['pairs'].append([row[k] for k in ('query_role', 'key_role', 'head',
-                    'gate_score', 'attention_bias', 'effective_multiplier', 'applied', 'protection_reason')])
+                    'gate_score', 'attention_bias', 'effective_multiplier', 'applied', 'protection_reason',
+                    'pe_layer', 'encoder_layer', 'gate_score_transform')])
 
     def add_op_inputs(self, mode, rows, field_names, captured):
         for b, sample in enumerate(rows):
@@ -148,7 +155,8 @@ class GateReport:
             writer.writerow(SUMMARY_FIELDS)
             writer.writerows(group_rows)
         model_rows = []
-        include_network = any(info.get('gate_version') == 'v3' for info in self.models.values())
+        include_network = any(info.get('gate_version') in ('v3', 'v4', 'v5') for info in self.models.values())
+        include_layered = any(info.get('gate_version') in ('v4', 'v5') for info in self.models.values())
         for mode, info in self.models.items():
             stats = self.overall.get(mode)
             model_rows.append([mode, info['gate_active'], info['gate_version'], info['attention_scope'],
@@ -160,14 +168,20 @@ class GateReport:
             if include_network:
                 model_rows[-1].extend(info.get(key) for key in ('gate_network', 'gate_n_experts',
                     'gate_mlp_dropout', 'gate_network_parameters'))
+            if include_layered:
+                model_rows[-1].extend((info.get('shared_gate_across_layers', True),
+                    info.get('gate_score_transform', 'sigmoid'),
+                    stats.suppressed / stats.score.n if stats else None,
+                    stats.enhanced / stats.score.n if stats else None))
         network_fields = ('Gate network', 'Experts per layer', 'MLP dropout', 'Gate parameters') if include_network else ()
+        layered_fields = ('Shared across layers', 'Score transform', 'Fraction suppressed', 'Fraction enhanced') if include_layered else ()
         sheets = [
             table_sheet('Models', ('Model', 'Gate active', 'Version', 'Scope', 'SA layers (1-based)',
                 'Heads', 'Applied rows', 'Protected rows', 'Gate mean', 'Gate std', 'Gate min', 'Gate max',
-                'Bias mean', 'Effective multiplier mean', *network_fields), model_rows,
+                'Bias mean', 'Effective multiplier mean', *network_fields, *layered_fields), model_rows,
                 'Statistics include applied MOS pairs only. Gate scores are not softmax attention or physical connection probabilities.'),
             table_sheet('ByDeviceHead', SUMMARY_FIELDS, group_rows,
-                'Across selected samples for a fixed MOS / query / key / head. Population std. Protected pairs are excluded.'),
+                'Across samples for a fixed MOS / query / key / head / PE layer. Blank PE = legacy shared table. Population std; protected pairs excluded. Score thresholds use the recorded sigmoid/tanh transform.'),
             table_sheet('ScorePreview', SCORE_FIELDS, self.preview,
                 f'First {len(self.preview)} of {self.total_rows} rows; full precision and all samples are in gate_scores_pin.csv. Raw scores may exist on protected pairs; applied bias is zero.'),
             table_sheet('SelectedSamples', ('sample_id', 'split', 'sampling_seed'),

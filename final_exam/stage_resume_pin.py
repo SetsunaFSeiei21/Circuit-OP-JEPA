@@ -37,7 +37,7 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     # explicit values must still match exactly (never copy source settings).
     from final_exam.gate_version_registry_pin import gate_version_pin
     versions = {gate_version_pin(mode) for mode in record.get('models', [])}
-    version = 'v3' if 'v3' in versions else 'v2' if 'v2' in versions else None
+    version = next((v for v in ('v5', 'v4', 'v3', 'v2') if v in versions), None)
     if version:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)

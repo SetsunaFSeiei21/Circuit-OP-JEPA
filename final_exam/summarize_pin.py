@@ -22,6 +22,8 @@ from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
     V3_GATE_MODELS_PIN, V3_JOINT_GATE_MODELS_PIN, V3_STAGED_GATE_MODELS_PIN,
+    V4_GATE_MODELS_PIN, V4_JOINT_GATE_MODELS_PIN, V4_STAGED_GATE_MODELS_PIN,
+    V5_GATE_MODELS_PIN, V5_JOINT_GATE_MODELS_PIN, V5_STAGED_GATE_MODELS_PIN,
     VERSIONED_GATE_MODELS_PIN, gate_version_pin,
 )
 
@@ -75,20 +77,32 @@ V3_STAGED_GATE_INPUTS_PIN = {
            else 'gate only')
     for mode in V3_STAGED_GATE_MODELS_PIN
 }
+SIGNED_STAGED_GATE_INPUTS_PIN = {
+    mode: ('distilled student' if staged_gate_spec_pin(mode)['base_training'] == 'distilled'
+           else 'supervised ungated model',
+           'gate and decoder' if staged_gate_spec_pin(mode)['final_phase'] == 'gate_decoder'
+           else 'gate only')
+    for mode in (*V4_STAGED_GATE_MODELS_PIN, *V5_STAGED_GATE_MODELS_PIN)
+}
 ALL_STAGED_GATE_INPUTS_PIN = {**STAGED_GATE_INPUTS_PIN, **FUSION_STAGED_GATE_INPUTS_PIN,
                              **V1_STAGED_GATE_INPUTS_PIN, **V2_STAGED_GATE_INPUTS_PIN,
-                             **V3_STAGED_GATE_INPUTS_PIN}
+                             **V3_STAGED_GATE_INPUTS_PIN, **SIGNED_STAGED_GATE_INPUTS_PIN}
 ALL_NONSTAGED_GATE_INPUTS_PIN = {**GATE_INPUTS_PIN,
     **{mode: ('A', True, 'predicted OP')
-       for mode in (*V1_JOINT_GATE_MODELS_PIN, *V2_JOINT_GATE_MODELS_PIN, *V3_JOINT_GATE_MODELS_PIN)}}
+       for mode in (*V1_JOINT_GATE_MODELS_PIN, *V2_JOINT_GATE_MODELS_PIN, *V3_JOINT_GATE_MODELS_PIN,
+                    *V4_JOINT_GATE_MODELS_PIN, *V5_JOINT_GATE_MODELS_PIN)}}
 ALL_GATE_REPORTS_PIN = ALL_NONSTAGED_GATE_INPUTS_PIN.keys() | ALL_STAGED_GATE_INPUTS_PIN.keys()
 V2_RELATIVE_NORMALIZATION_PIN = 'per_sample_per_field_all_valid_mos'
-RELATIVE_GATE_MODELS_PIN = V2_GATE_MODELS_PIN + V3_GATE_MODELS_PIN
+SIGNED_GATE_MODELS_PIN = V4_GATE_MODELS_PIN + V5_GATE_MODELS_PIN
+MIXED_GATE_MODELS_PIN = V3_GATE_MODELS_PIN + SIGNED_GATE_MODELS_PIN
+RELATIVE_GATE_MODELS_PIN = V2_GATE_MODELS_PIN + MIXED_GATE_MODELS_PIN
 
 
 def _gate_scope(mode):
     if mode in ALL_STAGED_GATE_INPUTS_PIN:
         return staged_gate_spec_pin(mode)['attention_scope']
+    if mode in (*V4_JOINT_GATE_MODELS_PIN, *V5_JOINT_GATE_MODELS_PIN):
+        return 'fusion_after_first_self_attention'
     if mode in ('device_op_gate_fusion_pin_v1', 'device_op_gate_fusion_pin_v2',
                 'device_op_gate_fusion_pin_v3'):
         return 'fusion_self_attention'
@@ -108,24 +122,25 @@ def _require_pin_mode(mode):
 
 
 def _validate_gate_report_contract(mode, contract):
-    if mode in V3_GATE_MODELS_PIN and contract is None:
-        raise ValueError('v3 gate reports require the saved M-MLP input contract')
+    if mode in MIXED_GATE_MODELS_PIN and contract is None:
+        raise ValueError('Mixed gate reports require the saved M-MLP input contract')
     if mode not in VERSIONED_GATE_MODELS_PIN or contract is None:
         return
     if not isinstance(contract, dict):
         raise ValueError('Gate input contract must be an object')
     for key, expected in (('gate_version', gate_version_pin(mode)), ('attention_scope', _gate_scope(mode))):
-        if contract.get(key, expected) != expected:
+        if contract.get(key, None if mode in SIGNED_GATE_MODELS_PIN else expected) != expected:
             raise ValueError(f'Gate report {key} differs from the model name')
     if mode in ALL_STAGED_GATE_INPUTS_PIN:
         spec = staged_gate_spec_pin(mode)
         final = 'gate_and_decoder' if spec['final_phase'] == 'gate_decoder' else 'gate_only'
         for key, expected in (('base_training', spec['base_training']), ('final_trainable', final)):
-            if contract.get(key, expected) != expected:
+            if contract.get(key, None if mode in SIGNED_GATE_MODELS_PIN else expected) != expected:
                 raise ValueError(f'Gate report {key} differs from the model name')
     if mode not in RELATIVE_GATE_MODELS_PIN:
         return
-    if contract.get('gate_relative_normalization', V2_RELATIVE_NORMALIZATION_PIN) != V2_RELATIVE_NORMALIZATION_PIN:
+    if contract.get('gate_relative_normalization',
+                    None if mode in SIGNED_GATE_MODELS_PIN else V2_RELATIVE_NORMALIZATION_PIN) != V2_RELATIVE_NORMALIZATION_PIN:
         raise ValueError('Gate report relative normalization differs from the sample-relative contract')
     for key in ('gate_input_dim', 'gate_hidden_dim'):
         value = contract.get(key)
@@ -135,46 +150,76 @@ def _validate_gate_report_contract(mode, contract):
     if dimension is not None and (dimension < 10 or (dimension - 8) % 2):
         raise ValueError('Gate report sample-relative input dimension must be 2F + 8')
     epsilon = contract.get('norm_eps')
+    if mode in SIGNED_GATE_MODELS_PIN and epsilon is None:
+        raise ValueError('Signed gate reports require the saved norm_eps')
     if epsilon is not None and (type(epsilon) not in (int, float) or not math.isfinite(epsilon) or epsilon <= 0):
         raise ValueError('Gate report norm_eps must be finite and positive')
-    if mode in V3_GATE_MODELS_PIN:
-        _validate_v3_architecture(contract)
+    if mode in MIXED_GATE_MODELS_PIN:
+        _validate_v3_architecture(contract, version=gate_version_pin(mode))
 
 
-def _validate_v3_architecture(contract):
+def _validate_v3_architecture(contract, *, version='v3'):
     """Check saved M-MLP identity without importing Torch or a model factory."""
     architecture = contract.get('gate_architecture')
     if not isinstance(architecture, dict):
-        raise ValueError('v3 gate reports require a gate_architecture object')
+        raise ValueError('M-MLP gate reports require a gate_architecture object')
     expected = dict(kind='mixed_mlp', activation='gelu',
                     block_order='mo_linear_dropout_gelu', routing='input_softmax_dense',
-                    output='per_head_logits', shared_across_layers=True)
+                    output='per_head_logits', shared_across_layers=version != 'v5')
     if any(architecture.get(key) != value for key, value in expected.items()):
-        raise ValueError('v3 gate architecture differs from the shared dense M-MLP contract')
+        raise ValueError('Gate architecture differs from the versioned dense M-MLP contract')
     dims = architecture.get('layer_dims')
     if (not isinstance(dims, list) or len(dims) != 4
             or any(type(value) is not int or value < 1 for value in dims)
             or dims[:3] != [contract.get('gate_input_dim'), contract.get('gate_hidden_dim'),
                            contract.get('gate_hidden_dim')]):
-        raise ValueError('v3 gate layer dimensions disagree with the three-layer M-MLP')
+        raise ValueError('Gate layer dimensions disagree with the three-layer M-MLP')
     if contract.get('gate_network') != 'mixed_mlp':
-        raise ValueError('v3 gate_network must be mixed_mlp')
+        raise ValueError('M-MLP gate_network must be mixed_mlp')
     experts, dropout = contract.get('gate_n_experts'), contract.get('gate_mlp_dropout')
     if type(experts) is not int or experts < 1 or architecture.get('n_experts') != experts:
-        raise ValueError('v3 gate expert count must be a consistent positive integer')
+        raise ValueError('M-MLP gate expert count must be a consistent positive integer')
     if (type(dropout) not in (int, float) or not math.isfinite(dropout)
             or not 0 <= dropout < 1 or architecture.get('dropout') != dropout):
-        raise ValueError('v3 gate dropout must be consistent and in [0, 1)')
+        raise ValueError('M-MLP gate dropout must be consistent and in [0, 1)')
     expected_parameters = sum(experts * (left * right + right + left + 1)
                               for left, right in zip(dims, dims[1:]))
+    if version in ('v4', 'v5'):
+        expected_parameters *= _validate_signed_architecture(architecture, version)
     parameters = contract.get('gate_network_parameters')
     if type(parameters) is not int or parameters != expected_parameters:
-        raise ValueError('v3 gate parameter count disagrees with dense experts and routers')
+        raise ValueError('Gate parameter count disagrees with dense experts, routers and sharing')
     if not isinstance(architecture.get('source_repository'), str) or not architecture['source_repository']:
-        raise ValueError('v3 gate architecture must retain its source repository')
+        raise ValueError('M-MLP gate architecture must retain its source repository')
     commit = architecture.get('source_commit')
     if not isinstance(commit, str) or len(commit) != 40 or any(c not in '0123456789abcdef' for c in commit):
-        raise ValueError('v3 gate architecture must retain its source commit')
+        raise ValueError('M-MLP gate architecture must retain its source commit')
+
+
+def _validate_signed_architecture(architecture, version):
+    """V4/V5 bypass PE1, apply bounded signed bias, and differ only in sharing."""
+    layers = architecture.get('gated_pe_layers')
+    if type(architecture.get('shared_across_layers')) is not bool:
+        raise ValueError('Signed gate sharing must be a boolean')
+    if (not isinstance(layers, list) or not layers
+            or any(type(layer) is not int for layer in layers)
+            or layers != list(range(2, len(layers) + 2))):
+        raise ValueError('Signed gates require consecutive PE layers starting at PE2')
+    count = 1 if version == 'v4' else len(layers)
+    if (type(architecture.get('independent_gate_count')) is not int
+            or architecture['independent_gate_count'] != count):
+        raise ValueError('Signed gate network count disagrees with layer sharing')
+    if architecture.get('bias_transform') != 'strength*tanh(logits)':
+        raise ValueError('Signed gates require the bounded strength*tanh(logits) transform')
+    strength = architecture.get('bias_strength')
+    if type(strength) not in (int, float) or not math.isfinite(strength) or strength < 0:
+        raise ValueError('Signed gate strength must be finite and nonnegative')
+    if architecture.get('initialization') != 'xavier_hidden_small_random_output_zero_bias':
+        raise ValueError('Signed gates require near-neutral output initialization')
+    if (version == 'v5' and architecture.get('layer_initialization')
+            != 'identical_copies_independent_storage'):
+        raise ValueError('V5 requires identical initial copies with independent layer parameters')
+    return count
 
 
 def _read_json(path):
@@ -509,7 +554,7 @@ def _gate_normalization_metadata(mode, results):
 
 def _gate_network_metadata(mode, results):
     """Preserve the exact saved expert budget and reject mixed architectures."""
-    if mode not in V3_GATE_MODELS_PIN:
+    if mode not in MIXED_GATE_MODELS_PIN:
         return [None] * 5
     values = []
     for key in ('gate_network', 'gate_n_experts', 'gate_mlp_dropout',
@@ -523,6 +568,23 @@ def _gate_network_metadata(mode, results):
     return values
 
 
+def _signed_gate_metadata(mode, results):
+    if mode not in SIGNED_GATE_MODELS_PIN:
+        return [None] * 6
+    architectures = [record['report']['op_gate_pin']['gate_architecture']
+                     for record in results if record['mode'] == mode]
+    if not architectures:
+        return [None] * 6
+    # The complete architecture identity is checked across seeds by
+    # _gate_network_metadata before we expose convenient human-readable fields.
+    arch = architectures[0]
+    strength = arch['bias_strength']
+    return ['shared' if arch['shared_across_layers'] else 'independent_per_layer',
+            ', '.join(f'PE{layer}' for layer in arch['gated_pe_layers']),
+            arch['bias_transform'], json.dumps([-strength, strength]),
+            arch['independent_gate_count'], arch['initialization']]
+
+
 def _model_inputs_sheet(models, results=()):
     """Expose the A/B ablations without changing metric aggregation identity."""
     fields = ('Model', 'Study group', 'OP predictor encoder', 'Predicted OP node features',
@@ -533,11 +595,16 @@ def _model_inputs_sheet(models, results=()):
     if include_normalization:
         fields += ('Gate relative normalization', 'Gate input dimension', 'Gate hidden dimension', 'Gate norm epsilon')
         widths += [52, 24, 24, 24]
-    include_network = any(mode in V3_GATE_MODELS_PIN for mode in models)
+    include_network = any(mode in MIXED_GATE_MODELS_PIN for mode in models)
     if include_network:
         fields += ('Gate network', 'Gate experts per layer', 'Gate MLP dropout',
                    'Gate network parameters', 'Gate architecture (JSON)')
         widths += [24, 24, 24, 28, 90]
+    include_signed = any(mode in SIGNED_GATE_MODELS_PIN for mode in models)
+    if include_signed:
+        fields += ('Gate parameter sharing', 'Gated PE layers', 'Gate score transform',
+                   'Gate bias range', 'Independent gate networks', 'Gate initialization')
+        widths += [30, 32, 36, 26, 28, 64]
     sheet = Sheet('ModelInputs', widths, freeze_rows=5, freeze_columns=1)
     sheet.note('Model inputs and operating-point gate controls', 1, 34)
     sheet.note('A: predicted OP features plus optional gate. B: OP only controls the gate; baseline has no OP dependency.', height=34)
@@ -550,6 +617,8 @@ def _model_inputs_sheet(models, results=()):
         normalization = _gate_normalization_metadata(mode, results) if include_normalization else []
         if include_network:
             normalization += _gate_network_metadata(mode, results)
+        if include_signed:
+            normalization += _signed_gate_metadata(mode, results)
         if mode in ALL_STAGED_GATE_INPUTS_PIN:
             base, final_modules = ALL_STAGED_GATE_INPUTS_PIN[mode]
             role = ('Same distilled base checkpoint across selected distilled gate variants'
@@ -630,6 +699,9 @@ def _gate_comparison_sheet(directory, results, *, allow_incomplete, base_records
             summary_rows_pin([dict(record, mode=report_mode, report=report)])
         if final['metrics'] != record['report']['metrics']:
             raise ValueError(f'Final gate comparison differs from the exported model result: {path}')
+        if (mode in SIGNED_GATE_MODELS_PIN
+                and final.get('op_gate_pin') != record['report'].get('op_gate_pin')):
+            raise ValueError(f'Final gate comparison contract differs from the exported model: {path}')
         if set(base['metrics']) != set(final['metrics']):
             raise ValueError(f'Base and final gate metric schemas differ: {path}')
         if base_records is not None:

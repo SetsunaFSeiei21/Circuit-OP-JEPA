@@ -224,22 +224,40 @@ class DeviceEncoder(nn.Module):
         # precisely this same dropout realization with its own gradient path.
         x, valid = structure["tokens"], structure["valid"]
         masks = structure["self_masks"]
-        if fusion_attention_bias is not None:
-            expected = (b, self.cfg.heads, n + 1, n + 1)
-            if (not torch.is_tensor(fusion_attention_bias)
-                    or fusion_attention_bias.shape != expected
-                    or not fusion_attention_bias.is_floating_point()
-                    or fusion_attention_bias.device != x.device):
+        # A tensor retains the historical shared-bias behavior. A sequence
+        # explicitly supplies one bias per fusion block; None means bypass.
+        # Never inject these into structure, cross-attention, or decoder masks.
+        if isinstance(fusion_attention_bias, (tuple, list)):
+            if len(fusion_attention_bias) != len(self.fusion_blocks):
+                raise ValueError("Fusion bias sequence must have one entry per fusion block")
+            layer_biases = tuple(fusion_attention_bias)
+        else:
+            layer_biases = (fusion_attention_bias,) * len(self.fusion_blocks)
+        prepared_biases = []
+        prepared_by_identity = {}
+        expected = (b, self.cfg.heads, n + 1, n + 1)
+        for layer_bias in layer_biases:
+            if layer_bias is None:
+                prepared_biases.append(None)
+                continue
+            if id(layer_bias) in prepared_by_identity:
+                prepared_biases.append(prepared_by_identity[id(layer_bias)])
+                continue
+            if (not torch.is_tensor(layer_bias) or layer_bias.shape != expected
+                    or not layer_bias.is_floating_point() or layer_bias.device != x.device):
                 raise ValueError("Fusion attention bias must match batch, heads and graph-plus-node axes")
-            if not bool(torch.isfinite(fusion_attention_bias).all()):
+            if not bool(torch.isfinite(layer_bias).all()):
                 raise ValueError("Fusion attention bias must be finite; topology masks own hard exclusions")
-            bias = fusion_attention_bias.to(dtype=x.dtype).reshape(b * self.cfg.heads, n + 1, n + 1)
-            # New tensors only: preserve the pure-structure tokens/masks and
-            # their original hard exclusions. Cross-attention is unchanged.
-            masks = tuple(mask + bias for mask in masks)
+            bias = layer_bias.to(dtype=x.dtype).reshape(b * self.cfg.heads, n + 1, n + 1)
+            prepared_by_identity[id(layer_bias)] = bias
+            prepared_biases.append(bias)
         offset = len(self.structure_encoder.blocks)
         for i, block in enumerate(self.fusion_blocks):
-            x = block(x, masks[(offset + i) % 2], p, cross_mask, valid)
+            mask = masks[(offset + i) % 2]
+            if prepared_biases[i] is not None:
+                # Out-of-place addition preserves original masks and gradients.
+                mask = mask + prepared_biases[i]
+            x = block(x, mask, p, cross_mask, valid)
         x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
         return x, ~valid
 

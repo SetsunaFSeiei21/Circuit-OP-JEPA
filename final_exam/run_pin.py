@@ -19,7 +19,7 @@ from final_exam.staged_gate_registry_pin import (
     ALL_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin,
 )
 from final_exam.gate_version_registry_pin import (
-    VERSIONED_JOINT_GATE_MODELS_PIN, VERSIONED_GATE_MODELS_PIN, gate_version_pin,
+    VERSIONED_JOINT_GATE_MODELS_PIN, VERSIONED_GATE_MODELS_PIN, SIGNED_GATE_MODELS_PIN, gate_version_pin,
 )
 # Resolve the lightweight reporting dependencies before importing raw data or
 # training. A late import can mix a newly pulled reporter with an old registry
@@ -59,7 +59,7 @@ def _pin_name(name):
     return name if name.endswith('_pin') or name in VERSIONED_GATE_MODELS_PIN else name + '_pin'
 
 
-def validate_request_pin(config, models, seeds, device, smoke=False):
+def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_config_version=None):
     from device_jepa.model import ModelConfig
     from device_jepa.resident import require_device
     from experiments.op_transfer.engine import settings
@@ -93,7 +93,11 @@ def validate_request_pin(config, models, seeds, device, smoke=False):
     if set(selected) & set(ALL_GATE_MODELS_PIN) or 'op_gate_pin' in config:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         versions = {gate_version_pin(mode) for mode in selected}
-        version = 'v3' if 'v3' in versions else 'v2' if 'v2' in versions else None
+        version = gate_config_version or next((v for v in ('v5', 'v4', 'v3', 'v2') if v in versions), None)
+        if versions & {'v4', 'v5'}:
+            effective_model = {**config['model'], **overrides.get('zerosim_supervised_pin', {})}
+            if effective_model['cross_layers'] < 2:
+                raise ValueError('V4/V5 gates require at least two fusion PE layers')
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)
     epochs = options['epochs']
     if not epochs['readout'] == epochs['student_predicted_op'] == (
@@ -140,7 +144,8 @@ def gate_contract_pin(mode):
                 uses_predicted_op_features=features, gate_source=source,
                 predictor_granularity='none' if mode == 'device_op_gate_only_base_pin' else 'device',
                 requires_measured_op=mode in REFERENCES_PIN,
-                attention_scope=('fusion_self_attention' if mode in VERSIONED_JOINT_GATE_MODELS_PIN and '_fusion_' in mode
+                attention_scope=('fusion_after_first_self_attention' if mode in SIGNED_GATE_MODELS_PIN
+                                 else 'fusion_self_attention' if mode in VERSIONED_JOINT_GATE_MODELS_PIN and '_fusion_' in mode
                                  else 'all_encoder_self_attention' if source != 'none' else 'none'),
                 gate_version=gate_version_pin(mode) if source != 'none' else 'none',
                 diagnostic_control=source in ('true_op', 'shuffled_predicted_op'))
@@ -150,24 +155,24 @@ def _gate_input_dim_pin(model):
     if model.gate is None:
         return None
     fields = len(model.gate.field_names)
-    return (2 * fields + 8 if model.gate_version in ('v2', 'v3') else
+    return (2 * fields + 8 if model.gate_version in ('v2', 'v3', 'v4', 'v5') else
             fields + 8 if model.gate_version == 'v1' else 2 * fields)
 
 
 def _gate_metadata_pin(model):
     """Persist sample-relative input and version-specific network contracts."""
-    if getattr(model, 'gate_version', None) not in ('v2', 'v3'):
+    if getattr(model, 'gate_version', None) not in ('v2', 'v3', 'v4', 'v5'):
         return {}
     metadata = dict(gate_relative_normalization='per_sample_per_field_all_valid_mos',
                 gate_input_dim=_gate_input_dim_pin(model),
                 gate_hidden_dim=model.gate.cfg.dim,
                 norm_eps=model.gate.settings['norm_eps'],
                 gate_normalization=copy.deepcopy(model.gate.normalization_contract))
-    if model.gate_version == 'v3':
+    if model.gate_version in ('v3', 'v4', 'v5'):
         metadata.update(gate_network='mixed_mlp',
                         gate_n_experts=model.gate.settings['n_experts'],
                         gate_mlp_dropout=model.gate.settings['mlp_dropout'],
-                        gate_network_parameters=sum(p.numel() for p in model.gate.score_head.parameters()),
+                        gate_network_parameters=sum(p.numel() for p in model.gate.parameters()),
                         gate_architecture=copy.deepcopy(model.gate.architecture_contract))
     return metadata
 
@@ -283,7 +288,16 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
         raise ValueError('Pin output directory must end with _pin')
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError('Choose a new/empty output directory')
-    config, models = validate_request_pin(json.loads(Path(config_path).read_text()), models, seeds, device, smoke)
+    # Resolve the source study's namespace before adding defaults. A baseline-only
+    # subset of a signed-gate run must not acquire legacy sigmoid/epsilon settings.
+    source_gate_version = None
+    if resume_from is not None:
+        from final_exam.stage_resume_pin import training_directory_pin, read_json
+        source_record = read_json(training_directory_pin(resume_from) / 'run_pin.json')
+        source_versions = {gate_version_pin(mode) for mode in source_record.get('models', [])}
+        source_gate_version = next((v for v in ('v5', 'v4', 'v3', 'v2') if v in source_versions), None)
+    config, models = validate_request_pin(json.loads(Path(config_path).read_text()), models, seeds, device, smoke,
+                                         gate_config_version=source_gate_version)
     logs = Path(log_dir).resolve() if log_dir else output / 'logs_pin'
     resume_source, source_run, saved_preprocessing, source_cohort, source_manifest = (None,) * 5
     if resume_from is not None:
@@ -391,9 +405,9 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     if name in VERSIONED_GATE_MODELS_PIN:
                                         identity.update(gate_version=gate_version_pin(name),
                                             attention_scope=gate_contract_pin(name)['attention_scope'])
-                                    if gate_version_pin(name) in ('v2', 'v3'):
+                                    if gate_version_pin(name) in ('v2', 'v3', 'v4', 'v5'):
                                         identity['gate_normalization'] = copy.deepcopy(model.gate.normalization_contract)
-                                    if gate_version_pin(name) == 'v3':
+                                    if gate_version_pin(name) in ('v3', 'v4', 'v5'):
                                         identity['gate_architecture'] = copy.deepcopy(model.gate.architecture_contract)
                                     if hasattr(model, 'teacher_scaler'):
                                         identity['teacher_scaler_digest'] = scaler_digest_pin(model.teacher_scaler.state_dict())
@@ -589,7 +603,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             # This pairs all-layer/fusion-only variants at identical gate weights.
                             if mode in VERSIONED_GATE_MODELS_PIN:
                                 seed_everything(seed, options['torch_threads'])
-                            if gate_version_pin(mode) in ('v2', 'v3'):
+                            if gate_version_pin(mode) in ('v2', 'v3', 'v4', 'v5'):
                                 model.set_mode_pin(mode, gate_config=cfg.get('op_gate_pin'))
                             else:
                                 model.set_mode_pin(mode)

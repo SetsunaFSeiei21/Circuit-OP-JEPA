@@ -47,7 +47,7 @@ class StagedOPGateModelPin(DeviceOPGateModelPin):
         if mode not in ALL_STAGED_GATE_MODELS_PIN:
             raise ValueError(f'Unknown staged OP gate mode: {mode}')
         version = gate_version_pin(mode)
-        initial_mode = 'device_op_gate_pin' + (f'_{version}' if version != 'v0' else '')
+        initial_mode = ('device_op_gate_fusion_pin' if version in ('v4', 'v5') else 'device_op_gate_pin') + (f'_{version}' if version != 'v0' else '')
         super().__init__(initial_mode, config, prep, predictor,
                          gate_config=gate_config)
         self.set_mode_pin(mode)
@@ -57,7 +57,11 @@ class StagedOPGateModelPin(DeviceOPGateModelPin):
         """Select the gate location when copying a shared, ungated base."""
         spec = staged_gate_spec_pin(mode)
         version = gate_version_pin(mode)
-        settings = validate_gate_config_pin({**self.gate.settings, **(gate_config or {})}, version=version)
+        inherited = dict(self.gate.settings)
+        if version in ('v4', 'v5'):
+            inherited.pop('epsilon', None)
+            inherited.pop('initial_gate', None)
+        settings = validate_gate_config_pin({**inherited, **(gate_config or {})}, version=version)
         if self.gate.version != version or settings != self.gate.settings:
             if getattr(self, 'gate_enabled', False):
                 raise ValueError('Gate versions may only change on an ungated base')
@@ -197,9 +201,9 @@ def describe_staged_gate_model_pin(model):
                 predictor=describe_gate_model_pin(model.predictor),
                 use_op_features=True, gate_source='predicted_op',
                 requires_measured_op=False)
-    if model.gate_version in ('v2', 'v3'):
+    if model.gate_version in ('v2', 'v3', 'v4', 'v5'):
         recipe['gate_normalization'] = deepcopy(model.gate.normalization_contract)
-    if model.gate_version == 'v3':
+    if model.gate_version in ('v3', 'v4', 'v5'):
         recipe['gate_architecture'] = deepcopy(model.gate.architecture_contract)
     return recipe
 
@@ -219,10 +223,10 @@ def rebuild_staged_gate_model_pin(recipe, config, prep):
     if (model.gate_version != 'v0' and model.gate_enabled
             and model.phase != staged_gate_spec_pin(model.mode)['final_phase']):
         raise ValueError('Staged gate recipe phase disagrees with its model mode')
-    if model.gate_version in ('v2', 'v3') and recipe.get('gate_normalization') != model.gate.normalization_contract:
+    if model.gate_version in ('v2', 'v3', 'v4', 'v5') and recipe.get('gate_normalization') != model.gate.normalization_contract:
         raise ValueError('Staged gate recipe normalization disagrees with its sample-relative contract')
-    if model.gate_version == 'v3' and recipe.get('gate_architecture') != model.gate.architecture_contract:
-        raise ValueError('Staged gate recipe architecture disagrees with its v3 contract')
+    if model.gate_version in ('v3', 'v4', 'v5') and recipe.get('gate_architecture') != model.gate.architecture_contract:
+        raise ValueError('Staged gate recipe architecture disagrees with its versioned contract')
     expected = dict(gate_enabled=model.gate_enabled, use_op_features=True,
                     gate_source='predicted_op', requires_measured_op=False)
     if any(recipe.get(key) != value for key, value in expected.items()):

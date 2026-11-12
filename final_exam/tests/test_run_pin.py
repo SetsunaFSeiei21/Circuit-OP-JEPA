@@ -44,6 +44,11 @@ class RunnerPinTests(unittest.TestCase):
         torch.set_num_threads(1)
 
     def test_all_models_two_seeds_save_replay_and_boundaries(self):
+        # Signed V4/V5 gates require PE2+; retain the smaller default fixture for
+        # legacy tests which explicitly exercise one fusion layer.
+        self.config['model'].update(encoder_layers=4, cross_layers=3)
+        self.config['op_gate_pin'] = dict(n_experts=2, mlp_dropout=0.)
+        self.cfg_path.write_text(json.dumps(self.config))
         output = self.root/'complete_pin'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = run_experiment_pin(self.data_path,self.cfg_path,output,list(MODEL_NAMES_PIN),[17,29],

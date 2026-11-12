@@ -383,3 +383,65 @@ train_op_gate_pin_v1.sh/v2.sh/v3.sh 和对应 JSON 均加入两个新选项，�
 加 device_op_cascade_pin，共九个评测入口。HPC / 实验日志 / 结果目录规则不变。
 源实验不含新模型时不可通过改名冒充续训；增加模型应创建新实验。
 完整清单、预算、使用方式见 final_exam/GATE_DECODER_VERSIONS_pin.md。
+
+
+十三、v4/v5：跳过 PE1、双向偏置与跨层参数对照（2026-11-12）
+
+用户确认规格为：结构层全部关闭门控；第一层参数融合 PE 的 Self-Attention
+也关闭门控；只在 PE2 及后续融合 Self-Attention 使用门控。两个版本不新增
+“结构+融合”的配对选项，每版只有四种训练策略。PE 按相对融合层编号，
+不硬编码 encoder 全局层号；cross_layers<2 没有可训练门控位置，拒绝配置。
+作用范围身份为 fusion_after_first_self_attention。
+
+v4：一套 V3 M-MLP 跨启用层共享。v5：每个启用层各自有独立完整 M-MLP，
+包含每个 MoLinear 的 router 和专家参数。初始化时由同一初始网络深复制，
+初值相同但 Parameter 不共享，随后独立更新；每套仍输出 heads 个有向分数。
+当前结构 6/3 时只控制 PE2/PE3，v5 有两套评分网络；结构层和 PE1 直接偏置
+始终为零。Cross-Attention 和 decoder 不注入这类偏置。
+
+输入、相对 OP 归一化及 M-MLP 维度/专家数/Dropout 继承 v3：
+concat(训练集标准化 OP, 当前样本 MOS 逐字段相对 OP, query one-hot, key one-hot)。
+器件级 OP predictor 在下游保持冻结，不加入真实测试 OP 或测试缺失模式。
+MOS/有效字段/同器件/不同实际网络资格规则仍保留；实际短接、自环、R/C、
+外部端口、GRAPH 和不同器件的边不直接改变。D→S 与 S→D 分开输出。
+
+输出不再使用旧的 strength*log(epsilon+(1-epsilon)*sigmoid(z))，改为：
+    bias = strength * tanh(z)
+    attention = softmax(original_logits + bias)
+默认 strength=1，偏置在 [-1,1]，正值增强、负值抑制。增强的是 softmax
+归一化之前的分数，最终概率仍受同行其他边影响；不能突破原有硬拓扑掩码。
+最终专家层使用 std=1e-3 的小随机权重和零偏置，实现接近中性的初始化，
+不复制 v3 的 logit(0.99) 偏置。v4/v5 配置拒绝无意义的 initial_gate/epsilon。
+门控配置仅 strength、norm_eps、n_experts、mlp_dropout，默认 1、1e-5、16、0.1。
+
+模型名称：
+  device_op_gate_fusion_pin_v4
+  device_op_distill_gate_fusion_pin_v4
+  device_op_supervised_gate_fusion_pin_v4
+  device_op_distill_gate_decoder_fusion_pin_v4
+  device_op_gate_fusion_pin_v5
+  device_op_distill_gate_fusion_pin_v5
+  device_op_supervised_gate_fusion_pin_v5
+  device_op_distill_gate_decoder_fusion_pin_v5
+
+四种方法依次为：
+1. 冻结 OP predictor 后，encoder/decoder/gate 联合性能训练；
+2. 先教师/学生 encoder 蒸馏、再冻结 encoder 训练 decoder，最后只训练 gate；
+3. 无门控基座直接监督训练，最后冻结 encoder/decoder，只训练 gate；
+4. 从同一蒸馏基座继续，冻结 encoder，同时微调 gate 与已有 decoder。
+共享依赖、验证选模、早停、阶段预算和成本记录沿用现有流程。两版新脚本
+默认四种方法加 device_op_cascade_pin，共五个评测入口；蒸馏无门控基座
+仍报告，不能把基础蒸馏收益都算到门控上。
+
+配置：configs/op_gate_pin_v4.json、configs/op_gate_pin_v5.json。
+入口：single_circuit_pin/train_op_gate_pin_v4.sh、train_op_gate_pin_v5.sh。
+顶部配置电路/模型/seeds；--dry-run 只预览，--smoke 缩短轮次；数据量仍由
+dataset.max_samples_per_circuit 控制，先按总数抽样再划分。
+run ID 含 _op_gate_v4_/_op_gate_v5_，仍以 _pin 结尾。HPC 日志、实验日志、
+结果分别在任务的 hpc_logs_pin、logs_pin、results_pin，保存提交配置快照。
+结果中的完整版本、作用层、共享方式和 V5 各层参数用于区分检查点身份。
+旧版本保持原行为；v3→v4/v5 或 v4↔v5 不是可直接恢复的同一训练任务。
+
+详细文档为 OP_GATE_V4_V5_pin.md。直接 v3/v4 比较同时改变作用层与偏置映射，
+不能单独归因；v4/v5 比较还需报告不同的门控参数量。本实现不预先声称消除
+震荡、提高测试指标或学到了真实的 MOS 导通关系。

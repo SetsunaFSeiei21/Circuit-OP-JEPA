@@ -56,6 +56,8 @@ class VersionedGateDecoderPinTests(unittest.TestCase):
                 self.assertEqual(spec['attention_scope'], 'fusion_self_attention' if '_fusion_' in mode
                                  else 'all_encoder_self_attention')
         for mode in set(VERSIONED_STAGED_GATE_MODELS_PIN) - set(DECODER_MODES):
+            if gate_version_pin(mode) not in ('v1', 'v2', 'v3'):
+                continue  # Later version strategies have their own contract tests.
             self.assertEqual(staged_gate_spec_pin(mode)['final_phase'], 'gate_only')
 
     def exercise_step(self, mode, device):
