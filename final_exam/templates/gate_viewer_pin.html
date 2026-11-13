@@ -5,7 +5,7 @@
 body{font:15px/1.6 system-ui,sans-serif;color:#1c2939;background:#f4f6f9;margin:0}main{max-width:1180px;margin:24px auto;padding:24px;background:white;border-radius:12px}h1{font-size:25px;margin:0 0 8px}h2{font-size:19px;margin-top:24px}.muted{color:#526176}section.controls{display:flex;gap:14px;flex-wrap:wrap;margin:20px 0}label{font-size:13px;display:flex;flex-direction:column;gap:5px}select{max-width:440px;padding:8px;border:1px solid #b8c4d1;border-radius:5px;font:inherit;background:white}table{border-collapse:collapse;width:100%;margin:12px 0}th,td{padding:9px 12px;border-bottom:1px solid #dce2ea;text-align:right}th{background:#edf1f6;font-weight:600}td:first-child,th:first-child{text-align:left}#matrix{max-width:780px;table-layout:fixed}#matrix td{font-variant-numeric:tabular-nums;text-align:center;border:4px solid white;height:70px;font-size:20px}#matrix td small{display:block;font-size:11px;color:#455368}.note{padding:12px;background:#eef3fa;border-radius:6px}.row{display:flex;flex-wrap:wrap;gap:20px}.row>div{flex:1;min-width:300px}code{overflow-wrap:anywhere}#state{font-weight:600}#opTable{font-size:13px}#opTable td{font-variant-numeric:tabular-nums}@media(max-width:600px){main{margin:0;padding:16px}select{max-width:90vw}#matrix td{font-size:15px;padding:4px}}
 </style></head><body><main>
 <h1>OP 门控分数检查</h1><div id="context" class="muted"></div>
-<p class="note">这是实际模型前向计算中的门控输出，不是 softmax attention，也不是校准后的物理导通概率。行是 query 引脚，列是 key 引脚。灰色表示该引脚对受到保护，实际附加偏置为 0。V4 跨层共享门控，V5 每层独立；下方可选择实际生效的 PE 层。</p>
+<p class="note">这是实际模型前向计算中的门控输出，不是 softmax attention，也不是校准后的物理导通概率。行是 query 引脚，列是 key 引脚。灰色表示该引脚对受到保护，实际附加偏置为 0。V4/V6 跨层共享门控，V5/V7 每层独立；下方可选择实际生效的 PE 层。</p>
 <section class="controls">
 <label>模型<select id="model"></select></label><label>样本<select id="sample"></select></label>
 <label>MOS<select id="device"></select></label><label>Attention head<select id="head"></select></label>
@@ -13,9 +13,9 @@ body{font:15px/1.6 system-ui,sans-serif;color:#1c2939;background:#f4f6f9;margin:
 <label>显示值<select id="measure"><option value="3">Gate score：sigmoid 输出</option><option value="4">实际附加 attention bias</option><option value="5">实际乘数：exp(bias)</option></select></label>
 </section>
 <p id="scope" class="muted"></p><p id="state"></p><div id="matrixWrap"><table id="matrix"></table></div>
-<p class="muted">V0–V3 的 score 为 sigmoid，附加 bias ≤ 0；V4/V5 的 score 为 tanh，bias = strength × score，负值抑制、正值增强。乘数 exp(bias) 作用于 softmax 归一化前的权重，不等于最终 attention 变化比例。各头平均仅用于显示。</p>
-<details><summary>查看该 MOS 输入门控的归一化 OP</summary><p class="muted">全局通道沿用 checkpoint 的训练集统计；相对通道在 v2 及后续版本有值。未支持字段在网络输入中填 0。这里的 support 标记用于解释，不作为 v1 及后续版本的额外网络输入。</p><table id="opTable"></table></details>
-<p class="muted">完整样本、全部 head 的精确数值在 <code>gate_scores_pin.csv</code>；跨样本变化统计在 <code>gate_summary_pin.csv</code> 和 <code>gate_scores_pin.xlsx</code>。</p>
+<p class="muted">V0–V3 的 score 为 sigmoid，附加 bias ≤ 0；V4–V7 的 score 为 tanh，bias = strength × score，负值抑制、正值增强。乘数 exp(bias) 作用于 softmax 归一化前的权重，不等于最终 attention 变化比例。各头平均仅用于显示。</p>
+<details><summary>查看该 MOS 输入门控的归一化 OP</summary><p class="muted">全局通道沿用 checkpoint 的训练集统计；相对通道在 v2 及后续版本有值。未支持字段在网络输入中填 0。这里的 support 标记用于解释，不作为 v1 及后续版本的额外网络输入。</p><p id="deviceTypeInput" class="muted"></p><table id="opTable"></table></details>
+<p class="muted">完整样本、全部 head 的精确数值在 <code>gate_scores_pin.csv</code>；跨样本变化统计在 <code>gate_summary_pin.csv</code>；V6/V7 的实际类型输入在 <code>gate_device_types_pin.csv</code>；汇总见 <code>gate_scores_pin.xlsx</code>。</p>
 </main><script>
 const payload=__GATE_DATA_PIN__;
 const byId=id=>document.getElementById(id),roles=['D','G','S','B'];
@@ -26,8 +26,9 @@ function samples(){const m=byId('model').value,info=payload.models[m];options('s
 function devices(){options('device',Object.keys((payload.data[byId('model').value]||{})[byId('sample').value]||{}));render();}
 function render(){const m=byId('model').value,info=payload.models[m],entry=((payload.data[m]||{})[byId('sample').value]||{})[byId('device').value];
 byId('scope').textContent=`版本 ${info.gate_version} · OP 来源 ${info.gate_source} · 生效 Self-Attention 层 ${info.self_attention_layers_1based.join(', ')||'无'} · ${info.shared_gate_across_layers===false?'逐层独立参数':'跨层共享参数'} · checkpoint seed ${payload.seed}`;
-const table=byId('matrix');table.replaceChildren();byId('opTable').replaceChildren();
+const table=byId('matrix');table.replaceChildren();byId('opTable').replaceChildren();byId('deviceTypeInput').textContent='';
 if(!entry){byId('state').textContent=info.gate_active?'所选样本没有可显示的 MOS 引脚对。':'无门控对照：模型不调用门控，不存在可报告的门控分数。';return;}
+byId('deviceTypeInput').textContent=entry.device_type_one_hot?`器件类型输入：${entry.device_type} → [${entry.device_type_one_hot.join(', ')}]；顺序 NMOS、PMOS，直接拼接，不参与 OP 归一化。`:'此版本门控未显式输入器件类型 one-hot。';
 const h=byId('head').value,layer=byId('layer').value,measure=Number(byId('measure').value),signed=info.gate_score_transform==='tanh',tr=document.createElement('tr');tr.append(cell('th','Query / Key'));roles.forEach(r=>tr.append(cell('th',r)));table.append(tr);let active=[];
 for(const q of roles){const row=document.createElement('tr');row.append(cell('th',q));for(const k of roles){const ps=entry.pairs.filter(p=>p[0]===q&&p[1]===k&&(h==='mean'||p[2]===Number(h))&&(layer==='shared'||p[8]===Number(layer)));const td=document.createElement('td');
 if(!ps.length){td.textContent='—';td.style.background='#eef0f4';row.append(td);continue;}

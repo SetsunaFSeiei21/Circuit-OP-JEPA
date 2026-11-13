@@ -1,0 +1,81 @@
+{
+  "model": {
+    "dim": 128,
+    "heads": 8,
+    "encoder_layers": 6,
+    "cross_layers": 3,
+    "ffn_dim": 512,
+    "decoder_layers": 2,
+    "decoder_ffn_dim": 2048,
+    "dropout": 0.1,
+    "max_devices": 200,
+    "terminal_bias": true
+  },
+  "training": {
+    "seed": 17
+  },
+  "dataset": {
+    "train_circuits": [
+      "two_stage_folded_opamp"
+    ],
+    "ood_circuits": [],
+    "split_ratios": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "split_seed": 17,
+    "max_samples_per_circuit": null,
+    "sampling_seed": 17,
+    "finetune_label_fraction": 1.0
+  },
+  "normalization": {
+    "weighting": "equal_circuit",
+    "op_fields": null,
+    "parameters": {},
+    "op": {},
+    "performance": {}
+  },
+  "op_transfer": {
+    "epochs": {
+      "teacher": 60,
+      "op_predictor": 30,
+      "student_predicted_op": 60,
+      "predicted_op_distill_encoder": 30,
+      "predicted_op_distill_decoder": 30,
+      "readout": 60,
+      "gate": 30
+    },
+    "batch_size": 32,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip": 1.0,
+    "latent_floor": 0.0001,
+    "patience": 10,
+    "progress_every": 100,
+    "student_alignment_weight": 1.0,
+    "student_performance_weight": 1.0,
+    "torch_threads": 1
+  },
+  "final_exam_pin": {
+    "models": [
+      "device_op_cascade_pin",
+      "device_op_gate_fusion_pin_v6",
+      "device_op_distill_gate_fusion_pin_v6",
+      "device_op_supervised_gate_fusion_pin_v6",
+      "device_op_distill_gate_decoder_fusion_pin_v6"
+    ],
+    "model_overrides": {},
+    "xgboost": {
+      "num_boost_round": 500,
+      "eta": 0.05,
+      "max_depth": 6
+    }
+  },
+  "op_gate_pin": {
+    "strength": 1.0,
+    "norm_eps": 1e-05,
+    "n_experts": 16,
+    "mlp_dropout": 0.1
+  }
+}

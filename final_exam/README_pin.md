@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**门控 V6/V7：在 V4/V5 输入末尾显式拼接 NMOS=`[1,0]` / PMOS=`[0,1]`。** 输入由 `2F+8` 扩为 `2F+10`（41 个 OP 字段时 92 维）；类型不参与 OP 标准化，相对 OP 仍由同一样本全部有效 MOS 一起统计。V6 跨 PE2 及后续层共享门控，V7 每层独立；结构层和 PE1 不加门控，仍使用 `strength*tanh(z)`。每版四种训练策略和已有无门控参考，入口为 `final_exam/single_circuit_pin/train_op_gate_pin_v6.sh` / `train_op_gate_pin_v7.sh`，配置为 `final_exam/configs/op_gate_pin_v6.json` / `op_gate_pin_v7.json`。详见 [V6/V7 输入、模型、预算和恢复说明](OP_GATE_V6_V7_pin.md)。
+
 **门控 V4/V5：只调节 PE2 及后续融合 Self-Attention，并支持增强和抑制。** V4 跨层共享一套 V3 M-MLP；V5 每个启用层独立一套（初值相同、独立更新）。结构层和 PE1 不加门控。默认偏置 `strength*tanh(z)` 位于 `[-1,1]`，近零初始化；新配置不使用旧 `epsilon`/`initial_gate`。每版四种训练方式加无门控参考，入口分别为 `final_exam/single_circuit_pin/train_op_gate_pin_v4.sh` 和 `train_op_gate_pin_v5.sh`，配置为 `final_exam/configs/op_gate_pin_v4.json`/`op_gate_pin_v5.json`。需要 `model.cross_layers >= 2`。完整模型、阶段预算、路径与恢复说明见 [V4/V5 说明](OP_GATE_V4_V5_pin.md)。
 
 **门控＋decoder 分段微调**：v1/v2/v3 各增加全层和仅融合层两个变体，最终冻结 OP predictor 与 encoder，同时更新门控和 decoder。完整名称、轮数与续训规则见 [版本化门控＋decoder 说明](GATE_DECODER_VERSIONS_pin.md)。

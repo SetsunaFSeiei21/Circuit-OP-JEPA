@@ -445,3 +445,61 @@ run ID 含 _op_gate_v4_/_op_gate_v5_，仍以 _pin 结尾。HPC 日志、实验�
 详细文档为 OP_GATE_V4_V5_pin.md。直接 v3/v4 比较同时改变作用层与偏置映射，
 不能单独归因；v4/v5 比较还需报告不同的门控参数量。本实现不预先声称消除
 震荡、提高测试指标或学到了真实的 MOS 导通关系。
+
+
+十四、v6/v7：显式 MOS 类型输入对照（2026-11-14）
+
+用户确认只扩展门控输入：v6 = v4 + MOS 类型 one-hot；
+v7 = v5 + 同一类型 one-hot。固定语义 NMOS=[1,0]、PMOS=[0,1]，
+依据物理 owner 的器件类型而非 OP 符号或词表整数顺序构造，同一器件
+各有向引脚对使用同一类型编码。不是 one-shot，也不是可学习 embedding。
+
+完整输入顺序：
+  concat(训练集标准化预测 OP, 当前样本 MOS 逐字段相对 OP,
+         query D/G/S/B one-hot[4], key D/G/S/B one-hot[4], MOS type one-hot[2])
+维度从 2F+8 变为 2F+10；F=41 时从 90 变为 92。只扩展 M-MLP 入口，
+隐藏维度、专家数、Dropout、逐头输出方式沿用对应旧版本。
+类型 one-hot 直接拼接，不参与标准化；相对 OP 仍把 NMOS/PMOS 一起统计，
+不按极性拆分，不改字段集合、训练支持/缺失处理或归一化拟合范围。
+
+v6 保持跨启用层共享；v7 保持每层完整 M-MLP 参数独立，初始化由同一份
+网络深复制，初值相同但之后各层独立更新。两版只作用于 PE2 及后续融合
+Self-Attention；结构层、PE1、Cross-Attention 和 decoder 不直接注入偏置。
+要求 cross_layers>=2。偏置仍 strength*tanh(logit)，默认 [-1,1]，允许
+增强与抑制，近零初始化。MOS/字段支持/同器件/不同实际网络资格与保护
+规则保持不变；不能通过有限正偏置打开原拓扑硬掩码禁止的边。
+
+新增八个模型：
+  device_op_gate_fusion_pin_v6
+  device_op_distill_gate_fusion_pin_v6
+  device_op_supervised_gate_fusion_pin_v6
+  device_op_distill_gate_decoder_fusion_pin_v6
+  device_op_gate_fusion_pin_v7
+  device_op_distill_gate_fusion_pin_v7
+  device_op_supervised_gate_fusion_pin_v7
+  device_op_distill_gate_decoder_fusion_pin_v7
+
+每版依次对应：冻结 predictor 后联合监督 encoder/decoder/gate；
+蒸馏无门控 encoder、训练 decoder 后只训练 gate；监督无门控基座后只训练
+ gate；蒸馏基座后只训练 gate+decoder。教师、predictor、基础模型训练流程、
+冻结审计、早停、选模和阶段成本记录沿用原实现，不新增真实性能标签或
+真实 OP 到部署输入。原 device_op_cascade_pin 继续作为无门控监督参考，
+同次实验的蒸馏无门控基座仍单独报告。
+
+配置：configs/op_gate_pin_v6.json、configs/op_gate_pin_v7.json。
+入口：single_circuit_pin/train_op_gate_pin_v6.sh、train_op_gate_pin_v7.sh。
+默认 two_stage_folded_opamp、seeds 17/29/43，每版四个新模型加无门控参考。
+配置只替换对应 V4/V5 的模型版本名，阶段预算和超参数不改。
+抽样数量仍在 dataset.max_samples_per_circuit，先按电路抽总量再划分。
+
+run ID 含 _op_gate_v6_ 或 _op_gate_v7_，以 _pin 结尾，HPC 日志、实验日志、
+结果继续分开保存在 single_circuit_pin/hpc_logs_pin、logs_pin、results_pin。
+保留提交配置快照、每模型配置、checkpoint、共享教师/OP predictor、
+自动 summary_pin.xlsx 和 gate_comparison_pin.json。
+探针与报告区分完整版本名、输入类型条件、逐层共享方式及参数量。
+
+V4/V5 输入宽度不同，不能改名冒充 V6/V7 恢复；V6/V7 不能互相冒充。
+新增版本启动新实验，失败时使用同版本同配置恢复入口。旧版脚本、配置
+和已有结果保持原义。实现说明见 OP_GATE_V6_V7_pin.md。
+V4→V6、V5→V7 对照显式 MOS 类型输入；V6→V7 对照跨层参数共享。
+以上只描述实现，不预先声称测试提升、训练更稳定或恢复真实导通关系。

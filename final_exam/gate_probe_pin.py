@@ -132,7 +132,7 @@ def capture_forward(model, batch):
     """
     import torch
     gate = getattr(model, 'gate', None)
-    if gate is not None and gate.version in ('v4', 'v5'):
+    if gate is not None and gate.version in ('v4', 'v5', 'v6', 'v7'):
         return _capture_layered_forward(model, batch)
     active = gate is not None and getattr(model, 'gate_enabled', True)
     captured = {}
@@ -189,12 +189,19 @@ def _capture_layered_forward(model, batch):
     expected_layers = list(range(2, gate.cfg.cross_layers + 1))
     if [layer for layer, _ in layer_heads] != expected_layers:
         raise ValueError('Signed gates must expose exactly PE2 and later fusion layers')
-    captured, scores = {}, {}
+    captured, scores, type_inputs = {}, {}, {}
 
     def score_hook(module, inputs, output):
         if id(module) in scores:
             raise ValueError('Each unique gate score network must execute once per forward')
         scores[id(module)] = output.detach()
+        if gate.version in ('v6', 'v7'):
+            # Read the actual appended input, rather than infer it from labels.
+            pair_types = inputs[0][..., -2:].detach()
+            owner_types = pair_types[:, :, 0, 0, :]
+            if not torch.equal(pair_types, owner_types[:, :, None, None, :].expand_as(pair_types)):
+                raise ValueError('Device type must be constant across all pin pairs of a MOS device')
+            type_inputs[id(module)] = owner_types
 
     def gate_hook(module, inputs, output):
         if captured:
@@ -224,6 +231,11 @@ def _capture_layered_forward(model, batch):
         owners, roles, eligible = gate._layout(batch, values, supported)
         relative = gate.relative_op(batch, values, supported)
         common = dict(values=values, supported=supported, relative=relative, eligible=eligible)
+        if gate.version in ('v6', 'v7'):
+            first_types = next(iter(type_inputs.values()))
+            if any(not torch.equal(value, first_types) for value in type_inputs.values()):
+                raise ValueError('Layered gates received different MOS type inputs')
+            common['device_type_one_hot'] = first_types
         layers = []
         for pe_layer, head in layer_heads:
             logits = scores[id(head)]
@@ -276,7 +288,7 @@ def gate_rows(model, batch, rows, captured, mode, seed):
                             query_net=dev['terminals'][ROLES[q]], key_net=dev['terminals'][ROLES[k]],
                             head=head + 1, gate_version=gate.version, attention_scope=model.attention_scope,
                             pe_layer=captured.get('pe_layer'), encoder_layer=captured.get('encoder_layer'),
-                            gate_score_transform='tanh' if gate.version in ('v4', 'v5') else 'sigmoid',
+                            gate_score_transform='tanh' if gate.version in ('v4', 'v5', 'v6', 'v7') else 'sigmoid',
                             applied=applied, protection_reason=reason,
                             gate_logit=float(captured['logits'][b, owner, q, k, head]),
                             gate_score=float(captured['gate_score'][b, owner, q, k, head]),
@@ -344,10 +356,10 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
         viewer_samples=min(viewer_samples, len(selected)), device=str(target_device),
         source_dataset_fingerprint=source['dataset_fingerprint'],
         source_code_commit=source['source_code_commit'], results=str(output), logs=str(logs),
-        score_meaning='V0-V3: sigmoid(logit); V4-V5: tanh(logit). Not softmax attention or a calibrated connection probability',
+        score_meaning='V0-V3: sigmoid(logit); V4-V7: tanh(logit). Not softmax attention or a calibrated connection probability',
         bias_meaning='actual additive gate bias; effective_multiplier=exp(bias)',
         pair_direction='query row, key column; heads are 1-based',
-        shared_layers=all(getattr(model.gate, 'version', None) != 'v5' for _,_,model,_ in loaded),
+        shared_layers=all(getattr(model.gate, 'version', None) not in ('v5', 'v7') for _,_,model,_ in loaded),
         refit_preprocessing=False, retrained=False, checkpoints={})
 
     def save_record():
@@ -396,13 +408,15 @@ def run_probe(source_run, *, circuit, models, seed=17, num_samples=20, split='te
                         gate_source=model.gate_source if active else 'none',
                         requires_measured_op=measured, attention_scope=scope,
                         self_attention_layers_1based=list(range(first_layer + 1, cfg.encoder_layers + 1)) if active else [],
-                        heads=cfg.heads, shared_gate_across_layers=model.gate_version != 'v5',
-                        gate_score_transform='tanh' if model.gate_version in ('v4', 'v5') else 'sigmoid',
+                        heads=cfg.heads, shared_gate_across_layers=model.gate_version not in ('v5', 'v7'),
+                        gate_score_transform='tanh' if model.gate_version in ('v4', 'v5', 'v6', 'v7') else 'sigmoid',
                         gated_pe_layers=list(range(2, cfg.cross_layers+1)) if scope == 'fusion_after_first_self_attention' else None,
                         gate_settings=model.gate.settings if active else None,
                         gate_normalization=getattr(model.gate, 'normalization_contract', None) if active else None,
                         config=metadata['config'])
-                    if active and model.gate_version in ('v3', 'v4', 'v5'):
+                    if active and model.gate_version in ('v6', 'v7'):
+                        info['device_type_encoding'] = model.gate.architecture_contract['device_type_encoding']
+                    if active and model.gate_version in ('v3', 'v4', 'v5', 'v6', 'v7'):
                         info.update(gate_architecture=model.gate.architecture_contract,
                                     gate_network='mixed_mlp',
                                     gate_n_experts=model.gate.settings['n_experts'],

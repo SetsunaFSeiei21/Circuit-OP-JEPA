@@ -12,6 +12,7 @@ SCORE_FIELDS = ('model', 'seed', 'sample_id', 'circuit', 'device_id', 'device_ty
     'applied', 'protection_reason', 'gate_logit', 'gate_score', 'attention_bias', 'effective_multiplier',
     'pe_layer', 'encoder_layer', 'gate_score_transform')
 OP_FIELDS = ('model', 'sample_id', 'device_id', 'field', 'supported', 'normalized_gate_op', 'relative_gate_op')
+DEVICE_TYPE_FIELDS = ('model', 'sample_id', 'device_id', 'device_type', 'nmos_one_hot', 'pmos_one_hot')
 GROUP_FIELDS = ('model', 'device_id', 'device_type', 'query_role', 'key_role', 'head', 'pe_layer', 'encoder_layer', 'gate_score_transform')
 SUMMARY_FIELDS = (*GROUP_FIELDS, 'samples', 'gate_mean', 'gate_std', 'gate_min', 'gate_max',
                   'fraction_below_0_1', 'fraction_below_0_5', 'fraction_above_0_99',
@@ -89,6 +90,7 @@ class GateReport:
         self.total_rows = 0
         self.protected_rows = defaultdict(int)
         self.handles = []
+        self.device_types = None
 
     def _writer(self, name, fields):
         handle = (self.output / name).open('x', newline='', encoding='utf-8-sig')
@@ -136,6 +138,20 @@ class GateReport:
             for owner, dev in enumerate(sorted(sample['devices'], key=lambda value: value['device_id'])):
                 if dev['device_type'].lower() not in ('nmos', 'pmos'):
                     continue
+                if 'device_type_one_hot' in captured:
+                    values = [float(value) for value in captured['device_type_one_hot'][b, owner]]
+                    expected = [1., 0.] if dev['device_type'].lower() == 'nmos' else [0., 1.]
+                    if values != expected:
+                        raise ValueError('Captured gate type input disagrees with the physical MOS type')
+                    if self.device_types is None:
+                        self.device_types = self._writer('gate_device_types_pin.csv', DEVICE_TYPE_FIELDS)
+                    self.device_types.writerow(dict(model=mode, sample_id=sample['sample_id'],
+                        device_id=dev['device_id'], device_type=dev['device_type'],
+                        nmos_one_hot=values[0], pmos_one_hot=values[1]))
+                    if sample['sample_id'] in self.viewer_ids:
+                        device = self.viewer[mode][sample['sample_id']].get(dev['device_id'])
+                        if device is not None:
+                            device['device_type_one_hot'] = values
                 for f, name in enumerate(field_names):
                     supported = bool(captured['supported'][b, owner, f])
                     value = float(captured['values'][b, owner, f]) if supported else 0.
@@ -155,8 +171,9 @@ class GateReport:
             writer.writerow(SUMMARY_FIELDS)
             writer.writerows(group_rows)
         model_rows = []
-        include_network = any(info.get('gate_version') in ('v3', 'v4', 'v5') for info in self.models.values())
-        include_layered = any(info.get('gate_version') in ('v4', 'v5') for info in self.models.values())
+        include_device_type = any(info.get('device_type_encoding') for info in self.models.values())
+        include_network = any(info.get('gate_version') in ('v3', 'v4', 'v5', 'v6', 'v7') for info in self.models.values())
+        include_layered = any(info.get('gate_version') in ('v4', 'v5', 'v6', 'v7') for info in self.models.values())
         for mode, info in self.models.items():
             stats = self.overall.get(mode)
             model_rows.append([mode, info['gate_active'], info['gate_version'], info['attention_scope'],
@@ -173,12 +190,16 @@ class GateReport:
                     info.get('gate_score_transform', 'sigmoid'),
                     stats.suppressed / stats.score.n if stats else None,
                     stats.enhanced / stats.score.n if stats else None))
+            if include_device_type:
+                encoding = info.get('device_type_encoding')
+                model_rows[-1].append(json.dumps(encoding, sort_keys=True) if encoding else None)
         network_fields = ('Gate network', 'Experts per layer', 'MLP dropout', 'Gate parameters') if include_network else ()
         layered_fields = ('Shared across layers', 'Score transform', 'Fraction suppressed', 'Fraction enhanced') if include_layered else ()
+        type_fields = ('Device type encoding',) if include_device_type else ()
         sheets = [
             table_sheet('Models', ('Model', 'Gate active', 'Version', 'Scope', 'SA layers (1-based)',
                 'Heads', 'Applied rows', 'Protected rows', 'Gate mean', 'Gate std', 'Gate min', 'Gate max',
-                'Bias mean', 'Effective multiplier mean', *network_fields, *layered_fields), model_rows,
+                'Bias mean', 'Effective multiplier mean', *network_fields, *layered_fields, *type_fields), model_rows,
                 'Statistics include applied MOS pairs only. Gate scores are not softmax attention or physical connection probabilities.'),
             table_sheet('ByDeviceHead', SUMMARY_FIELDS, group_rows,
                 'Across samples for a fixed MOS / query / key / head / PE layer. Blank PE = legacy shared table. Population std; protected pairs excluded. Score thresholds use the recorded sigmoid/tanh transform.'),

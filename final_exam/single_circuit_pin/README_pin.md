@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**门控 V6/V7：在 V4/V5 输入末尾显式拼接 NMOS=`[1,0]` / PMOS=`[0,1]`。** 输入由 `2F+8` 扩为 `2F+10`（41 个 OP 字段时 92 维）；类型不参与 OP 标准化，相对 OP 仍由同一样本全部有效 MOS 一起统计。V6 跨 PE2 及后续层共享门控，V7 每层独立；结构层和 PE1 不加门控，仍使用 `strength*tanh(z)`。每版四种训练策略和已有无门控参考，入口为 `final_exam/single_circuit_pin/train_op_gate_pin_v6.sh` / `train_op_gate_pin_v7.sh`，配置为 `final_exam/configs/op_gate_pin_v6.json` / `op_gate_pin_v7.json`。详见 [V6/V7 输入、模型、预算和恢复说明](../OP_GATE_V6_V7_pin.md)。
+
 **门控 V4/V5：只调节 PE2 及后续融合 Self-Attention，并支持增强和抑制。** V4 跨层共享一套 V3 M-MLP；V5 每个启用层独立一套（初值相同、独立更新）。结构层和 PE1 不加门控。默认偏置 `strength*tanh(z)` 位于 `[-1,1]`，近零初始化；新配置不使用旧 `epsilon`/`initial_gate`。每版四种训练方式加无门控参考，入口分别为 `final_exam/single_circuit_pin/train_op_gate_pin_v4.sh` 和 `train_op_gate_pin_v5.sh`，配置为 `final_exam/configs/op_gate_pin_v4.json`/`op_gate_pin_v5.json`。需要 `model.cross_layers >= 2`。完整模型、阶段预算、路径与恢复说明见 [V4/V5 说明](../OP_GATE_V4_V5_pin.md)。
 
 **无门控 PE 注意力检查**：编辑 `inspect_pe_attention_pin.sh` 顶部的结果路径、电路、样本数、模型和 seed，运行 `bash final_exam/single_circuit_pin/inspect_pe_attention_pin.sh`。默认加载 `device_op_cascade_pin`，按样本、PE 层、head、MOS 输出 D/G/S/B 的 4×4 QK/logit/softmax 矩阵及权重去向，生成离线 HTML、Excel 和完整 CSV。只读取原本没有门控的 checkpoint，不重训，不在门控模型上临时关门控；详见 [PE 注意力检查说明](../PE_ATTENTION_PROBE_pin.md)。
