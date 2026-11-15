@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_number, _write_workbook
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
+from final_exam.width_registry_pin import WIDTH_MODELS_PIN, validate_width_contract_pin
 from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
@@ -276,6 +277,7 @@ def summary_rows_pin(results, config=None):
             raise ValueError('Each result must contain a report object')
         _require_pin_mode(record.get('mode'))
         _validate_gate_report_contract(record['mode'], record['report'].get('op_gate_pin'))
+        validate_width_contract_pin(record['mode'], record['report'].get('width_decoder_pin'))
         groups[_circuit_identity(record, config or {})].append(record)
     rows = []
     for circuit, members in sorted(groups.items()):
@@ -429,6 +431,31 @@ def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
             sheet.add([label, seed, str(path), key, setting], 30)
     sheet.filter_range = f'A4:E{len(sheet.rows)}'
     return sheet, missing
+
+
+def _width_decoder_sheet(results):
+    fields = ('Model', 'Seed', 'OP readout', 'OP decoder branches', 'Performance decoder branches',
+              'Feature width', 'Concatenated width', 'Decoder layers per branch',
+              'MLP experts', 'Expert hidden width', 'MoE dropout', 'OP predictor frozen',
+              'Measured OP at inference', 'Full architecture (JSON)')
+    sheet = Sheet('WidthDecoder', [38, 12, 40, 24, 28, 20, 24, 28, 18, 24, 20, 24, 24, 90],
+                  freeze_rows=4, freeze_columns=2)
+    sheet.note('Multi-PE decoder comparison', 1, 34)
+    sheet.note('Independent decoders read each PE; concatenate feature vectors for the same metric/device.', height=34)
+    sheet.note('OP predictor is fitted first, then frozen. Equal epochs do not imply equal compute cost.', height=34)
+    sheet.add([Cell(value, 3) for value in fields], 40)
+    for record in results:
+        if record['mode'] not in WIDTH_MODELS_PIN:
+            continue
+        contract = record['report']['width_decoder_pin']
+        performance, predictor = contract['performance'], contract['op_predictor']
+        mixture = performance['mixture']
+        sheet.add([record['mode'], record['seed'], predictor['readout'], predictor.get('branch_count', 0),
+                   performance['branch_count'], performance['feature_dim'], performance['concatenated_dim'],
+                   performance['decoder_layers'], mixture['n_experts'], mixture['hidden_dim'],
+                   mixture['dropout'], 'yes', 'no', json.dumps(contract, sort_keys=True)], 38)
+    sheet.filter_range = f'A4:N{len(sheet.rows)}'
+    return sheet
 
 
 def _statistics_sheet(rows):
@@ -912,6 +939,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
     if run.get('resume'):
         sheets.append(_resume_sheet(stages))
+    if any(mode in WIDTH_MODELS_PIN for mode in models):
+        sheets.append(_width_decoder_sheet(results))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:

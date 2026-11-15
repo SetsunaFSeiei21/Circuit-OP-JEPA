@@ -201,6 +201,8 @@ class ResumeStagedGateLauncherTests(unittest.TestCase):
                         self.root / 'final_exam/staged_gate_registry_pin.py')
         shutil.copyfile(FINAL_ROOT / 'gate_version_registry_pin.py',
                         self.root / 'final_exam/gate_version_registry_pin.py')
+        shutil.copyfile(FINAL_ROOT / 'width_registry_pin.py',
+                        self.root / 'final_exam/width_registry_pin.py')
         # The shell must submit the existing root-aware Slurm wrapper, never
         # calculate the repository from the eventual /var/spool script path.
         wrapper = self.root / 'scripts/run/slurm_run.sh'
@@ -217,6 +219,22 @@ class ResumeStagedGateLauncherTests(unittest.TestCase):
                            SLURM_MEM='80G')
         environment.pop('RESUME_FROM', None)
         return source, training, script, environment
+
+    def test_wide_readout_resume_script_accepts_both_predictor_families(self):
+        source, training, _, environment = self.bash_fixture('exit 99')
+        path = training / 'run_pin.json'
+        metadata = json.loads(path.read_text())
+        metadata['models'] = ['device_op_cascade_pin', 'width_decoder_pin', 'width_decoder_op_pin']
+        path.write_text(json.dumps(metadata))
+        script = self.task / 'resume_width_decoder_pin.sh'
+        shutil.copyfile(Path(__file__).with_name(script.name), script)
+        before = self.snapshot(self.root)
+        self.assertEqual(self.inspect(source)['models'], metadata['models'])
+        result = subprocess.run(['bash', str(script), str(source), '--dry-run'],
+                                env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('_resume_width_decoder_', result.stdout)
+        self.assertEqual(self.snapshot(self.root), before)
 
     def test_bash_dry_run_is_read_only_and_submits_absolute_paths(self):
         source, training, script, environment = self.bash_fixture('exit 99')

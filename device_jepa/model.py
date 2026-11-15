@@ -208,7 +208,13 @@ class DeviceEncoder(nn.Module):
         return (self.parameter_value(values) + self.parameter_names.weight[None, None],
                 live & batch["device_mask"].unsqueeze(-1))
 
-    def forward_from_structure(self, structure, batch, *, fusion_attention_bias=None):
+    def forward_fusion_memories(self, batch):
+        """Read every PE output in order without rerunning SE/PE or changing its path."""
+        return self.forward_from_structure(self.structure_encoder(batch), batch,
+                                           return_all_fusion=True)
+
+    def forward_from_structure(self, structure, batch, *, fusion_attention_bias=None,
+                               return_all_fusion=False):
         tokens, live = self.input_tokens(batch)
         b, n, num_features, _ = tokens.shape
         p = torch.cat([tokens.reshape(b, n * num_features, self.cfg.dim),
@@ -251,6 +257,7 @@ class DeviceEncoder(nn.Module):
             bias = layer_bias.to(dtype=x.dtype).reshape(b * self.cfg.heads, n + 1, n + 1)
             prepared_by_identity[id(layer_bias)] = bias
             prepared_biases.append(bias)
+        memories = []
         offset = len(self.structure_encoder.blocks)
         for i, block in enumerate(self.fusion_blocks):
             mask = masks[(offset + i) % 2]
@@ -258,6 +265,12 @@ class DeviceEncoder(nn.Module):
                 # Out-of-place addition preserves original masks and gradients.
                 mask = mask + prepared_biases[i]
             x = block(x, mask, p, cross_mask, valid)
+            if return_all_fusion:
+                # Read-only taps: the next PE still receives raw x, exactly as
+                # before. All taps use the existing output projection/norm.
+                memories.append(self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1))
+        if return_all_fusion:
+            return tuple(memories), ~valid
         x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
         return x, ~valid
 

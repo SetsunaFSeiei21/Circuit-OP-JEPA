@@ -806,6 +806,28 @@
       ],
       "epoch_key": "op_transfer.epochs.gate",
       "paired_all_encoder_gate_model": "device_op_distill_gate_decoder_pin_v3"
+    },
+    "width_decoder_pin": {
+      "model_id": "width_decoder_pin",
+      "source_files_pin": [
+        "width_decoder_pin.py"
+      ],
+      "implementation": "Local multi-PE decoder and dense MLP-expert extension of the existing ZeroSim encoder framework",
+      "performance_readout": "Independent metric-query decoder after each PE; ordered concatenation -> softmax-routed dense MLP experts",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP",
+      "training": "Fit device OP predictor on ID train observations; freeze it; supervise the complete downstream model; no gates or latent distillation",
+      "scope": "Single circuit pin downstream; canonical device OP predictor. No claim of original ZeroSim implementation or benchmark reproduction."
+    },
+    "width_decoder_op_pin": {
+      "model_id": "width_decoder_op_pin",
+      "source_files_pin": [
+        "width_decoder_pin.py"
+      ],
+      "implementation": "Local multi-PE decoder and dense MLP-expert extension of the existing ZeroSim encoder framework",
+      "performance_readout": "Independent metric-query decoder after each PE; ordered concatenation -> softmax-routed dense MLP experts",
+      "op_readout": "Independent physical-device-query decoder after each PE -> dense MLP experts -> device OP vector",
+      "training": "Fit device OP predictor on ID train observations; freeze it; supervise the complete downstream model; no gates or latent distillation",
+      "scope": "Single circuit pin downstream; canonical device OP predictor. No claim of original ZeroSim implementation or benchmark reproduction."
     }
   }
 }

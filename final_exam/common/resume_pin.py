@@ -21,9 +21,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from final_exam.common.launch_pin import directory_name, run_logged, save_json, utc_now
 from final_exam.staged_gate_registry_pin import ALL_STAGED_GATE_MODELS_PIN
 from final_exam.gate_version_registry_pin import VERSIONED_JOINT_GATE_MODELS_PIN
+from final_exam.width_registry_pin import WIDTH_MODELS_PIN
 
 
-STAGED_MODELS = frozenset(ALL_STAGED_GATE_MODELS_PIN + VERSIONED_JOINT_GATE_MODELS_PIN + ('device_op_cascade_pin',))
+STAGED_MODELS = frozenset(ALL_STAGED_GATE_MODELS_PIN + VERSIONED_JOINT_GATE_MODELS_PIN + WIDTH_MODELS_PIN + ('device_op_cascade_pin',))
 _SOURCE_IDENTITY = (
     'source_training_output', 'source_run', 'configuration_source', 'manifest_source',
     'data_path', 'dataset_fingerprint', 'circuit', 'models', 'seeds', 'smoke',

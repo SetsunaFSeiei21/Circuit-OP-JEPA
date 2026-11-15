@@ -29,7 +29,7 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     if record.get('granularity') != 'pin':
         raise ValueError('Resume source is not a pin training run')
     if not set(models) <= set(allowed_models):
-        raise ValueError('Resume supports registered staged gates, versioned joint gates and their cascade baseline')
+        raise ValueError('Resume supports registered staged/joint gates, wide readouts and their cascade baseline')
     if not set(models) <= set(record.get('models', [])) or not set(seeds) <= set(record.get('seeds', [])):
         raise ValueError('Resume models and seeds must be selected from the source run')
     # A cascade-only subset still belongs to its original versioned study. Resolve
@@ -38,9 +38,15 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     from final_exam.gate_version_registry_pin import gate_version_pin
     versions = {gate_version_pin(mode) for mode in record.get('models', [])}
     version = next((v for v in ('v7', 'v6', 'v5', 'v4', 'v3', 'v2') if v in versions), None)
-    if version:
+    # A wide-readout subset can omit the legacy cascade that caused gate
+    # defaults to be resolved in the original paired run. Resolve only defaults
+    # again; never copy changed settings from the source to bypass comparison.
+    from final_exam.width_registry_pin import WIDTH_MODELS_PIN, width_settings_pin
+    if version or 'device_op_cascade_pin' in record.get('models', []):
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)
+    if set(record.get('models', [])) & set(WIDTH_MODELS_PIN):
+        config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):
@@ -86,11 +92,11 @@ def scaler_digest_pin(state):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def recover_cache_cost_pin(source, seed, cost):
+def recover_cache_cost_pin(source, seed, cost, *, predictor_name='device_op_predictor_pin'):
     """Retain known prior cache work while reporting this attempt separately."""
     if source is None:
         return cost
-    path = source / f'seed_{seed}_pin/shared_pin/device_op_predictor_pin/prediction_cache_pin.json'
+    path = source / f'seed_{seed}_pin/shared_pin/{predictor_name}/prediction_cache_pin.json'
     audit = dict(policy='rebuilt_cache', source_stage=str(path), restored_epoch=0,
                  optimizer_state_restored=False, new_epochs=0, new_optimizer_steps=0,
                  new_seconds=cost['seconds'], new_examples_seen=cost['examples_seen'])

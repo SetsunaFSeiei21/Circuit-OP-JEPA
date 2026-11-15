@@ -21,6 +21,7 @@ from final_exam.staged_gate_registry_pin import (
 from final_exam.gate_version_registry_pin import (
     VERSIONED_JOINT_GATE_MODELS_PIN, VERSIONED_GATE_MODELS_PIN, SIGNED_GATE_MODELS_PIN, gate_version_pin,
 )
+from final_exam.width_registry_pin import WIDTH_MODELS_PIN, WIDTH_PREDICTOR_PIN, width_settings_pin
 # Resolve the lightweight reporting dependencies before importing raw data or
 # training. A late import can mix a newly pulled reporter with an old registry
 # already cached by a long-running process. Keep this callable for the whole run.
@@ -45,10 +46,11 @@ GATE_MODELS_PIN = ('device_op_cascade_pin', 'device_op_gate_pin',
 GATE_MODELS_PIN += VERSIONED_JOINT_GATE_MODELS_PIN
 ALL_GATE_MODELS_PIN = GATE_MODELS_PIN + ALL_STAGED_GATE_MODELS_PIN
 RESUMABLE_GATE_MODELS_PIN = ALL_STAGED_GATE_MODELS_PIN + VERSIONED_JOINT_GATE_MODELS_PIN + ('device_op_cascade_pin',)
-RECOVERABLE_STAGES_PIN = frozenset(RESUMABLE_GATE_MODELS_PIN + (
+RESUMABLE_MODELS_PIN = RESUMABLE_GATE_MODELS_PIN + WIDTH_MODELS_PIN
+RECOVERABLE_STAGES_PIN = frozenset(RESUMABLE_MODELS_PIN + (WIDTH_PREDICTOR_PIN,
     'device_op_predictor_pin', 'design_op_oracle_pin', 'device_op_distill_encoder_pin',
     'device_op_distill_readout_pin', 'device_op_supervised_readout_pin'))
-MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN
+MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN + WIDTH_MODELS_PIN
 CASCADE_MODELS_PIN = frozenset({'predicted_op_pin', 'student_predicted_op_pin', 'student_predicted_op_distill_pin'})
 REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
                            'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin'})
@@ -90,6 +92,8 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
     for override in overrides.values():
         ModelConfig(**{**config['model'], **override})
     options = settings(config)
+    if set(selected) & set(WIDTH_MODELS_PIN) or 'width_decoder_pin' in config:
+        config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
     if set(selected) & set(ALL_GATE_MODELS_PIN) or 'op_gate_pin' in config:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         versions = {gate_version_pin(mode) for mode in selected}
@@ -116,7 +120,7 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
 def effective_config_pin(config, mode, seed):
     value = copy.deepcopy(config)
     key = 'zerosim_supervised_pin' if mode in (CASCADE_MODELS_PIN | REFERENCES_PIN | set(ALL_GATE_MODELS_PIN)
-        | {'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
+        | set(WIDTH_MODELS_PIN) | {WIDTH_PREDICTOR_PIN, 'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
     override = value.get('final_exam_pin', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
     value.setdefault('training', {})['seed'] = seed
@@ -219,6 +223,8 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
     if mode in ALL_GATE_MODELS_PIN:
         payload['input_contract_pin'] = {**gate_contract_pin(mode), **_gate_metadata_pin(model)}
+    if mode in WIDTH_MODELS_PIN:
+        payload['input_contract_pin'] = model.architecture_contract
     atomic_torch_save(directory / 'checkpoint_pin.pt', payload)
     atomic_json(directory / 'config_pin.json', config)
     atomic_json(directory / 'dependencies_pin.json', dict(stage_ids=dependencies))
@@ -277,6 +283,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     from final_exam.logging_utils import log_to
     from final_exam.models.models_pin import build_encoder_pin, build_model_pin, prepare_model_pin
     from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
+    from final_exam.models.width_decoder_pin import WidthDeviceOPPredictorPin, WidthDecoderModelPin
     from final_exam.models.staged_op_gate_pin import StagedOPGateModelPin, StagedOPEncoderDistillationPin
     from final_exam.op_gate_data_pin import prepare_device_predictions_pin, build_shuffle_bank_pin
     from final_exam.stage_resume_pin import (validate_source_pin, validate_data_pin,
@@ -303,7 +310,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     if resume_from is not None:
         resume_source, source_run, saved_preprocessing, source_cohort, source_manifest = validate_source_pin(
             resume_from, config, models, seeds, output=output, logs=logs, smoke=smoke,
-            allowed_models=RESUMABLE_GATE_MODELS_PIN)
+            allowed_models=RESUMABLE_MODELS_PIN)
     # A subset recovery must keep the original baseline's training provenance.
     versioned_gate_study = bool(set(models) & set(VERSIONED_GATE_MODELS_PIN) or
                     source_run and set(source_run.get('models', [])) & set(VERSIONED_GATE_MODELS_PIN))
@@ -379,6 +386,9 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                     ctx.output = output / f'seed_{seed}_pin'
                     ctx.output.mkdir()
                     shared, dependencies = {}, {}
+                    # One cache per frozen predictor in this seed. Keep both
+                    # families distinct and activate the right one for each run.
+                    prediction_caches = {}
 
                     def save(model, mode, deps, model_cfg, kind='op_transfer', shared_stage=False):
                         mode = _pin_name(mode)
@@ -398,8 +408,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 print(f'seed={seed} stage={name} budget={options["epochs"][epoch_key]}', flush=True)
                                 prepare_model_pin(model, ctx, options)
                                 resume_args = {}
-                                if set(models) & set(RESUMABLE_GATE_MODELS_PIN) and name in RECOVERABLE_STAGES_PIN:
+                                if set(models) & set(RESUMABLE_MODELS_PIN) and name in RECOVERABLE_STAGES_PIN:
                                     identity = copy.deepcopy(stage_identity)
+                                    if name in WIDTH_MODELS_PIN or name == WIDTH_PREDICTOR_PIN:
+                                        identity['width_architecture'] = (model.head.architecture_contract
+                                            if name == WIDTH_PREDICTOR_PIN else model.architecture_contract)
                                     if name in FUSION_STAGED_GATE_MODELS_PIN:
                                         identity['attention_scope'] = staged_gate_spec_pin(name)['attention_scope']
                                     if name in VERSIONED_GATE_MODELS_PIN:
@@ -455,13 +468,15 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             save(model, mode, [dep], cfg, shared_stage=True)
                         return shared[mode]
 
-                    def device_predictor():
-                        name = 'device_op_predictor_pin'
+                    def device_predictor(wide=False):
+                        name = WIDTH_PREDICTOR_PIN if wide else 'device_op_predictor_pin'
                         if name not in shared:
                             cfg = effective_config_pin(config, name, seed)
                             seed_everything(seed, options['torch_threads'])
-                            model = DeviceOPPredictorPin(cfg['model'], ctx.prep,
-                                fit_op_support_pin(ctx.rows['train'], ctx.prep)).to(device)
+                            cls = WidthDeviceOPPredictorPin if wide else DeviceOPPredictorPin
+                            extra = {'width_config': cfg['width_decoder_pin']} if wide else {}
+                            model = cls(cfg['model'], ctx.prep,
+                                fit_op_support_pin(ctx.rows['train'], ctx.prep), **extra).to(device)
                             model, dep = stage(model, name, 'op_predictor', cfg, op_objective_pin,
                                                op=True, log_name='shared_pin/' + name)
                             shared[name] = freeze(model)
@@ -471,18 +486,20 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             with log_to(logs / f'seed_{seed}_pin' / 'shared_pin' / name / 'cache_pin.log'):
                                 # No measured OP or performance labels are used in this forward-only pass.
                                 prepare_device_predictions_pin(ctx, model, options, splits=('train', 'val', 'test'))
+                            prediction_caches[name] = (ctx.device_prediction_digest_pin, ctx.device_predictions_pin)
                             if device.type == 'cuda':
                                 torch.cuda.synchronize(device)
-                            cache_id = f'seed_{seed}_pin/frozen_device_op_cache_pin'
+                            cache_id = f'seed_{seed}_pin/' + ('frozen_width_device_op_cache_pin' if wide else 'frozen_device_op_cache_pin')
                             cache_cost = dict(stage_id=cache_id, seed=seed, epochs=0, planned_epochs=0,
                                 optimizer_steps=0, examples_seen=sum(len(ctx.rows[s]) for s in ('train','val','test')),
                                 seconds=time.perf_counter()-started, parameters=sum(p.numel() for p in model.parameters()),
                                 trainable_parameters=0, device=str(device),
                                 selection={'kind': 'forward_only_preparation', 'uses_measured_op': False})
-                            cache_cost = recover_cache_cost_pin(resume_source, seed, cache_cost)
+                            cache_cost = recover_cache_cost_pin(resume_source, seed, cache_cost, predictor_name=name)
                             stages.append(cache_cost)
                             dependencies[name].append(cache_id)
                             atomic_json(ctx.output / 'shared_pin' / name / 'prediction_cache_pin.json', cache_cost)
+                        ctx.device_prediction_digest_pin, ctx.device_predictions_pin = prediction_caches[name]
                         return shared[name]
 
                     def shuffle_bank():
@@ -582,6 +599,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                         seed_everything(seed, options['torch_threads'])
                         directory = ctx.output / mode
                         kind, deps = 'baseline', []
+                        if (mode in ALL_GATE_MODELS_PIN and mode != 'device_op_gate_only_base_pin'
+                                and 'device_op_predictor_pin' in shared):
+                            # A previously built staged base can return without
+                            # invoking device_predictor(); restore its cache too.
+                            device_predictor()
                         if mode == 'xgboost_pin':
                             from final_exam.tree_pin import fit_xgboost_pin
                             with log_to(logs / f'seed_{seed}_pin' / mode / 'train_pin.log'):
@@ -592,6 +614,27 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             atomic_json(directory / 'config_pin.json', cfg)
                             atomic_json(directory / 'preprocessing_pin.json', ctx.prep)
                             atomic_json(directory / 'manifest_pin.json', manifest)
+                        elif mode in WIDTH_MODELS_PIN:
+                            kind = 'op_transfer'
+                            wide = mode == 'width_decoder_op_pin'
+                            predictor_name = WIDTH_PREDICTOR_PIN if wide else 'device_op_predictor_pin'
+                            op_model = device_predictor(wide)
+                            predictor_digest = state_digest(op_model)
+                            deps = dependencies[predictor_name][:]
+                            seed_everything(seed, options['torch_threads'])
+                            model = WidthDecoderModelPin(mode, cfg['model'], ctx.prep, op_model,
+                                                         cfg['width_decoder_pin']).to(device)
+                            initial_encoder = state_digest(model.encoder)
+                            model, dep = stage(model, mode, 'readout', cfg)
+                            deps.append(dep)
+                            if state_digest(op_model) != predictor_digest:
+                                raise AssertionError('Frozen OP predictor changed during wide readout training')
+                            directory.mkdir(parents=True, exist_ok=True)
+                            atomic_json(directory / 'width_audit_pin.json', dict(
+                                **model.architecture_contract, initial_encoder_digest=initial_encoder,
+                                predictor_digest=predictor_digest,
+                                predictor_checkpoint=f'../shared_pin/{predictor_name}/checkpoint_pin.pt',
+                                decoder_parameters=sum(p.numel() for p in model.decoder.parameters())))
                         elif mode in ALL_STAGED_GATE_MODELS_PIN:
                             kind = 'op_transfer'
                             spec = staged_gate_spec_pin(mode)
@@ -775,6 +818,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             prepare_model_pin(model, ctx, options, splits=('test',))
                             report = engine.evaluate_model(ctx, model, 'test', options, measured_op=mode in REFERENCES_PIN)
                             report.update(circuit=circuit, granularity='pin')
+                            if mode in WIDTH_MODELS_PIN:
+                                report['width_decoder_pin'] = model.architecture_contract
                             if mode == 'device_op_cascade_pin' and versioned_gate_study:
                                 report['ungated_base_checkpoint_pin'] = 'shared_pin/device_op_supervised_base_pin/checkpoint_pin.pt'
                             if mode in ALL_GATE_MODELS_PIN:
@@ -804,6 +849,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                         engine.export_summary(output, results, stages, artifact_suffix='_pin')
                         del model
                     shared.clear()
+                    prediction_caches.clear()
                 run['status'] = 'ready_to_export'
                 atomic_json(output / 'run_pin.json', run)
                 export_results_pin(output, finalizing=True)
