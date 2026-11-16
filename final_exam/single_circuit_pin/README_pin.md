@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+低秩/共享基底诊断：编辑 `inspect_spectrum_pin.sh` 的电路与结果目录配对、模型、seed 和校准样本数，运行 `bash final_exam/single_circuit_pin/inspect_spectrum_pin.sh`。读取已有 checkpoint，默认在 GPU 上分析 FFN 权重谱、ID train 激活误差和跨电路原坐标子空间；自动导出 Excel、CSV 和 PNG，不训练、不覆盖原结果。见 [谱分析使用说明与边界](../SPECTRAL_PROBE_pin.md)。
+
 宽读出实验：编辑 `train_width_decoder_pin.sh` 的 `CIRCUITS` / `MODELS` / `SEEDS`，运行 `bash final_exam/single_circuit_pin/train_width_decoder_pin.sh`。支持 `width_decoder_pin`（只扩展性能读出）和 `width_decoder_op_pin`（OP 与性能两端均扩展）；默认同时运行 `device_op_cascade_pin` 对照。配置、自动 Excel、日志和恢复命令见 [宽读出说明](../WIDTH_DECODER_pin.md)。
 
 **门控 V6/V7：在 V4/V5 输入末尾显式拼接 NMOS=`[1,0]` / PMOS=`[0,1]`。** 输入由 `2F+8` 扩为 `2F+10`（41 个 OP 字段时 92 维）；类型不参与 OP 标准化，相对 OP 仍由同一样本全部有效 MOS 一起统计。V6 跨 PE2 及后续层共享门控，V7 每层独立；结构层和 PE1 不加门控，仍使用 `strength*tanh(z)`。每版四种训练策略和已有无门控参考，入口为 `final_exam/single_circuit_pin/train_op_gate_pin_v6.sh` / `train_op_gate_pin_v7.sh`，配置为 `final_exam/configs/op_gate_pin_v6.json` / `op_gate_pin_v7.json`。详见 [V6/V7 输入、模型、预算和恢复说明](../OP_GATE_V6_V7_pin.md)。
