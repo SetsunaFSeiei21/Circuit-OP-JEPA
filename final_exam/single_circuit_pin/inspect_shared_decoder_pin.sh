@@ -21,7 +21,8 @@ BATCH_SIZE=16
 SCOPE="all"                       # all / attention / ffn; corresponding decoder projections only.
 COMPONENT="performance"           # performance / op_predictor / both; OP side needs wide OP decoder.
 VALIDATION_SCOPE="all"             # all / group / both; selected groups jointly or one group at a time.
-MAX_PLOTS=12                      # Per-checkpoint group plots; 0 requires no matplotlib.
+VECTOR_LIMIT=64                   # Leading right singular vectors per cosine heatmap axis (0..256).
+MAX_PLOTS=12                      # Projection groups to plot; each has spectra + similarity heatmaps. 0 disables plots.
 DEVICE="${DEVICE:-cuda}"
 
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-b_phzhwu}"
@@ -43,6 +44,9 @@ for argument in "$@"; do
             echo 'Edit CIRCUITS, SOURCE_RUNS, MODELS, SEEDS, RANKS and N_SAMPLES at the top.'
             echo 'Default submits one read-only Slurm GPU diagnostic job; --local uses the current allocation.'
             echo 'Shared down basis is fitted within each checkpoint across its PE decoders; circuits never share fits.'
+            echo 'Also reports pairwise right-subspace overlap, principal angles, cross-basis errors and vector cosines.'
+            echo 'VECTOR_LIMIT bounds vector heatmaps only; RANKS controls all subspace comparisons.'
+            echo 'Set N_SAMPLES=0 and N_VAL_SAMPLES=0 for weights-only analysis without loading canonical data.'
             echo 'No training; train activation capture and optional validation only; source checkpoints are untouched.'
             exit 0 ;;
         *) echo "Unknown option: $argument" >&2; exit 2 ;;
@@ -51,9 +55,10 @@ done
 (( ${#CIRCUITS[@]} && ${#CIRCUITS[@]} == ${#SOURCE_RUNS[@]} && ${#MODELS[@]} && ${#SEEDS[@]} && ${#RANKS[@]} )) || {
     echo 'CIRCUITS/SOURCE_RUNS must be nonempty and paired; MODELS/SEEDS/RANKS must be nonempty.' >&2; exit 2;
 }
-for count in "$N_SAMPLES" "$N_VAL_SAMPLES" "$MAX_PLOTS" "$SAMPLE_SEED" "$SLURM_GPUS" "${SEEDS[@]}"; do
+for count in "$N_SAMPLES" "$N_VAL_SAMPLES" "$MAX_PLOTS" "$VECTOR_LIMIT" "$SAMPLE_SEED" "$SLURM_GPUS" "${SEEDS[@]}"; do
     [[ "$count" =~ ^[0-9]+$ ]] || { echo 'Counts/seeds must be nonnegative integers.' >&2; exit 2; }
 done
+(( VECTOR_LIMIT <= 256 )) || { echo 'VECTOR_LIMIT must be in [0, 256].' >&2; exit 2; }
 for count in "$MAX_TOKENS" "$BATCH_SIZE" "$SLURM_CPUS" "${RANKS[@]}"; do
     [[ "$count" =~ ^[1-9][0-9]*$ ]] || { echo 'Ranks/token cap/batch size/CPUs must be positive.' >&2; exit 2; }
 done
@@ -77,7 +82,7 @@ for i in "${!CIRCUITS[@]}"; do
 done
 arguments+=(--models "${MODELS[@]}" --seeds "${SEEDS[@]}" --ranks "${RANKS[@]}"
     --num-samples "$N_SAMPLES" --num-val-samples "$N_VAL_SAMPLES" --max-tokens "$MAX_TOKENS" --sampling-seed "$SAMPLE_SEED"
-    --batch-size "$BATCH_SIZE" --scope "$SCOPE" --component "$COMPONENT" --max-plots "$MAX_PLOTS"
+    --batch-size "$BATCH_SIZE" --scope "$SCOPE" --component "$COMPONENT" --max-plots "$MAX_PLOTS" --vector-limit "$VECTOR_LIMIT"
     --validation-scope "$VALIDATION_SCOPE"
     --device "$DEVICE" --output "$result_dir" --log-dir "$log_dir")
 runner=("$PROJECT_ROOT/scripts/run/slurm_run.sh" "${JEPA_PYTHON:-python}" -u

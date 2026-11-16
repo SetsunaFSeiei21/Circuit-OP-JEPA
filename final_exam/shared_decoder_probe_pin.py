@@ -225,7 +225,7 @@ def add_validation_pin(tables, identity, report, baseline, features, original_fe
 def run_shared_decoder_probe_pin(*, sources, models, seeds, ranks=(8, 16, 32, 64),
         num_samples=128, num_val_samples=128, max_tokens=512, sampling_seed=17, batch_size=16,
         scope='all', component='performance', validation_scope='all', device='cuda',
-        output=None, log_dir=None, max_plots=12):
+        output=None, log_dir=None, max_plots=12, vector_limit=64):
     inspected = inspect_sources_pin(sources, models, seeds, num_samples, num_val_samples, component)
     if not ranks or len(set(ranks)) != len(ranks) or any(type(r) is not int or r < 1 for r in ranks):
         raise ValueError('Ranks must be distinct positive integers')
@@ -236,6 +236,8 @@ def run_shared_decoder_probe_pin(*, sources, models, seeds, ranks=(8, 16, 32, 64
         raise ValueError('sampling_seed must be in [0, 2**32)')
     if scope not in ('all', 'attention', 'ffn') or validation_scope not in ('all', 'group', 'both'):
         raise ValueError('Invalid matrix/validation scope')
+    if type(vector_limit) is not int or not 0 <= vector_limit <= 256:
+        raise ValueError('vector_limit must be an integer in [0, 256]')
     import torch
     from device_jepa.resident import require_device
     from device_jepa.training import state_digest
@@ -264,10 +266,15 @@ def run_shared_decoder_probe_pin(*, sources, models, seeds, ranks=(8, 16, 32, 64
         raise ValueError('Output and log directories must be separate')
     output.mkdir(parents=True)
     logs.mkdir(parents=True)
-    record = dict(version=1, status='running', sources=sources, models=models, seeds=seeds, ranks=ranks,
+    record = dict(version=2, status='running', sources=sources, models=models, seeds=seeds, ranks=ranks,
         num_samples=num_samples, num_val_samples=num_val_samples, max_tokens=max_tokens,
         sampling_seed=sampling_seed, batch_size=batch_size, component=component, scope=scope,
         validation_scope=validation_scope, device=str(device), max_plots=max_plots,
+        vector_limit=vector_limit, plot_limit_unit='projection_groups',
+        pairwise_basis='right_singular_subspaces_in_saved_coordinates',
+        pairwise_rank='min_requested_and_both_source_dtype_numerical_ranks',
+        random_overlap_reference='analytic_equal_rank_Haar_expectation_r_over_input_dim',
+        principal_angle_order='ascending_degrees',
         fit_scope='within_one_checkpoint_across_corresponding_PE_decoder_branches',
         basis_fit='raw_vertical_stack_SVD_shared_right_factor',
         cross_circuit_fit=False, normalization_refitted=False, retrained=False,
@@ -309,11 +316,13 @@ def run_shared_decoder_probe_pin(*, sources, models, seeds, ranks=(8, 16, 32, 64
                     del train_cache
                     analyses = {}
                     for index, group in enumerate(groups):
-                        print(f'  shared down basis {index + 1}/{len(groups)}: {group.name}', flush=True)
-                        analysis = analyze_group_pin(group, ranks, captures)
+                        print(f'  shared down basis and pairwise similarity {index + 1}/{len(groups)}: {group.name}', flush=True)
+                        analysis = analyze_group_pin(group, ranks, captures, vector_limit=vector_limit)
                         analyses[group.name] = analysis['approximations']
                         local['Groups'].append(dict(**identity, **analysis['summary']))
-                        for table, key in (('Budgets', 'budget_rows'), ('Errors', 'error_rows'), ('Spectra', 'spectrum_rows')):
+                        for table, key in (('Budgets', 'budget_rows'), ('Errors', 'error_rows'), ('Spectra', 'spectrum_rows'),
+                                           ('SubspaceOverlap', 'overlap_rows'), ('PrincipalAngles', 'angle_rows'),
+                                           ('CrossBasis', 'cross_basis_rows'), ('VectorCosines', 'vector_cosine_rows')):
                             local[table].extend(dict(**identity, group=group.name, component=group.side, **row)
                                                 for row in analysis[key])
                         if any(s.kind == 'functional_out' for s in group.matrices):
@@ -395,6 +404,8 @@ def main(argv=None):
     parser.add_argument('--validation-scope', choices=('all', 'group', 'both'), default='all')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--max-plots', type=int, default=12)
+    parser.add_argument('--vector-limit', type=int, default=64,
+                        help='Leading singular vectors per heatmap axis, 0..256; 0 disables vector tables/plots only')
     parser.add_argument('--output')
     parser.add_argument('--log-dir')
     parser.add_argument('--inspect-source', action='store_true')

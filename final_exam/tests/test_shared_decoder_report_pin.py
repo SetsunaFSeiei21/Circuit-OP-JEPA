@@ -115,3 +115,43 @@ def test_plot_limit_is_global_and_no_validation_data_is_invented(tmp_path):
     assert len(metadata['plots']) == 1
     assert metadata['tables']['Validation'] == 0
     assert metadata['tables']['DecoderFeatures'] == 0
+
+
+def test_similarity_exports_and_heatmaps_keep_pairs_ranks_and_circuits(tmp_path):
+    pytest.importorskip('matplotlib')
+    import torch
+    from final_exam.tests.test_shared_decoder_analysis_pin import matrix_group
+    from final_exam.shared_decoder_analysis_pin import analyze_group_pin
+    tables,record=fixture()
+    for group in tables['Groups']:
+        identity={k:group[k] for k in ('circuit','model','seed','group')}
+        if group['circuit']=='Opamp1':
+            weights=[torch.tensor([[2.,0.],[0.,1.]]),torch.tensor([[1.,0.],[0.,2.]])]
+        else:
+            weights=[torch.tensor([[2.,0.],[0.,1.]])]*2
+        analysis=analyze_group_pin(matrix_group(weights),[1,2],vector_limit=2)
+        for table,key in (('SubspaceOverlap','overlap_rows'),('PrincipalAngles','angle_rows'),
+                          ('CrossBasis','cross_basis_rows'),('VectorCosines','vector_cosine_rows')):
+            tables[table].extend(dict(**identity,**r) for r in analysis[key])
+    write_shared_decoder_report_pin(tmp_path,tables,record,max_plots=2)
+    metadata=json.loads((tmp_path/'report_metadata_pin.json').read_text())
+    assert len(metadata['plots'])==6  # Two groups; spectrum, subspace, vector pages each.
+    assert {r['kind'] for r in metadata['plots']}=={
+        'spectrum_and_errors','subspace_and_cross_basis','right_singular_vector_cosines'}
+    for row in metadata['plots']:
+        assert (tmp_path/row['path']).read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+    with (tmp_path/'SubspaceOverlap_pin.csv').open(encoding='utf-8-sig') as handle:
+        pairs=list(csv.DictReader(handle))
+    assert len(pairs)==4
+    assert [float(r['overlap']) for r in pairs if r['requested_rank']=='1']==[0.,1.]
+    assert all(r['chance_adjusted_overlap']=='' for r in pairs if r['requested_rank']=='2')
+    with (tmp_path/'VectorCosines_pin.csv').open(encoding='utf-8-sig') as handle:
+        rows=list(csv.DictReader(handle))
+    assert json.loads(rows[0]['absolute_cosines'])==[0.,1.]
+    sheets=workbook(tmp_path/'shared_decoder_summary_pin.xlsx')
+    assert 'no_nonzero_common_rank' not in text_values(sheets['SubspaceOverlap'])
+    assert '[0.0, 1.0]' in text_values(sheets['VectorCosines'])
+    # Disabling PNGs must not drop any similarity records or require matplotlib.
+    with patch('final_exam.shared_decoder_report_pin.require_plotting_pin',side_effect=AssertionError):
+        write_shared_decoder_report_pin(tmp_path/'no_plots',tables,record,max_plots=0)
+    assert (tmp_path/'no_plots/SubspaceOverlap_pin.csv').read_bytes()==(tmp_path/'SubspaceOverlap_pin.csv').read_bytes()

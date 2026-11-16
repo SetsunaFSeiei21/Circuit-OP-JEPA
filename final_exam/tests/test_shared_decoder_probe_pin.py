@@ -48,6 +48,7 @@ def test_multi_circuit_independent_fits_validation_features_and_sources_unchange
     record = json.loads((output/'probe_pin.json').read_text())
     assert record['status'] == 'complete' and len(record['checkpoints']) == 4 and seen
     assert record['cross_circuit_fit'] is False and record['checkpoint_modified'] is False
+    assert record['version']==2 and record['vector_limit']==64
     for circuit, selected in record['selected_sample_ids'].items():
         manifest = json.loads((root/circuit/'training_pin/manifest_pin.json').read_text())
         assert set(selected['train']) <= set(manifest['train'])
@@ -57,6 +58,11 @@ def test_multi_circuit_independent_fits_validation_features_and_sources_unchange
     assert len(groups) == 60  # two circuits x (10 performance + 20 performance/OP)
     assert all(int(g['branches']) == 2 for g in groups)
     assert len({(g['circuit'],g['model'],g['seed'],g['group']) for g in groups}) == len(groups)
+    pairs=read_table(output,'SubspaceOverlap')
+    assert len(pairs)==120  # one decoder pair x two ranks x 60 independent groups
+    assert all((r['branch_a'],r['branch_b'])==('1','2') for r in pairs)
+    assert len(read_table(output,'CrossBasis'))==240
+    assert read_table(output,'PrincipalAngles') and read_table(output,'VectorCosines')
     errors = read_table(output, 'Errors')
     qkv = [r for r in errors if 'in_proj_weight::' in r['matrix']]
     assert qkv and all(0 < int(r['activation_tokens']) <= 12 for r in qkv)
@@ -74,7 +80,8 @@ def test_multi_circuit_independent_fits_validation_features_and_sources_unchange
         assert (output/entry['output']/'shared_decoder_summary_pin.xlsx').is_file()
     import openpyxl
     wb = openpyxl.load_workbook(output/'shared_decoder_summary_pin.xlsx', read_only=True)
-    assert {'Budgets','Validation','DecoderFeatures','Errors','ReadMe'} <= set(wb.sheetnames)
+    assert {'Budgets','Validation','DecoderFeatures','Errors','ReadMe',
+            'SubspaceOverlap','PrincipalAngles','CrossBasis','VectorCosines'} <= set(wb.sheetnames)
     wb.close()
     assert all(sha256(path) == digest for path, digest in before.items())
     # A second circuit cannot change the first checkpoint's fitted basis/errors.
@@ -84,6 +91,8 @@ def test_multi_circuit_independent_fits_validation_features_and_sources_unchange
     first_budget = [r for r in read_table(output,'Budgets')
                     if r['circuit']=='synthetic_0' and r['model']=='width_decoder_pin']
     assert read_table(solo,'Budgets') == first_budget
+    first_pairs=[r for r in pairs if r['circuit']=='synthetic_0' and r['model']=='width_decoder_pin']
+    assert read_table(solo,'SubspaceOverlap')==first_pairs
 
 
 def test_weights_only_no_data_load_preflight_stdlib_and_group_validation(saved_runs, tmp_path):
@@ -101,6 +110,8 @@ def test_weights_only_no_data_load_preflight_stdlib_and_group_validation(saved_r
             output=tmp_path/'weight',log_dir=tmp_path/'weight_logs',max_plots=0)
         assert all(r['shared_output_error']=='' for r in read_table(output,'Errors'))
         assert not read_table(output,'Validation')
+        assert read_table(output,'SubspaceOverlap') and read_table(output,'CrossBasis')
+        assert all(r['cross_output_error']=='' for r in read_table(output,'CrossBasis'))
     finally:
         data.write_bytes(original)
     output = run(sources=sources[:1],models=['width_decoder_pin'],seeds=[17],ranks=[2],

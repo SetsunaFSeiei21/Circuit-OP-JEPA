@@ -210,3 +210,115 @@ def test_wide_op_decoder_capture_uses_owner_mask_and_separate_groups():
             else:
                 expected=5 if group.role in ('multihead_attn.k','multihead_attn.v') else 3
                 assert value.shape[1]==expected
+
+
+def matrix_group(weights):
+    specs = [DecoderMatrixPin(i+1, f'branch_{i+1}', w, nn.Linear(w.shape[1],w.shape[0]),
+                              'linear', 'performance') for i,w in enumerate(weights)]
+    return DecoderGroupPin('test', 'performance', 1, 'linear2', specs)
+
+
+def test_pairwise_low_rank_does_not_imply_shared_direction():
+    weights = [torch.tensor([[1.,0.,0.]]), torch.tensor([[0.,1.,0.]])]
+    result = analyze_group_pin(matrix_group(weights), [1,2])
+    for row in result['overlap_rows']:
+        assert row['actual_rank'] == 1  # Never fill in arbitrary null vectors.
+        assert row['overlap'] == pytest.approx(0.)
+        assert row['random_expected_overlap'] == pytest.approx(1/3)
+        assert row['chance_adjusted_overlap'] == pytest.approx(-.5)
+        assert row['mean_angle_deg'] == pytest.approx(90.)
+    assert len(result['angle_rows']) == 2
+    for row in result['cross_basis_rows']:
+        assert row['own_weight_error'] == pytest.approx(0.)
+        assert row['cross_weight_error'] == pytest.approx(1.)
+        assert row['excess_relative_weight_sse'] == pytest.approx(1.)
+        assert row['retained_vs_own'] == pytest.approx(0.)
+        assert row['cross_output_error'] is None
+
+
+def test_pairwise_sign_order_and_rotated_bases_do_not_change_subspace():
+    a = torch.tensor([[4.,0.,0.,0.],[0.,2.,0.,0.]],dtype=torch.float64)
+    b = torch.tensor([[0.,-5.,0.,0.],[1.,0.,0.,0.]],dtype=torch.float64)
+    # Also rotate the equal-singular-value basis within the same row space.
+    c = torch.tensor([[1.,1.,0.,0.],[-1.,1.,0.,0.]],dtype=torch.float64)
+    result = analyze_group_pin(matrix_group([a,b,c]), [1,2])
+    full = [r for r in result['overlap_rows'] if r['requested_rank']==2]
+    assert len(full) == 3
+    assert all(r['overlap']==pytest.approx(1.) for r in full)
+    assert all(r['max_angle_deg']<1e-5 for r in full)
+    assert all(r['chance_adjusted_overlap']==pytest.approx(1.) for r in full)
+    vectors = [r['absolute_cosines'] for r in result['vector_cosine_rows']
+               if (r['branch_a'],r['branch_b'])==(1,2)]
+    torch.testing.assert_close(torch.tensor(vectors),torch.tensor([[0.,1.],[1.,0.]]))
+    assert all(r['retained_vs_own']==pytest.approx(1.) for r in result['cross_basis_rows']
+               if r['requested_rank']==2)
+    assert any(r['cutoff_ambiguous_b'] for r in result['overlap_rows']
+               if r['requested_rank']==1 and r['branch_b']==3)
+
+
+def test_cross_basis_is_directional_and_uses_target_activations():
+    a, b = torch.diag(torch.tensor([4.,2.,0.])), torch.diag(torch.tensor([1.,3.,0.]))
+    group = matrix_group([a,b])
+    captures = {'branch_1':torch.tensor([[0.],[1.],[0.]]),
+                'branch_2':torch.tensor([[1.],[0.],[0.]])}
+    result = analyze_group_pin(group,[1],captures)
+    to_b, to_a = result['cross_basis_rows']
+    assert (to_b['donor_branch'],to_b['target_branch']) == (1,2)
+    assert (to_a['donor_branch'],to_a['target_branch']) == (2,1)
+    assert to_b['retained_vs_own'] == pytest.approx(1/9)
+    assert to_a['retained_vs_own'] == pytest.approx(1/4)
+    for row in (to_a,to_b):
+        assert row['cross_output_error'] == pytest.approx(0.)
+        assert row['own_output_error'] == pytest.approx(1.)
+        assert row['activation_tokens']==1
+        assert row['excess_relative_weight_sse']>0
+
+
+def test_zero_rank_full_space_and_numerical_nulls_are_explicit():
+    group = matrix_group([torch.eye(3),torch.eye(3),torch.zeros(3,3)])
+    result = analyze_group_pin(group,[1,3,20])
+    real = [r for r in result['overlap_rows'] if (r['branch_a'],r['branch_b'])==(1,2)]
+    assert real[0]['cutoff_ambiguous_a'] and real[0]['cutoff_ambiguous_b']
+    assert all(r['full_input_space'] and r['chance_adjusted_overlap'] is None for r in real[1:])
+    null = [r for r in result['overlap_rows'] if r['branch_b']==3]
+    assert all(r['actual_rank']==0 and r['overlap'] is None and r['mean_angle_deg'] is None for r in null)
+    assert all(r['status']=='no_nonzero_common_rank' for r in null)
+    assert not any(r['branch_b']==3 for r in result['angle_rows']+result['vector_cosine_rows'])
+    assert all(r['cross_weight_error'] is None for r in result['cross_basis_rows']
+               if 3 in (r['donor_branch'],r['target_branch']))
+    # Source-float32 noise below the documented numerical threshold is excluded.
+    result = analyze_group_pin(matrix_group([torch.diag(torch.tensor([1.,1e-8])),torch.eye(2)]),[2])
+    assert result['overlap_rows'][0]['actual_rank']==1
+
+
+def test_vector_cap_does_not_cap_subspaces_or_perturb_rng_and_weights():
+    torch.manual_seed(77)
+    weights=[torch.randn(6,8) for _ in range(3)]
+    saved=[w.clone() for w in weights]
+    group=matrix_group(weights)
+    rng=torch.get_rng_state().clone()
+    result=analyze_group_pin(group,[2,5],vector_limit=2)
+    assert torch.equal(rng,torch.get_rng_state())
+    assert all(r['vector_rank_a']==2 and len(r['absolute_cosines'])==2 for r in result['vector_cosine_rows'])
+    assert max(r['actual_rank'] for r in result['overlap_rows'])==5
+    disabled=analyze_group_pin(group,[2,5],vector_limit=0)
+    assert disabled['vector_cosine_rows']==[]
+    assert disabled['overlap_rows']==result['overlap_rows']
+    for before,after in zip(saved,weights):
+        torch.testing.assert_close(before,after,rtol=0,atol=0)
+    for bad in (-1,257,True):
+        with pytest.raises(ValueError,match='vector_limit'):
+            analyze_group_pin(group,[2],vector_limit=bad)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA unavailable')
+def test_pairwise_cuda_matches_cpu():
+    torch.manual_seed(21)
+    weights=[torch.randn(8,12) for _ in range(3)]
+    cpu=analyze_group_pin(matrix_group(weights),[2,4])
+    cuda=analyze_group_pin(matrix_group([w.cuda() for w in weights]),[2,4])
+    for a,b in zip(cpu['overlap_rows'],cuda['overlap_rows']):
+        for key in ('overlap','mean_angle_deg','chance_adjusted_overlap'):
+            assert a[key]==pytest.approx(b[key],abs=1e-6)
+    for a,b in zip(cpu['cross_basis_rows'],cuda['cross_basis_rows']):
+        assert a['cross_weight_error']==pytest.approx(b['cross_weight_error'],abs=1e-8)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
+from itertools import combinations
 import hashlib
 import math
 
@@ -110,7 +111,111 @@ def decoder_groups_pin(model, component='performance', scope='all'):
     return result
 
 
-def analyze_group_pin(group, ranks, activations=None):
+def pairwise_down_bases_pin(specs, weights, decompositions, ranks, activations, vector_limit):
+    """Compare input subspaces in saved coordinates, independently per pair.
+
+    Use an equal, non-null rank on both sides. Otherwise arbitrary SVD null
+    vectors can manufacture agreement. Vector heatmaps are auxiliary: signs
+    are removed, but rotations within repeated singular values remain possible.
+    All linear algebra stays on the weights' device; only report values leave it.
+    """
+    summaries = [spectrum_summary_pin(s, torch.finfo(spec.weight.dtype).eps, weight.shape)
+                 for spec, weight, (_, s, _) in zip(specs, weights, decompositions)]
+    overlap_rows, angle_rows, cross_rows, vector_rows = [], [], [], []
+    for ia, ib in combinations(range(len(specs)), 2):
+        sa, sb = summaries[ia], summaries[ib]
+        _, sing_a, va = decompositions[ia]
+        _, sing_b, vb = decompositions[ib]
+        dimension = weights[ia].shape[1]
+        identity = dict(branch_a=specs[ia].branch, branch_b=specs[ib].branch,
+                        matrix_a=specs[ia].path, matrix_b=specs[ib].path,
+                        input_dim=dimension, numerical_rank_a=sa['numerical_rank'],
+                        numerical_rank_b=sb['numerical_rank'])
+        # Save only a bounded heatmap once per pair, not r*r duplicated rows
+        # for every requested rank. Each CSV/Excel row is one cosine row.
+        na = min(max(ranks), vector_limit, sa['numerical_rank'])
+        nb = min(max(ranks), vector_limit, sb['numerical_rank'])
+        if na and nb:
+            absolute = (va[:na] @ vb[:nb].T).abs().clamp(0, 1).cpu().tolist()
+            for index, values in enumerate(absolute):
+                vector_rows.append(dict(**identity, vector_rank_a=na, vector_rank_b=nb,
+                    vector_index_a=index+1, absolute_cosines=values,
+                    interpretation='columns are branch_b right singular vectors 1..vector_rank_b; auxiliary only'))
+        for requested in ranks:
+            rank = min(requested, sa['numerical_rank'], sb['numerical_rank'])
+            common = dict(**identity, requested_rank=requested, actual_rank=rank,
+                          status='ok' if rank else 'no_nonzero_common_rank')
+            if rank:
+                cosines = svd_pin(va[:rank] @ vb[:rank].T)[1].clamp(0, 1)
+                angles = torch.rad2deg(torch.acos(cosines))
+                overlap = max(0., min(1., float(cosines.square().mean())))
+                random_expected = rank / dimension
+                # Full input spaces must overlap by 1. This is tautological,
+                # not evidence for meaningful low-dimensional sharing.
+                adjusted = ((overlap-random_expected)/(1-random_expected)
+                            if rank < dimension else None)
+                values = dict(overlap=overlap, random_expected_overlap=random_expected,
+                    chance_adjusted_overlap=adjusted, full_input_space=rank == dimension,
+                    min_angle_deg=float(angles.min()), mean_angle_deg=float(angles.mean()),
+                    max_angle_deg=float(angles.max()))
+                for index, (cosine, angle) in enumerate(zip(cosines.cpu().tolist(), angles.cpu().tolist())):
+                    angle_rows.append(dict(**common, angle_index=index+1, cosine=cosine,
+                                           angle_deg=angle))
+            else:
+                values = dict(overlap=None, random_expected_overlap=None,
+                    chance_adjusted_overlap=None, full_input_space=False,
+                    min_angle_deg=None, mean_angle_deg=None, max_angle_deg=None)
+            for suffix, idx, singular in (('a', ia, sing_a), ('b', ib, sing_b)):
+                gap = (float((singular[rank-1]-singular[rank])/singular[0])
+                       if rank and rank < len(singular) else None)
+                cutoff = torch.finfo(specs[idx].weight.dtype).eps * max(weights[idx].shape)
+                values['cutoff_relative_gap_'+suffix] = gap
+                values['cutoff_ambiguous_'+suffix] = gap is not None and gap <= cutoff
+                values['retained_energy_'+suffix] = (float(singular[:rank].square().sum()/singular.square().sum())
+                                                     if rank else None)
+            overlap_rows.append(dict(**common, **values))
+            # Direction matters. Reconstruct target W with the donor's right
+            # basis, and compare against target's OWN best rank-r basis.
+            for donor, target in ((ia, ib), (ib, ia)):
+                wd = weights[target]
+                donor_v = decompositions[donor][2][:rank]
+                own_v = decompositions[target][2][:rank]
+                row = dict(requested_rank=requested, actual_rank=rank,
+                    donor_branch=specs[donor].branch, target_branch=specs[target].branch,
+                    donor_matrix=specs[donor].path, target_matrix=specs[target].path,
+                    status=common['status'], activation_tokens=0,
+                    cross_weight_error=None, own_weight_error=None,
+                    cross_retained_energy=None, own_retained_energy=None,
+                    retained_vs_own=None, excess_relative_weight_sse=None,
+                    cross_output_error=None, own_output_error=None)
+                x = None if activations is None else activations.get(specs[target].path)
+                if x is not None:
+                    if x.ndim != 2 or x.shape[0] != dimension or not bool(torch.isfinite(x).all()):
+                        raise ValueError(f'Invalid calibration activations: {specs[target].path}')
+                    x = x.to(device=wd.device, dtype=wd.dtype)
+                    row['activation_tokens'] = x.shape[1]
+                if rank:
+                    cross = (wd @ donor_v.T) @ donor_v
+                    own = (wd @ own_v.T) @ own_v
+                    total = float(wd.square().sum())
+                    cross_energy = min(1., max(0., float(cross.square().sum())/total))
+                    own_energy = min(1., max(0., float(own.square().sum())/total))
+                    cross_error = relative_error_pin(wd-cross, wd)
+                    own_error = relative_error_pin(wd-own, wd)
+                    row.update(cross_weight_error=cross_error, own_weight_error=own_error,
+                        cross_retained_energy=cross_energy, own_retained_energy=own_energy,
+                        retained_vs_own=min(1., cross_energy/own_energy),
+                        excess_relative_weight_sse=max(0., cross_error**2-own_error**2),
+                        cross_output_error=None if x is None else relative_error_pin((wd-cross) @ x, wd @ x),
+                        own_output_error=None if x is None else relative_error_pin((wd-own) @ x, wd @ x))
+                row['activation_note'] = ('target branch train inputs; bias excluded' if x is not None
+                                          else 'unavailable; blank is not zero')
+                cross_rows.append(row)
+    return dict(overlap_rows=overlap_rows, angle_rows=angle_rows,
+                cross_basis_rows=cross_rows, vector_cosine_rows=vector_rows)
+
+
+def analyze_group_pin(group, ranks, activations=None, *, vector_limit=64):
     """Raw stacked SVD, independent-SVD comparator and per-branch input errors.
 
     Rank for the common A may exceed one matrix's output width: the union of
@@ -119,6 +224,8 @@ def analyze_group_pin(group, ranks, activations=None):
     """
     if not ranks or len(set(ranks)) != len(ranks) or any(type(r) is not int or r < 1 for r in ranks):
         raise ValueError('Ranks must be distinct positive integers')
+    if type(vector_limit) is not int or not 0 <= vector_limit <= 256:
+        raise ValueError('vector_limit must be an integer in [0, 256]')
     specs = group.matrices
     if len(specs) < 2 or len({tuple(s.weight.shape) for s in specs}) != 1:
         raise ValueError('At least two equally shaped branch weights are required')
@@ -173,8 +280,9 @@ def analyze_group_pin(group, ranks, activations=None):
                 independent_output_error=None if x is None else relative_error_pin((weight-iapprox) @ x, weight @ x),
                 activation_note='unavailable; blank is not zero' if x is None else 'train calibration inputs; bias excluded'))
         approximations[requested] = dict(shared=[w.cpu() for w in shared], independent=[w.cpu() for w in independent])
+    pairs = pairwise_down_bases_pin(specs, weights, independent_svd, ranks, activations, vector_limit)
     return dict(summary=summary, budget_rows=budget_rows, error_rows=error_rows,
-                spectrum_rows=spectrum_rows, approximations=approximations)
+                spectrum_rows=spectrum_rows, approximations=approximations, **pairs)
 
 
 class SharedDecoderCapturePin:

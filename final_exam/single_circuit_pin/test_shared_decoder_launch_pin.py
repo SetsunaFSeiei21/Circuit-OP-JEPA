@@ -65,6 +65,7 @@ def test_dry_run_no_files_and_default_protocol(launcher):
     assert 'shared_decoder_probe_pin.py' in result.stdout
     assert '--num-samples 128' in result.stdout and '--num-val-samples 128' in result.stdout
     assert '--validation-scope all' in result.stdout and '--component performance' in result.stdout
+    assert '--vector-limit 64' in result.stdout
     assert before == set(root.rglob('*'))
     assert run('--help').returncode == 0
 

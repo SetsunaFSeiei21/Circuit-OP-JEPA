@@ -46,12 +46,42 @@ Q/K/V/O 之间不合并拟合，self-attention 与 cross-attention 之间不合�
 2. 每个候选 rank 的完整权重、独立低秩、共享下基参数预算。
 3. 各 PE 分支的权重重建相对误差，以及已捕获位置的真实输入激活输出误差。
 4. 可选的验证集端到端输出与性能指标诊断，比较原模型、独立重建和共享重建。
+5. **同组 decoder 两两右奇异子空间相似度、主角度和双向交叉基重建**，以及有界的奇异向量绝对余弦热图。该部分复用每个原权重已经计算的 SVD，不增加训练或模型前向。
 
 权重误差是 `||W-W_hat||F / ||W||F`；投影输出误差是 `||(W-W_hat)X||F / ||WX||F`。它们不是 MAE、RMSE 或 R²。未捕获的激活位置留空并记录原因，不能当作 0 误差。
 
 激活取保存划分中的训练样本，不重新拟合归一化。端到端误差取保存划分中的验证样本，不读取 test 做候选 rank 选择。网络输入仍遵守原模型的部署边界；不会把真实 OP 或性能标签输入无需真实 OP 的模型。
 
 验证时只在内存中临时替换重建出的完整权重，完成后恢复原权重；它用于测量函数误差，**不是低秩因子实际部署的速度测试**。不会保存可部署的压缩 checkpoint，也不保证实际低秩实现会同比加速。
+
+### 2.1 decoder 之间究竟有多相似
+
+新增诊断继续使用本文件的同一入口 `inspect_shared_decoder_pin.sh`，默认自动执行，不需要另一个 shell 脚本。每个电路、模型、seed、投影位置独立处理，性能端和 OP 端也分别处理。
+
+对 `W_i = U_i Σ_i V_iᵀ`，共享下基对应**右奇异向量**。比较前 `r` 个右奇异向量张成的子空间，而不是要求第 k 根向量必须与另一个 decoder 的第 k 根一模一样。符号翻转、重复奇异值内的旋转会影响逐向量比较，但不改变完整子空间。
+
+| 表格 | 计算与解释 |
+|---|---|
+| `SubspaceOverlap` | 每对 decoder、每个候选 rank 一行。`overlap=||V_i,rᵀ V_j,r||F²/r`；1 表示所选子空间相同，0 表示正交。还报告两侧能量覆盖、随机期望和主角度均值/最小值/最大值。 |
+| `PrincipalAngles` | `svdvals(V_i,rᵀ V_j,r)=cos(theta)`，按角度升序保存每个主角度，单位为度；越小越接近。 |
+| `CrossBasis` | 每对 decoder 有两个方向。`donor_branch` 提供下基 A，`target_branch` 的 W 被重建为 `(W Aᵀ)A`。同时计算目标自身同实际秩最优 SVD 的误差。 |
+| `VectorCosines` | 每对 decoder 的前若干根右奇异向量绝对余弦矩阵。每行对应 `vector_index_a`，`absolute_cosines` 数组按分支 b 的向量序号 1..vector_rank_b 保存。该图辅助定位具体方向，不能代替子空间相似度。 |
+
+两两比较采用相同的实际秩 `r=min(requested_rank, numerical_rank_i, numerical_rank_j)`。数值秩阈值为来源权重 dtype 的 `eps * max(W.shape) * sigma_max`；计算本身仍为 float64。这样不会将任意零空间基当成学习到的方向。实际秩为零时相似度、角度、交叉误差留空；不会制造满分或零误差。此处的实际秩与原有 `Budgets` 中用于候选压缩的截断秩是分别记录的。
+
+**随机重叠参照不是零。** 在输入维度 d 中，两个独立均匀随机的 r 维子空间期望 overlap 为 `r/d`。例如 `d=128,r=64` 的随机期望就是 0.5。`chance_adjusted_overlap=(overlap-r/d)/(1-r/d)`，保留负数；这只是解析随机参照，不是 p 值或显著性检验。`r=d` 时 overlap 必为 1，记录 `full_input_space=true`，调整值留空，不能作为低维共享证据。
+
+`cutoff_relative_gap_a/b` 为截断点相邻奇异值差除以该矩阵最大奇异值；差值落在数值秩相同容差内时 `cutoff_ambiguous_a/b=true`。若截断点落在重复或非常接近的奇异值簇中，前 r 维子空间选择本身也可能不稳定，应连同能量覆盖一起解释。
+
+交叉重建中：
+
+- `cross_weight_error` / `own_weight_error`：交叉基 / 自身最优同秩基的相对 Frobenius 误差。
+- `cross_retained_energy` / `own_retained_energy`：各自保留的权重平方能量比例。
+- `retained_vs_own`：交叉保留能量除以自身最优保留能量，越接近 1，替换下基的额外损失越小。
+- `excess_relative_weight_sse`：交叉减自身的相对平方误差；只将浮点舍入造成的微小负值截为零。
+- `cross_output_error` / `own_output_error`：用**目标分支自己的原始训练输入激活**比较，排除 bias；未捕获时留空。不是跨电路、跨样本交换输入，也不是单独替换该基后的端到端 val 指标。
+
+图片包含每个 rank 的 decoder 子空间重叠热图、交叉保留能量比热图，以及前若干右奇异向量余弦热图。交叉热图**行是目标权重，列是提供下基的 decoder**，通常不对称；灰色表示未定义。向量图行是 branch_a 的向量序号，列是 branch_b 的向量序号。
 
 ## 3. 参数预算口径
 
@@ -94,6 +124,7 @@ BATCH_SIZE=16
 SCOPE="all"
 COMPONENT="performance"
 VALIDATION_SCOPE="all"
+VECTOR_LIMIT=64
 MAX_PLOTS=12
 ```
 
@@ -110,9 +141,12 @@ MAX_PLOTS=12
 | `SCOPE` | `all` / `attention` / `ffn`，限定 decoder 投影范围 |
 | `COMPONENT` | `performance` / `op_predictor` / `both` |
 | `VALIDATION_SCOPE` | `all` 同时替换所有选定分组；`group` 每次只替换一个分组；`both` 两类都做 |
-| `MAX_PLOTS` | 每个报告最多绘制的分组数；0 不依赖 matplotlib |
+| `VECTOR_LIMIT` | 奇异向量热图每轴最多根数，0..256，默认 64；0 不输出向量表/图，不影响 `RANKS` 对应的子空间、角度、交叉重建分析 |
+| `MAX_PLOTS` | 每个报告最多绘制的分组数；每组可有多张图，每页最多 4 个 rank 或 3 个分支对；0 不依赖 matplotlib，也不影响数值表 |
 
 `N_SAMPLES=0` 且 `N_VAL_SAMPLES=0` 时只读模型权重，不读取完整数据。只要启用样本诊断，现有 canonical JSON 仍需要读取和校验；原始文件解析在 CPU，模型前向与 SVD 使用所选 GPU，`DEVICE=cuda` 时不静默退回 CPU。
+
+如果这次只想补看 decoder 相似度，可将这两个样本数都改为 0。仍会输出子空间、主角度、交叉权重重建和向量图；不会再执行原来的验证集压缩实验。所有默认输出目录、HPC 日志和实验日志规则不变，每次创建新 run，不覆盖旧结果。
 
 在仓库根目录运行：
 
@@ -147,6 +181,8 @@ bash final_exam/single_circuit_pin/inspect_shared_decoder_pin.sh --local
 | 提交设置快照 | `hpc_logs_pin/<相同run_id>/submitted_inspect_shared_decoder_pin.sh` |
 
 Excel 分别记录来源 checkpoint 的路径、哈希、配置、归一化来源，分组谱指标、参数预算、各分支误差、可选验证结果和局限说明。多个电路的表格只是放在同一个文件中，仍带有 circuit/model/seed 标识；不会跨电路平均误差后冒充某个模型的结果。
+
+新增四张 Excel sheet 与同名 CSV：`SubspaceOverlap`、`PrincipalAngles`、`CrossBasis`、`VectorCosines`。`probe_pin.json` 升级到 version=2，并记录向量截取上限、两两实际秩口径、随机参照及主角度排序；`plots_pin/manifest_pin.json` 的每张图含 circuit/model/seed/group 与 kind，HTML 直接展示所有已生成图片。
 
 ## 6. 怎样解释结论
 
