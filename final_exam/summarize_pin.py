@@ -6,6 +6,7 @@ planned model/seed/split matrix and effective configurations before writing.
 """
 import argparse
 from collections import defaultdict
+import hashlib
 import json
 import math
 import os
@@ -888,8 +889,32 @@ def _resume_sheet(stages):
     return sheet
 
 
+def _selected_gate_study_sheet(directory, results, config, decimals):
+    """Keep each selected gate model paired with exactly its own base seeds."""
+    combined = None
+    for mode in sorted({r['mode'] for r in results} & ALL_STAGED_GATE_INPUTS_PIN.keys()):
+        members = [r for r in results if r['mode'] == mode]
+        references = {}
+        _gate_comparison_sheet(directory, members, allow_incomplete=False, base_records=references)
+        paired = _gate_study_sheet(directory, members, references, config, decimals)
+        if combined is None:
+            combined = Sheet('GateStudy', [50, *paired.widths], freeze_rows=5, freeze_columns=4)
+            combined.note('Gate study — bases matched to each selected gate model', 1, 38)
+            combined.note('Each gate model and its base use exactly the same selected seeds. '
+                          'A base can appear in multiple paired comparisons.', height=40)
+            combined.note('Repeated base rows describe the same saved checkpoint; '
+                          'they are not extra runs or extra training cost.', height=40)
+            combined.note('Values retain physical units (UGF in Hz). '
+                          'Different gate models can select different seed sets.', height=38)
+            combined.add([Cell('Paired gate model', 3), *paired.rows[4]], 44)
+        for row in paired.rows[5:]:
+            combined.add([mode, *row], 36)
+    combined.filter_range = f'A5:{_column(len(combined.widths))}{len(combined.rows)}'
+    return combined
+
+
 def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete=False,
-                       finalizing=False, recover_export=False, decimals=4):
+                       finalizing=False, recover_export=False, decimals=4, seed_selection=None):
     """Validate and export a completed run; finalizing accepts ready_to_export.
 
     An explicit provisional export is possible with allow_incomplete=True. Its
@@ -898,16 +923,31 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     recover_export accepts only failed_export runs and retains every completeness
     check. It writes only the workbook, preserving original run status, reports,
     configs, costs and checkpoints. No dataset or training runtime is loaded.
+
+    seed_selection creates a separate, explicitly test-selected view. Source
+    completeness and every original report/config/cost are validated first.
     """
     if recover_export and (allow_incomplete or finalizing):
         raise ValueError('--recover-export cannot be combined with provisional export or finalizing')
     if type(decimals) is not int or not 1 <= decimals <= 10:
         raise ValueError('decimals must be an integer between 1 and 10')
+    if seed_selection is not None:
+        if (not isinstance(seed_selection, dict)
+                or set(seed_selection) != {'k', 'models_better', 'models_worse'}):
+            raise ValueError('seed_selection requires k, models_better and models_worse')
+        if type(seed_selection['k']) is not int or seed_selection['k'] < 1:
+            raise ValueError('k must be a positive integer')
+        if allow_incomplete or finalizing or overwrite:
+            raise ValueError('Seed selection requires a completed source and a new output file')
     source = _resolve_source(source)
     directory = source.parent
-    output = Path(output).expanduser().resolve() if output is not None else directory / 'summary_pin.xlsx'
+    default_name = ('summary_pin.xlsx' if seed_selection is None else
+                    f'summary_seed_selection_k{seed_selection["k"]}_pin.xlsx')
+    output = Path(output).expanduser().resolve() if output is not None else directory / default_name
     if output.suffix.lower() != '.xlsx' or not output.stem.endswith('_pin'):
         raise ValueError('Pin workbook output must end in _pin.xlsx')
+    if seed_selection is not None and output == directory / 'summary_pin.xlsx':
+        raise ValueError('Selected-seed output must not replace the original summary_pin.xlsx')
     if output.exists() and not overwrite:
         raise ValueError(f'Excel output already exists; choose a new filename: {output}')
     results, config, run = (_read_json(path) for path in
@@ -934,9 +974,25 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         complete = complete and not missing_gate_comparisons
         if missing_gate_comparisons:
             configuration.note('MISSING GATE COMPARISONS: ' + json.dumps(missing_gate_comparisons), 4, 42)
+    original_results, original_rows = results, rows
+    selection_audit = None
+    if seed_selection is not None:
+        if gate_comparison is not None and any(mode in VERSIONED_GATE_MODELS_PIN for mode in models):
+            # Validate original base aliases too, even when their seeds will
+            # be discarded from the derived view.
+            _gate_study_sheet(directory, results, base_records, config, decimals)
+        from final_exam.seed_selection_pin import select_seeds_pin
+        results, selection_audit = select_seeds_pin(
+            results, circuit_of=lambda record: _circuit_identity(record, config), **seed_selection)
+        rows = summary_rows_pin(results, config)
+        if gate_comparison is not None:
+            base_records = {}
+            gate_comparison, _ = _gate_comparison_sheet(
+                directory, results, allow_incomplete=False, base_records=base_records)
     statistics, fields = _statistics_sheet(rows)
     sheets = _comparison_sheets(rows, models, fields, complete, decimals, recover_export=recover_export)
-    sheets.extend((_per_seed_sheet(results, config), statistics, _cost_sheet(stages, results), configuration))
+    sheets.extend((_per_seed_sheet(results, config), statistics,
+                   _cost_sheet(stages, original_results), configuration))
     if run.get('resume'):
         sheets.append(_resume_sheet(stages))
     if any(mode in WIDTH_MODELS_PIN for mode in models):
@@ -946,7 +1002,32 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if gate_comparison is not None:
         sheets.append(gate_comparison)
         if any(mode in VERSIONED_GATE_MODELS_PIN for mode in models):
-            sheets.append(_gate_study_sheet(directory, results, base_records, config, decimals))
+            sheets.append(_selected_gate_study_sheet(directory, results, config, decimals)
+                          if selection_audit is not None else
+                          _gate_study_sheet(directory, results, base_records, config, decimals))
+    if selection_audit is not None:
+        from final_exam.seed_selection_pin import label_selected_sheets_pin, selection_sheet_pin
+        label_selected_sheets_pin([s for s in sheets if s.name not in ('TrainingCost', 'Configuration', 'Resume')])
+        source_cost = next(s for s in sheets if s.name == 'TrainingCost')
+        source_cost.rows[0][0].value = 'FULL SOURCE EXPERIMENT COST — every trained stage counted once'
+        source_cost.note('Includes discarded seeds: selecting reported seeds does not refund training. '
+                         'SelectedTrainingCost is only the retained-result dependency subset.', height=40)
+        configuration.note('Full original run/configuration metadata is retained. SeedSelection identifies '
+                           'the model-specific subset used for this derived workbook.', height=40)
+        all_statistics, _ = _statistics_sheet(original_rows)
+        all_statistics.name = 'AllSeedStatistics'
+        all_statistics.rows[0][0].value = 'ALL SOURCE SEEDS — original unfiltered mean and sample std'
+        all_per_seed = _per_seed_sheet(original_results, config)
+        all_per_seed.name = 'AllSeedPerSeed'
+        all_per_seed.rows[0][0].value = 'ALL SOURCE SEEDS — original unfiltered physical-unit metrics'
+        dependency_ids = {stage_id for r in results for stage_id in r['stage_ids']}
+        selected_cost = _cost_sheet([s for s in stages if s['stage_id'] in dependency_ids], results)
+        selected_cost.name = 'SelectedTrainingCost'
+        selected_cost.rows[0][0].value = 'SELECTED DEPENDENCIES ONLY — not the full experiment cost'
+        selected_cost.note('TrainingCost retains the complete source cost, including discarded seeds.', height=36)
+        sheets.extend((selection_sheet_pin(selection_audit, source=source,
+                                          source_sha256=hashlib.sha256(source.read_bytes()).hexdigest()),
+                       all_statistics, all_per_seed, selected_cost))
     # The reusable writer validates all XML and writes atomically. Publishing
     # with link prevents concurrent exporters from overwriting an existing file.
     output.parent.mkdir(parents=True, exist_ok=True)

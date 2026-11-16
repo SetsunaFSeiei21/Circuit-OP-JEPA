@@ -101,6 +101,8 @@ MODELS=(
 
 ## 重新整理 Excel
 
+按模型挑选最好/最差 seed：编辑 `summarize_selected_seeds_pin.sh` 顶部的 `SOURCE_RUN`、`K`、`MODELS_BETTER`、`MODELS_WORSE`，运行 `bash final_exam/single_circuit_pin/summarize_selected_seeds_pin.sh`。按测试集平均 R² 选择完整 seed 后，复用现有 MAE/RMSE/R²、配置、成本和门控对照汇总；未列出模型保留全部 seed。新表显式标注测试集选 seed，附完整候选排名和未筛选统计，原结果不覆盖。详见 [选择 seed 的规则、路径与使用说明](../SEED_SELECTION_pin.md)。
+
 ```bash
 bash final_exam/single_circuit_pin/summarize_pin.sh \
   final_exam/single_circuit_pin/results_pin/<run_id_pin> \
