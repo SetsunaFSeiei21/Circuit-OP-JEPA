@@ -177,3 +177,19 @@ bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh
 在新脚本顶部编辑 `CIRCUITS`、`MODELS`、`SEEDS`；默认配置为 `final_exam/configs/staged_op_gate_fusion_pin.json`，训练预算与旧分阶段门控模板一致。新 run ID 含 `_staged_op_gate_fusion_`，结果和两类日志仍在本任务现有目录内。可在同一个 `MODELS` 数组中列出两组共六个模型，以便共享相同配置下的 OP 预测器、教师和无门控基模型；单独提交的作业分别训练依赖。
 
 六个分阶段门控模型都支持原恢复入口。范围、训练顺序和具体路径见 [仅融合层门控说明](../FUSION_STAGED_OP_GATE_pin.md)；恢复规则见 [断点续训说明](../RESUME_STAGED_OP_GATE_pin.md)。
+
+## LASD 宽 Decoder 分数读出
+
+新增 `width_decoder_score_pin`（逐 Head R/T）和 `width_decoder_lasd_pin`（再加逐 Head ΔR/ΔT）。
+每个 PE 的独立节点 MLP 改变 Decoder memory；Encoder 消息路径、独立性能 Query 和最终 MoE 保留。
+原 `width_decoder_pin` 作对照。配置：`final_exam/configs/lasd_pin.json`。
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_pin.sh --dry-run
+bash final_exam/single_circuit_pin/train_lasd_pin.sh
+```
+
+在脚本顶部编辑 CIRCUITS / MODELS / SEEDS，每个电路一个 GPU 作业。原结果与日志目录结构不变。
+`summary_pin.xlsx` 新增 LASD 页；各新模型目录导出 `lasd_scores_pin.csv` 和 `lasd_diagnostics_pin.json`。
+断点续训复用 `resume_width_decoder_pin.sh OLD_RUN`。完整数学定义、mask/dropout 适配、已知解释边界见
+[LASD_pin.md](../LASD_pin.md)。

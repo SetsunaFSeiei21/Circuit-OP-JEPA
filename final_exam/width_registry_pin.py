@@ -2,9 +2,10 @@
 import math
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, validate_low_rank_contract_pin
 from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, validate_shared_decoder_contract_pin
+from final_exam.lasd_registry_pin import LASD_MODELS_PIN, validate_lasd_contract_pin
 
 WIDTH_MODELS_PIN = ('width_decoder_pin', 'width_decoder_op_pin')
-ALL_WIDTH_MODELS_PIN = WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN + SHARED_DECODER_MODELS_PIN
+ALL_WIDTH_MODELS_PIN = WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN + SHARED_DECODER_MODELS_PIN + LASD_MODELS_PIN
 WIDTH_PREDICTOR_PIN = 'width_device_op_predictor_pin'
 
 
@@ -64,6 +65,8 @@ def validate_width_contract_pin(mode, contract):
         validate_shared_decoder_contract_pin(mode if index == 0 else 'width_decoder_pin',
             branch.get('shared_down_basis'), branch['feature_dim'], branch['branch_count'],
             branch['decoder_layers'])
+        validate_lasd_contract_pin(mode if index == 0 else 'width_decoder_pin',
+                                  branch.get('lasd'), branch['feature_dim'], branch['branch_count'])
         mixture = branch.get('mixture')
         if not isinstance(mixture, dict):
             raise ValueError('Wide readout mixture metadata is missing')

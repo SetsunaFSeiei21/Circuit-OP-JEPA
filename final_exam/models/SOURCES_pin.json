@@ -884,6 +884,32 @@
       "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
       "training": "Train performance encoder, shared and independent decoder factors, branch queries/norms and MoE from scratch with performance supervision; no SVD initialization or gates",
       "scope": "Single-circuit pin downstream; no cross-circuit/model/seed sharing. Shared weights do not imply shared activations or guaranteed runtime speedup."
+    },
+    "width_decoder_score_pin": {
+      "model_id": "width_decoder_score_pin",
+      "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",
+      "source_files_pin": [
+        "attention_score_pin.py",
+        "width_decoder_pin.py",
+        "../lasd_registry_pin.py"
+      ],
+      "attention": "Native PE self-attention Q/K and masks; statistics after softmax before dropout; original message path retained",
+      "performance_readout": "Per-PE independent MLP of node memory and per-head R/T; independent metric queries; concatenate decoder features into original MoE",
+      "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
+      "scope": "Single-circuit pin performance experiment. No gates, graph pooling, head averaging, query recurrence or physical information-flow claim."
+    },
+    "width_decoder_lasd_pin": {
+      "model_id": "width_decoder_lasd_pin",
+      "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",
+      "source_files_pin": [
+        "attention_score_pin.py",
+        "width_decoder_pin.py",
+        "../lasd_registry_pin.py"
+      ],
+      "attention": "Native PE self-attention Q/K and masks; statistics after softmax before dropout; original message path retained",
+      "performance_readout": "Per-PE independent MLP of node memory and per-head R/T and same-head-index delta; independent metric queries; concatenate decoder features into original MoE",
+      "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
+      "scope": "Single-circuit pin performance experiment. No gates, graph pooling, head averaging, query recurrence or physical information-flow claim."
     }
   }
 }

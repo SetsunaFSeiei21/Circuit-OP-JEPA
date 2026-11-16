@@ -150,3 +150,19 @@ GTN 在物理器件/网络二部图中发现拓扑环，再投影到环上的实
 为复用已验证的训练代码，公共 engine 只新增默认不启用的文件后缀、尺度拟合输入过滤接口；公共蒸馏类新增可覆盖的输入过滤钩子。器件级默认过滤和输出命名不变。端口级 factory 和 OP oracle 均严格要求 pin 映射，器件级 checkpoint 与 pin checkpoint 不能相互直接加载。
 
 CUDA 不可用时拒绝静默退回 CPU；JSON/SQLite、静态图准备和文件 IO 仍在 CPU。XGBoost 使用请求的原生 backend，并保留 host DMatrix 传输。GPU 性能、真实完整数据内存和预测精度仍需要实际集群实验，见 [验证记录](VERIFICATION_pin.md)。
+
+## LASD 宽 Decoder 分数读出
+
+新增 `width_decoder_score_pin`（逐 Head R/T）和 `width_decoder_lasd_pin`（再加逐 Head ΔR/ΔT）。
+每个 PE 的独立节点 MLP 改变 Decoder memory；Encoder 消息路径、独立性能 Query 和最终 MoE 保留。
+原 `width_decoder_pin` 作对照。配置：`final_exam/configs/lasd_pin.json`。
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_pin.sh --dry-run
+bash final_exam/single_circuit_pin/train_lasd_pin.sh
+```
+
+在脚本顶部编辑 CIRCUITS / MODELS / SEEDS，每个电路一个 GPU 作业。原结果与日志目录结构不变。
+`summary_pin.xlsx` 新增 LASD 页；各新模型目录导出 `lasd_scores_pin.csv` 和 `lasd_diagnostics_pin.json`。
+断点续训复用 `resume_width_decoder_pin.sh OLD_RUN`。完整数学定义、mask/dropout 适配、已知解释边界见
+[LASD_pin.md](LASD_pin.md)。

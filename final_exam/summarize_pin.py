@@ -22,6 +22,7 @@ from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, s
 from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, validate_width_contract_pin
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_spec_pin
 from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, shared_decoder_spec_pin
+from final_exam.lasd_registry_pin import LASD_MODELS_PIN, lasd_spec_pin
 from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
@@ -440,6 +441,13 @@ def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
                     actual = record['report']['width_decoder_pin']['performance']['shared_down_basis']
                     if actual != expected:
                         raise ValueError(f'Shared decoder report disagrees with saved configuration: {path}')
+        if mode in LASD_MODELS_PIN:
+            expected = lasd_spec_pin(mode, value.get('lasd_pin'), value.get('model'))
+            for record in results:
+                if record['mode'] == mode and record['seed'] == seed:
+                    actual = record['report']['width_decoder_pin']['performance']['lasd']
+                    if actual != expected:
+                        raise ValueError(f'LASD report disagrees with saved configuration: {path}')
         documents.append((mode, seed, path, value))
     if missing and not allow_incomplete:
         raise ValueError(f'Missing per-model effective configurations: {missing}')
@@ -500,6 +508,39 @@ def _decoder_benchmark_pin(record, stage):
         if benchmark['model_parameters'] != stage.get('parameters'):
             raise ValueError('Low-rank benchmark parameters disagree with saved training stage')
     return benchmark
+
+
+def _lasd_sheet(results, stages):
+    fields = ('Model', 'Seed', 'Score branch enabled', 'Dynamics', 'Heads', 'PE layers',
+              'Score dimensions per token', 'Adapter input width', 'Adapter hidden width',
+              'Added adapter parameters', 'Total model parameters', 'Trainable parameters',
+              'Readout epochs', 'Readout seconds', 'Full-cascade latency ms', 'Samples/s',
+              'CUDA incremental peak MiB', 'Mask order', 'Score contract JSON')
+    sheet = Sheet('LASD', [42, 12, 24, 18, 12, 14, 26, 24, 24, 28, 28, 26, 20, 24, 28, 24, 28, 36, 90],
+                  freeze_rows=4, freeze_columns=2)
+    sheet.note('Layer-wise attention score decoder memory ablation', 1, 34)
+    sheet.note('Per-head R/T and optional same-head-index differences; independent node MLP per PE. '
+               'No graph pooling, head averaging, score feedback into encoder, or query chaining.', height=42)
+    sheet.note('Pre-dropout scores retain GRAPH/ports; self and padding excluded. First delta is boundary zero. '
+               'Additional MLP capacity and score computation are included in counts/time; latency is a resident-batch diagnostic.', height=52)
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    stage_by_id = {s['stage_id']: s for s in stages}
+    for record in results:
+        mode = record['mode']
+        if mode not in ('width_decoder_pin', *LASD_MODELS_PIN):
+            continue
+        spec = record['report']['width_decoder_pin']['performance'].get('lasd', {})
+        stage = next((stage_by_id[i] for i in record['stage_ids'] if i.endswith('/'+mode)), {})
+        bench = _decoder_benchmark_pin(record, stage)
+        peak = bench.get('incremental_peak_allocated_bytes')
+        sheet.add([mode, record['seed'], spec.get('enabled', False), spec.get('dynamics', False),
+                   spec.get('heads'), spec.get('pe_layers'), spec.get('score_dim', 0),
+                   spec.get('adapter_input_dim'), spec.get('adapter_hidden_dim'), spec.get('adapter_parameters', 0),
+                   stage.get('parameters'), bench.get('trainable_parameters'), stage.get('epochs'), stage.get('seconds'),
+                   bench.get('mean_latency_ms'), bench.get('samples_per_second'), None if peak is None else peak/1024**2,
+                   ', '.join(spec.get('layer_masks', [])), json.dumps(spec, sort_keys=True)], 38)
+    sheet.filter_range = f'A4:S{len(sheet.rows)}'
+    return sheet
 
 
 def _low_rank_decoder_sheet(results, stages):
@@ -1142,6 +1183,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         sheets.append(_low_rank_decoder_sheet(results, stages))
     if any(mode in SHARED_DECODER_MODELS_PIN for mode in models):
         sheets.append(_shared_decoder_sheet(results, stages))
+    if any(mode in LASD_MODELS_PIN for mode in models):
+        sheets.append(_lasd_sheet(results, stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:

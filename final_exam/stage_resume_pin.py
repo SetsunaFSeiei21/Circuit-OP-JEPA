@@ -53,6 +53,9 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin
     if set(record.get('models', [])) & set(SHARED_DECODER_MODELS_PIN):
         config['shared_decoder_pin'] = shared_decoder_settings_pin(config.get('shared_decoder_pin'))
+    from final_exam.lasd_registry_pin import LASD_MODELS_PIN, lasd_settings_pin
+    if set(record.get('models', [])) & set(LASD_MODELS_PIN):
+        config['lasd_pin'] = lasd_settings_pin(config.get('lasd_pin'))
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):

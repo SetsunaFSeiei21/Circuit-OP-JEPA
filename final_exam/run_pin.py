@@ -26,6 +26,7 @@ from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_setti
 from final_exam.shared_decoder_registry_pin import (
     SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin, shared_decoder_spec_pin,
 )
+from final_exam.lasd_registry_pin import LASD_MODELS_PIN, lasd_settings_pin
 # Resolve the lightweight reporting dependencies before importing raw data or
 # training. A late import can mix a newly pulled reporter with an old registry
 # already cached by a long-running process. Keep this callable for the whole run.
@@ -98,6 +99,8 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
     options = settings(config)
     if set(selected) & set(WIDTH_MODELS_PIN) or 'width_decoder_pin' in config:
         config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
+    if set(selected) & set(LASD_MODELS_PIN) or 'lasd_pin' in config:
+        config['lasd_pin'] = lasd_settings_pin(config.get('lasd_pin'))
     if set(selected) & set(LOW_RANK_MODELS_PIN) or 'low_rank_decoder_pin' in config:
         config['low_rank_decoder_pin'] = low_rank_settings_pin(config.get('low_rank_decoder_pin'))
         effective_model = {**config['model'], **overrides.get('zerosim_supervised_pin', {})}
@@ -639,7 +642,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             model = WidthDecoderModelPin(mode, cfg['model'], ctx.prep, op_model,
                                                          cfg['width_decoder_pin'],
                                                          cfg.get('low_rank_decoder_pin'),
-                                                         cfg.get('shared_decoder_pin')).to(device)
+                                                         cfg.get('shared_decoder_pin'),
+                                                         cfg.get('lasd_pin')).to(device)
                             initial_encoder = state_digest(model.encoder)
                             model, dep = stage(model, mode, 'readout', cfg)
                             deps.append(dep)
@@ -836,11 +840,14 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             report.update(circuit=circuit, granularity='pin')
                             if mode in WIDTH_MODELS_PIN:
                                 report['width_decoder_pin'] = model.architecture_contract
-                                if 'low_rank_decoder_pin' in config or 'shared_decoder_pin' in config:
+                                if any(key in config for key in ('low_rank_decoder_pin', 'shared_decoder_pin', 'lasd_pin')):
                                     from final_exam.benchmark_decoder_pin import benchmark_low_rank_pin
                                     benchmark = benchmark_low_rank_pin(ctx, model, options)
                                     report['low_rank_benchmark_pin'] = benchmark
                                     atomic_json(directory / 'benchmark_pin.json', benchmark)
+                                if mode in LASD_MODELS_PIN:
+                                    from final_exam.lasd_diagnostics_pin import export_lasd_scores_pin
+                                    report['lasd_diagnostics_pin'] = export_lasd_scores_pin(ctx, model, options, directory)
                             if mode == 'device_op_cascade_pin' and versioned_gate_study:
                                 report['ungated_base_checkpoint_pin'] = 'shared_pin/device_op_supervised_base_pin/checkpoint_pin.pt'
                             if mode in ALL_GATE_MODELS_PIN:

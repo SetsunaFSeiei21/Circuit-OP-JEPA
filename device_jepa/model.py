@@ -51,7 +51,11 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(cfg.dim)
         self.drop = nn.Dropout(cfg.dropout)
 
-    def forward(self, x, self_mask, parameter_tokens, cross_mask, valid):
+    def forward(self, x, self_mask, parameter_tokens, cross_mask, valid, *, attention_observer=None):
+        # Optional read-only differentiable statistics. Never replace the message
+        # path, consume its dropout RNG, or feed observer outputs into the encoder.
+        if attention_observer is not None:
+            attention_observer(self.self_attn, x, self_mask, valid)
         # Some fused SDPA kernels (including PyTorch 2.6 efficient attention)
         # save backward intermediates only when Q/K/V require gradients. A
         # trainable additive mask on a frozen block still needs those values:
@@ -208,13 +212,13 @@ class DeviceEncoder(nn.Module):
         return (self.parameter_value(values) + self.parameter_names.weight[None, None],
                 live & batch["device_mask"].unsqueeze(-1))
 
-    def forward_fusion_memories(self, batch):
+    def forward_fusion_memories(self, batch, *, attention_observer=None):
         """Read every PE output in order without rerunning SE/PE or changing its path."""
         return self.forward_from_structure(self.structure_encoder(batch), batch,
-                                           return_all_fusion=True)
+                                           return_all_fusion=True, attention_observer=attention_observer)
 
     def forward_from_structure(self, structure, batch, *, fusion_attention_bias=None,
-                               return_all_fusion=False):
+                               return_all_fusion=False, attention_observer=None):
         tokens, live = self.input_tokens(batch)
         b, n, num_features, _ = tokens.shape
         p = torch.cat([tokens.reshape(b, n * num_features, self.cfg.dim),
@@ -264,7 +268,13 @@ class DeviceEncoder(nn.Module):
             if prepared_biases[i] is not None:
                 # Out-of-place addition preserves original masks and gradients.
                 mask = mask + prepared_biases[i]
-            x = block(x, mask, p, cross_mask, valid)
+            if attention_observer is None:
+                x = block(x, mask, p, cross_mask, valid)
+            else:
+                # Node order and validity are unchanged throughout this loop.
+                def observe(attention, values, self_mask, node_valid, index=i):
+                    attention_observer(index, attention, values, self_mask, node_valid)
+                x = block(x, mask, p, cross_mask, valid, attention_observer=observe)
             if return_all_fusion:
                 # Read-only taps: the next PE still receives raw x, exactly as
                 # before. All taps use the existing output projection/norm.
