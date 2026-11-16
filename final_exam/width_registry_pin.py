@@ -1,7 +1,9 @@
 """Torch-free model IDs and configuration checks for multi-PE readout studies."""
 import math
+from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, validate_low_rank_contract_pin
 
 WIDTH_MODELS_PIN = ('width_decoder_pin', 'width_decoder_op_pin')
+ALL_WIDTH_MODELS_PIN = WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN
 WIDTH_PREDICTOR_PIN = 'width_device_op_predictor_pin'
 
 
@@ -24,7 +26,7 @@ def width_settings_pin(value=None, model_config=None):
 
 def validate_width_contract_pin(mode, contract):
     """Keep Excel/report metadata honest without importing the training runtime."""
-    if mode not in WIDTH_MODELS_PIN:
+    if mode not in ALL_WIDTH_MODELS_PIN:
         return
     if not isinstance(contract, dict):
         raise ValueError('Wide decoder report requires its saved architecture contract')
@@ -56,6 +58,8 @@ def validate_width_contract_pin(mode, contract):
             raise ValueError('Performance readout requires one scalar per metric')
         if index == 1 and branch.get('metric_count') is not None:
             raise ValueError('OP readout uses physical-device queries, not performance queries')
+        validate_low_rank_contract_pin(mode if index == 0 else 'width_decoder_pin',
+                                       branch.get('low_rank'), branch['feature_dim'])
         mixture = branch.get('mixture')
         if not isinstance(mixture, dict):
             raise ValueError('Wide readout mixture metadata is missing')

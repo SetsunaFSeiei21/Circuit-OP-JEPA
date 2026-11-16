@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from device_jepa.excel import Cell, METRICS, SCORES, Sheet, _column, _format_number, _write_workbook
 from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
-from final_exam.width_registry_pin import WIDTH_MODELS_PIN, validate_width_contract_pin
+from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, validate_width_contract_pin
+from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_spec_pin
 from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
@@ -424,6 +425,13 @@ def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
         value = _read_json(path)
         if not isinstance(value, dict) or not value:
             raise ValueError(f'Effective configuration must be a nonempty object: {path}')
+        if mode in LOW_RANK_MODELS_PIN:
+            expected = low_rank_spec_pin(mode, value.get('low_rank_decoder_pin'), value.get('model'))
+            for record in results:
+                if record['mode'] == mode and record['seed'] == seed:
+                    actual = record['report']['width_decoder_pin']['performance']['low_rank']
+                    if actual != expected:
+                        raise ValueError(f'Low-rank report disagrees with saved configuration: {path}')
         documents.append((mode, seed, path, value))
     if missing and not allow_incomplete:
         raise ValueError(f'Missing per-model effective configurations: {missing}')
@@ -456,6 +464,66 @@ def _width_decoder_sheet(results):
                    performance['decoder_layers'], mixture['n_experts'], mixture['hidden_dim'],
                    mixture['dropout'], 'yes', 'no', json.dumps(contract, sort_keys=True)], 38)
     sheet.filter_range = f'A4:N{len(sheet.rows)}'
+    return sheet
+
+
+def _low_rank_decoder_sheet(results, stages):
+    fields = ('Model', 'Seed', 'Attention factors', 'FFN factors', 'Attention rank', 'FFN rank',
+              'Total parameters', 'Trainable parameters', 'Readout epochs', 'Readout stage seconds',
+              'Timed batch size', 'Full-cascade latency ms', 'Latency std ms', 'Samples/s',
+              'CUDA process peak MiB', 'CUDA incremental peak MiB', 'Benchmark protocol')
+    sheet = Sheet('LowRankDecoder', [44, 12, 22, 20, 20, 18, 24, 26, 22, 28,
+                                     22, 30, 24, 24, 28, 30, 65],
+                  freeze_rows=4, freeze_columns=2)
+    sheet.note('Low-rank decoder ablation — original, attention, FFN, both', 1, 34)
+    sheet.note('Only performance decoder projections/FFNs change. Encoder, frozen OP predictor, '
+               'metric queries and MoE retain their architecture. All factors train from scratch.', height=42)
+    sheet.note('Latency is a repeated resident batch including OP prediction; excludes input transfer. '
+               'CUDA memory is process/resident-data scope, not model-only. Blank benchmark cells mean not measured. '
+               'Readout time includes training and validation; early stopping may change epochs.', height=50)
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    stage_by_id = {stage['stage_id']: stage for stage in stages}
+    seen = set()
+    for record in results:
+        mode, seed = record['mode'], record['seed']
+        if mode not in ('width_decoder_pin', *LOW_RANK_MODELS_PIN) or (mode, seed) in seen:
+            continue
+        seen.add((mode, seed))
+        architecture = record['report']['width_decoder_pin']['performance']
+        spec = architecture.get('low_rank') or {}
+        stage = next((stage_by_id[identity] for identity in record['stage_ids']
+                      if identity.endswith('/' + mode)), {})
+        benchmark = record['report'].get('low_rank_benchmark_pin') or {}
+        if benchmark:
+            if (benchmark.get('protocol') != 'resident_first_test_batch_full_cascade_v1'
+                    or benchmark.get('includes_op_predictor') is not True
+                    or benchmark.get('uses_cached_op') is not False
+                    or benchmark.get('input_transfer_included') is not False):
+                raise ValueError('Unexpected low-rank benchmark protocol or inference scope')
+            for key in ('model_parameters', 'batch_size', 'measured_iterations', 'warmup_iterations'):
+                if type(benchmark.get(key)) is not int or benchmark[key] < 1:
+                    raise ValueError(f'Invalid low-rank benchmark {key}')
+            for key in ('mean_latency_ms', 'samples_per_second', 'latency_std_ms'):
+                value = benchmark.get(key)
+                if (type(value) not in (int, float) or not math.isfinite(value)
+                        or value < 0 or (key != 'latency_std_ms' and value == 0)):
+                    raise ValueError(f'Invalid low-rank benchmark {key}')
+            for key in ('peak_allocated_bytes', 'baseline_allocated_bytes',
+                        'incremental_peak_allocated_bytes'):
+                value = benchmark.get(key)
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError(f'Invalid low-rank benchmark {key}')
+            if benchmark['model_parameters'] != stage.get('parameters'):
+                raise ValueError('Low-rank benchmark parameters disagree with saved training stage')
+        memory = [None if benchmark.get(key) is None else benchmark[key] / (1024 ** 2)
+                  for key in ('peak_allocated_bytes', 'incremental_peak_allocated_bytes')]
+        sheet.add([mode, seed, 'yes' if spec.get('attention') else 'no',
+                   'yes' if spec.get('ffn') else 'no', spec.get('attention_rank'), spec.get('ffn_rank'),
+                   stage.get('parameters'), stage.get('trainable_parameters'), stage.get('epochs'),
+                   stage.get('seconds'), benchmark.get('batch_size'), benchmark.get('mean_latency_ms'),
+                   benchmark.get('latency_std_ms'), benchmark.get('samples_per_second'), *memory,
+                   benchmark.get('protocol')], 40)
+    sheet.filter_range = f'A4:Q{len(sheet.rows)}'
     return sheet
 
 
@@ -997,6 +1065,9 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         sheets.append(_resume_sheet(stages))
     if any(mode in WIDTH_MODELS_PIN for mode in models):
         sheets.append(_width_decoder_sheet(results))
+    if (any(mode in LOW_RANK_MODELS_PIN for mode in models)
+            or ('low_rank_decoder_pin' in config and 'width_decoder_pin' in models)):
+        sheets.append(_low_rank_decoder_sheet(results, stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:

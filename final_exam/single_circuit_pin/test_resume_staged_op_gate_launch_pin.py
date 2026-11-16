@@ -203,6 +203,8 @@ class ResumeStagedGateLauncherTests(unittest.TestCase):
                         self.root / 'final_exam/gate_version_registry_pin.py')
         shutil.copyfile(FINAL_ROOT / 'width_registry_pin.py',
                         self.root / 'final_exam/width_registry_pin.py')
+        shutil.copyfile(FINAL_ROOT / 'low_rank_registry_pin.py',
+                        self.root / 'final_exam/low_rank_registry_pin.py')
         # The shell must submit the existing root-aware Slurm wrapper, never
         # calculate the repository from the eventual /var/spool script path.
         wrapper = self.root / 'scripts/run/slurm_run.sh'

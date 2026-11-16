@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+低秩宽 decoder 四组消融：编辑 `train_low_rank_decoder_pin.sh` 的 `CIRCUITS` / `MODELS` / `SEEDS`，用 `final_exam/configs/low_rank_decoder_pin.json` 设置 attention rank 与 FFN rank。保留原宽读出，新增仅 attention、仅 FFN、两者同时低秩化三组；只改性能端 decoder，原始器件级 OP predictor、SE/PE、MoE 保留。训练、日志、自动 Excel 和恢复命令见 [低秩 decoder 说明](../LOW_RANK_DECODER_pin.md)。
+
 低秩/共享基底诊断：编辑 `inspect_spectrum_pin.sh` 的电路与结果目录配对、模型、seed 和校准样本数，运行 `bash final_exam/single_circuit_pin/inspect_spectrum_pin.sh`。读取已有 checkpoint，默认在 GPU 上分析 FFN 权重谱、ID train 激活误差和跨电路原坐标子空间；自动导出 Excel、CSV 和 PNG，不训练、不覆盖原结果。见 [谱分析使用说明与边界](../SPECTRAL_PROBE_pin.md)。
 
 宽读出实验：编辑 `train_width_decoder_pin.sh` 的 `CIRCUITS` / `MODELS` / `SEEDS`，运行 `bash final_exam/single_circuit_pin/train_width_decoder_pin.sh`。支持 `width_decoder_pin`（只扩展性能读出）和 `width_decoder_op_pin`（OP 与性能两端均扩展）；默认同时运行 `device_op_cascade_pin` 对照。配置、自动 Excel、日志和恢复命令见 [宽读出说明](../WIDTH_DECODER_pin.md)。

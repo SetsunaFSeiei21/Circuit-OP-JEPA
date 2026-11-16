@@ -41,12 +41,15 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     # A wide-readout subset can omit the legacy cascade that caused gate
     # defaults to be resolved in the original paired run. Resolve only defaults
     # again; never copy changed settings from the source to bypass comparison.
-    from final_exam.width_registry_pin import WIDTH_MODELS_PIN, width_settings_pin
+    from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, width_settings_pin
     if version or 'device_op_cascade_pin' in record.get('models', []):
         from final_exam.models.op_gate_pin import validate_gate_config_pin
         config['op_gate_pin'] = validate_gate_config_pin(config.get('op_gate_pin'), version=version)
     if set(record.get('models', [])) & set(WIDTH_MODELS_PIN):
         config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
+    from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_settings_pin
+    if set(record.get('models', [])) & set(LOW_RANK_MODELS_PIN):
+        config['low_rank_decoder_pin'] = low_rank_settings_pin(config.get('low_rank_decoder_pin'))
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):

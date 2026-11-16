@@ -9,7 +9,8 @@ import torch
 from torch import nn
 
 from device_jepa.model import ModelConfig
-from final_exam.width_registry_pin import WIDTH_MODELS_PIN, width_settings_pin
+from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, width_settings_pin
+from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_settings_pin, low_rank_spec_pin
 from .op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
 
@@ -121,7 +122,7 @@ class WidthDeviceOPPredictorPin(DeviceOPPredictorPin):
 
 class WidthDecoderModelPin(DeviceOPGateModelPin):
     """Frozen device OP -> pin encoder -> independent metric decoders per PE."""
-    def __init__(self, mode, config, prep, predictor, width_config=None):
+    def __init__(self, mode, config, prep, predictor, width_config=None, low_rank_config=None):
         if mode not in WIDTH_MODELS_PIN:
             raise ValueError('Unknown width decoder mode')
         wide_op = isinstance(predictor, WidthDeviceOPPredictorPin)
@@ -132,6 +133,15 @@ class WidthDecoderModelPin(DeviceOPGateModelPin):
         self.width_config = width_settings_pin(width_config, self.model_config)
         self.decoder = MultiPEReadoutPin(self.model_config, self.width_config,
             output_dim=1, metric_count=len(prep['feature_spec']['metric_names']))
+        self.low_rank_config = (low_rank_settings_pin(low_rank_config)
+                                if mode in LOW_RANK_MODELS_PIN else None)
+        self.low_rank_spec = low_rank_spec_pin(mode, self.low_rank_config, self.model_config)
+        if self.low_rank_spec is not None:
+            from .low_rank_decoder_pin import factorize_decoder_pin
+            for branch in self.decoder.branches:
+                factorize_decoder_pin(branch.decoder,
+                    attention_rank=self.low_rank_spec['attention_rank'],
+                    ffn_rank=self.low_rank_spec['ffn_rank'])
 
     def memory(self, batch):
         inputs = design_input_pin(batch)
@@ -144,9 +154,12 @@ class WidthDecoderModelPin(DeviceOPGateModelPin):
     @property
     def architecture_contract(self):
         wide = isinstance(self.predictor, WidthDeviceOPPredictorPin)
+        performance = self.decoder.architecture_contract
+        if self.low_rank_spec is not None:
+            performance['low_rank'] = deepcopy(self.low_rank_spec)
         return dict(mode=self.mode, gate=False, requires_measured_op=False,
             predictor_granularity='device', performance_granularity='pin', predictor_frozen=True,
-            performance=self.decoder.architecture_contract,
+            performance=performance,
             op_predictor=(self.predictor.head.architecture_contract if wide else
                           dict(readout='last_pe_device_mlp', query_kind='none')))
 
@@ -158,6 +171,8 @@ def describe_width_model_pin(model):
         return dict(kind='width_device_op_predictor_pin', **common,
                     support=deepcopy(model.support), architecture=model.head.architecture_contract)
     if isinstance(model, WidthDecoderModelPin):
+        if model.low_rank_config is not None:
+            common['low_rank_config'] = deepcopy(model.low_rank_config)
         return dict(kind='width_decoder_pin', mode=model.mode, **common,
                     predictor=describe_model_pin(model.predictor), architecture=model.architecture_contract)
     raise TypeError('Unsupported wide decoder checkpoint')
@@ -171,7 +186,10 @@ def rebuild_width_model_pin(recipe, config, prep):
         contract = model.head.architecture_contract
     elif recipe['kind'] == 'width_decoder_pin':
         predictor = rebuild_model_pin(recipe['predictor'], cfg, prep)
-        model = WidthDecoderModelPin(recipe['mode'], cfg, prep, predictor, width)
+        if recipe['mode'] in LOW_RANK_MODELS_PIN and 'low_rank_config' not in recipe:
+            raise ValueError('Low-rank checkpoint requires its saved rank configuration')
+        model = WidthDecoderModelPin(recipe['mode'], cfg, prep, predictor, width,
+                                     recipe.get('low_rank_config'))
         contract = model.architecture_contract
     else:
         raise ValueError('Unknown wide decoder checkpoint kind')
