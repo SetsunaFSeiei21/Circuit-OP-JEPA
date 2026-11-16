@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**同一模型内部的 decoder 共享下基诊断**：编辑 `inspect_shared_decoder_pin.sh` 顶部的 `CIRCUITS` / `SOURCE_RUNS` 配对、`MODELS`、`SEEDS`、候选 `RANKS` 和训练/验证样本数，运行 `bash final_exam/single_circuit_pin/inspect_shared_decoder_pin.sh`。每个 checkpoint 内分别对多个 PE decoder 的对应 Q/K/V/O 或 FFN 拟合共同下基、独立上基；多个电路独立分析，不混合权重。导出各 checkpoint 和汇总 Excel、CSV、图及可选验证误差，不训练、不修改来源 checkpoint。见 [共享下基诊断说明](../SHARED_DECODER_BASIS_pin.md)。
+
 低秩宽 decoder 四组消融：编辑 `train_low_rank_decoder_pin.sh` 的 `CIRCUITS` / `MODELS` / `SEEDS`，用 `final_exam/configs/low_rank_decoder_pin.json` 设置 attention rank 与 FFN rank。保留原宽读出，新增仅 attention、仅 FFN、两者同时低秩化三组；只改性能端 decoder，原始器件级 OP predictor、SE/PE、MoE 保留。训练、日志、自动 Excel 和恢复命令见 [低秩 decoder 说明](../LOW_RANK_DECODER_pin.md)。
 
 低秩/共享基底诊断：编辑 `inspect_spectrum_pin.sh` 的电路与结果目录配对、模型、seed 和校准样本数，运行 `bash final_exam/single_circuit_pin/inspect_spectrum_pin.sh`。读取已有 checkpoint，默认在 GPU 上分析 FFN 权重谱、ID train 激活误差和跨电路原坐标子空间；自动导出 Excel、CSV 和 PNG，不训练、不覆盖原结果。见 [谱分析使用说明与边界](../SPECTRAL_PROBE_pin.md)。
