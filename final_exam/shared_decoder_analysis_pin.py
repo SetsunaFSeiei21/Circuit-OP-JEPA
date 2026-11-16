@@ -93,7 +93,8 @@ def decoder_groups_pin(model, component='performance', scope='all'):
                                 projection = getattr(attention, attr)
                                 grouped[(layer_index, attention_name + '.' + letter)].append(DecoderMatrixPin(
                                     branch_index + 1, path + '.' + attr + '.effective_weight',
-                                    _linear_weight(projection), projection, 'factorized', side))
+                                    _linear_weight(projection), projection,
+                                    'factorized' if isinstance(projection, LowRankLinearPin) else 'linear', side))
                         else:
                             raise ValueError('Unsupported decoder attention implementation')
                 if scope in ('all', 'ffn'):

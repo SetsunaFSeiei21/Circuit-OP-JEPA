@@ -21,6 +21,7 @@ from experiments.op_transfer.summarize import summary_rows as _aggregate_rows
 from final_exam.staged_gate_registry_pin import FUSION_STAGED_GATE_MODELS_PIN, staged_gate_spec_pin
 from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, validate_width_contract_pin
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_spec_pin
+from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, shared_decoder_spec_pin
 from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
@@ -432,6 +433,13 @@ def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
                     actual = record['report']['width_decoder_pin']['performance']['low_rank']
                     if actual != expected:
                         raise ValueError(f'Low-rank report disagrees with saved configuration: {path}')
+        if mode in SHARED_DECODER_MODELS_PIN:
+            expected = shared_decoder_spec_pin(mode, value.get('shared_decoder_pin'), value.get('model'))
+            for record in results:
+                if record['mode'] == mode and record['seed'] == seed:
+                    actual = record['report']['width_decoder_pin']['performance']['shared_down_basis']
+                    if actual != expected:
+                        raise ValueError(f'Shared decoder report disagrees with saved configuration: {path}')
         documents.append((mode, seed, path, value))
     if missing and not allow_incomplete:
         raise ValueError(f'Missing per-model effective configurations: {missing}')
@@ -450,7 +458,8 @@ def _width_decoder_sheet(results):
     sheet = Sheet('WidthDecoder', [38, 12, 40, 24, 28, 20, 24, 28, 18, 24, 20, 24, 24, 90],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('Multi-PE decoder comparison', 1, 34)
-    sheet.note('Independent decoders read each PE; concatenate feature vectors for the same metric/device.', height=34)
+    sheet.note('Each PE has a decoder branch; concatenate feature vectors for the same metric/device. '
+               'Shared-down variants tie corresponding input factors only; see the architecture and SharedDecoder sheet.', height=42)
     sheet.note('OP predictor is fitted first, then frozen. Equal epochs do not imply equal compute cost.', height=34)
     sheet.add([Cell(value, 3) for value in fields], 40)
     for record in results:
@@ -465,6 +474,32 @@ def _width_decoder_sheet(results):
                    mixture['dropout'], 'yes', 'no', json.dumps(contract, sort_keys=True)], 38)
     sheet.filter_range = f'A4:N{len(sheet.rows)}'
     return sheet
+
+
+def _decoder_benchmark_pin(record, stage):
+    benchmark = record['report'].get('low_rank_benchmark_pin') or {}
+    if benchmark:
+        if (benchmark.get('protocol') != 'resident_first_test_batch_full_cascade_v1'
+                or benchmark.get('includes_op_predictor') is not True
+                or benchmark.get('uses_cached_op') is not False
+                or benchmark.get('input_transfer_included') is not False):
+            raise ValueError('Unexpected low-rank benchmark protocol or inference scope')
+        for key in ('model_parameters', 'batch_size', 'measured_iterations', 'warmup_iterations'):
+            if type(benchmark.get(key)) is not int or benchmark[key] < 1:
+                raise ValueError(f'Invalid low-rank benchmark {key}')
+        for key in ('mean_latency_ms', 'samples_per_second', 'latency_std_ms'):
+            value = benchmark.get(key)
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or value < 0 or (key != 'latency_std_ms' and value == 0)):
+                raise ValueError(f'Invalid low-rank benchmark {key}')
+        for key in ('peak_allocated_bytes', 'baseline_allocated_bytes',
+                    'incremental_peak_allocated_bytes'):
+            value = benchmark.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f'Invalid low-rank benchmark {key}')
+        if benchmark['model_parameters'] != stage.get('parameters'):
+            raise ValueError('Low-rank benchmark parameters disagree with saved training stage')
+    return benchmark
 
 
 def _low_rank_decoder_sheet(results, stages):
@@ -493,28 +528,7 @@ def _low_rank_decoder_sheet(results, stages):
         spec = architecture.get('low_rank') or {}
         stage = next((stage_by_id[identity] for identity in record['stage_ids']
                       if identity.endswith('/' + mode)), {})
-        benchmark = record['report'].get('low_rank_benchmark_pin') or {}
-        if benchmark:
-            if (benchmark.get('protocol') != 'resident_first_test_batch_full_cascade_v1'
-                    or benchmark.get('includes_op_predictor') is not True
-                    or benchmark.get('uses_cached_op') is not False
-                    or benchmark.get('input_transfer_included') is not False):
-                raise ValueError('Unexpected low-rank benchmark protocol or inference scope')
-            for key in ('model_parameters', 'batch_size', 'measured_iterations', 'warmup_iterations'):
-                if type(benchmark.get(key)) is not int or benchmark[key] < 1:
-                    raise ValueError(f'Invalid low-rank benchmark {key}')
-            for key in ('mean_latency_ms', 'samples_per_second', 'latency_std_ms'):
-                value = benchmark.get(key)
-                if (type(value) not in (int, float) or not math.isfinite(value)
-                        or value < 0 or (key != 'latency_std_ms' and value == 0)):
-                    raise ValueError(f'Invalid low-rank benchmark {key}')
-            for key in ('peak_allocated_bytes', 'baseline_allocated_bytes',
-                        'incremental_peak_allocated_bytes'):
-                value = benchmark.get(key)
-                if value is not None and (type(value) is not int or value < 0):
-                    raise ValueError(f'Invalid low-rank benchmark {key}')
-            if benchmark['model_parameters'] != stage.get('parameters'):
-                raise ValueError('Low-rank benchmark parameters disagree with saved training stage')
+        benchmark = _decoder_benchmark_pin(record, stage)
         memory = [None if benchmark.get(key) is None else benchmark[key] / (1024 ** 2)
                   for key in ('peak_allocated_bytes', 'incremental_peak_allocated_bytes')]
         sheet.add([mode, seed, 'yes' if spec.get('attention') else 'no',
@@ -524,6 +538,64 @@ def _low_rank_decoder_sheet(results, stages):
                    benchmark.get('latency_std_ms'), benchmark.get('samples_per_second'), *memory,
                    benchmark.get('protocol')], 40)
     sheet.filter_range = f'A4:Q{len(sheet.rows)}'
+    return sheet
+
+
+def _shared_decoder_sheet(results, stages):
+    fields = ('Model', 'Seed', 'Parameterization', 'Attention scope', 'FFN factorized',
+              'Attention rank', 'FFN rank', 'PE decoder branches', 'Shared down groups',
+              'Shared projection roles', 'Shared down weight parameters',
+              'Independent up weight parameters', 'Selected dense weight parameters',
+              'Selected shared weight parameters', 'Selected weight saving fraction',
+              'Total unique model parameters', 'Trainable unique parameters',
+              'Readout epochs', 'Readout stage seconds', 'Timed batch size',
+              'Full-cascade latency ms', 'Latency std ms', 'Samples/s',
+              'CUDA process peak MiB', 'CUDA incremental peak MiB', 'Benchmark protocol')
+    sheet = Sheet('SharedDecoder', [44, 12, 34, 24, 20, 20, 18, 24, 24, 65,
+                                   30, 32, 30, 30, 26, 30, 28, 22, 28, 22,
+                                   30, 24, 24, 28, 30, 65],
+                  freeze_rows=4, freeze_columns=2)
+    sheet.note('Shared-down decoder study — W_i = B_i A', 1, 34)
+    sheet.note('A is trained once per projection role and decoder depth across PE branches; each B_i is independent. '
+               'Circuits and seeds never share factors. Shared factor counts exclude biases; '
+               'total model counts include the unchanged encoder, MoE and frozen OP predictor.', height=56)
+    sheet.note('Dense and independent low-rank models appear only when selected. Blank shared-factor counts mean '
+               'not applicable, not zero. Latency includes OP prediction on a resident batch; '
+               'memory is process/resident-data scope. Parameter savings do not establish speedup.', height=56)
+    sheet.add([Cell(value, 3) for value in fields], 48)
+    stage_by_id = {stage['stage_id']: stage for stage in stages}
+    seen = set()
+    for record in results:
+        mode, seed = record['mode'], record['seed']
+        if mode not in ('width_decoder_pin', *LOW_RANK_MODELS_PIN, *SHARED_DECODER_MODELS_PIN):
+            continue
+        if (mode, seed) in seen:
+            continue
+        seen.add((mode, seed))
+        architecture = record['report']['width_decoder_pin']['performance']
+        shared = architecture.get('shared_down_basis')
+        spec = shared or architecture.get('low_rank') or {}
+        parameterization = spec.get('parameterization', 'dense_weights')
+        attention_scope = spec.get('attention_scope', 'all' if spec.get('attention') else 'none')
+        stage = next((stage_by_id[identity] for identity in record['stage_ids']
+                      if identity.endswith('/' + mode)), {})
+        benchmark = _decoder_benchmark_pin(record, stage)
+        shared_counts = [spec.get(key) if shared else None for key in (
+            'shared_group_count', 'shared_roles', 'shared_down_parameters',
+            'independent_up_parameters', 'dense_weight_parameters',
+            'shared_weight_parameters', 'parameter_saving_fraction')]
+        if shared:
+            shared_counts[1] = ', '.join(shared_counts[1])
+        memory = [None if benchmark.get(key) is None else benchmark[key] / (1024 ** 2)
+                  for key in ('peak_allocated_bytes', 'incremental_peak_allocated_bytes')]
+        sheet.add([mode, seed, parameterization, attention_scope,
+                   'yes' if spec.get('ffn') else 'no', spec.get('attention_rank'), spec.get('ffn_rank'),
+                   architecture['branch_count'], *shared_counts,
+                   stage.get('parameters'), stage.get('trainable_parameters'), stage.get('epochs'),
+                   stage.get('seconds'), benchmark.get('batch_size'), benchmark.get('mean_latency_ms'),
+                   benchmark.get('latency_std_ms'), benchmark.get('samples_per_second'), *memory,
+                   benchmark.get('protocol')], 44)
+    sheet.filter_range = f'A4:Z{len(sheet.rows)}'
     return sheet
 
 
@@ -1068,6 +1140,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
     if (any(mode in LOW_RANK_MODELS_PIN for mode in models)
             or ('low_rank_decoder_pin' in config and 'width_decoder_pin' in models)):
         sheets.append(_low_rank_decoder_sheet(results, stages))
+    if any(mode in SHARED_DECODER_MODELS_PIN for mode in models):
+        sheets.append(_shared_decoder_sheet(results, stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:

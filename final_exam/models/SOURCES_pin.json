@@ -828,6 +828,62 @@
       "op_readout": "Independent physical-device-query decoder after each PE -> dense MLP experts -> device OP vector",
       "training": "Fit device OP predictor on ID train observations; freeze it; supervise the complete downstream model; no gates or latent distillation",
       "scope": "Single circuit pin downstream; canonical device OP predictor. No claim of original ZeroSim implementation or benchmark reproduction."
+    },
+    "width_decoder_shared_kv_pin": {
+      "model_id": "width_decoder_shared_kv_pin",
+      "implementation": "Local from-scratch shared-down-basis extension of the multi-PE ZeroSim-framework readout",
+      "source_files_pin": [
+        "shared_decoder_pin.py",
+        "width_decoder_pin.py",
+        "../shared_decoder_registry_pin.py"
+      ],
+      "shared_scope": "cross-attention K and V",
+      "parameterization": "W_i=B_i A; one trainable down A per corresponding projection role and decoder depth across PE branches; separate trainable up B_i and bias; no private residual",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
+      "training": "Train performance encoder, shared and independent decoder factors, branch queries/norms and MoE from scratch with performance supervision; no SVD initialization or gates",
+      "scope": "Single-circuit pin downstream; no cross-circuit/model/seed sharing. Shared weights do not imply shared activations or guaranteed runtime speedup."
+    },
+    "width_decoder_shared_attention_pin": {
+      "model_id": "width_decoder_shared_attention_pin",
+      "implementation": "Local from-scratch shared-down-basis extension of the multi-PE ZeroSim-framework readout",
+      "source_files_pin": [
+        "shared_decoder_pin.py",
+        "width_decoder_pin.py",
+        "../shared_decoder_registry_pin.py"
+      ],
+      "shared_scope": "decoder self/cross-attention Q/K/V/O",
+      "parameterization": "W_i=B_i A; one trainable down A per corresponding projection role and decoder depth across PE branches; separate trainable up B_i and bias; no private residual",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
+      "training": "Train performance encoder, shared and independent decoder factors, branch queries/norms and MoE from scratch with performance supervision; no SVD initialization or gates",
+      "scope": "Single-circuit pin downstream; no cross-circuit/model/seed sharing. Shared weights do not imply shared activations or guaranteed runtime speedup."
+    },
+    "width_decoder_shared_ffn_pin": {
+      "model_id": "width_decoder_shared_ffn_pin",
+      "implementation": "Local from-scratch shared-down-basis extension of the multi-PE ZeroSim-framework readout",
+      "source_files_pin": [
+        "shared_decoder_pin.py",
+        "width_decoder_pin.py",
+        "../shared_decoder_registry_pin.py"
+      ],
+      "shared_scope": "decoder FFN linear1 and linear2",
+      "parameterization": "W_i=B_i A; one trainable down A per corresponding projection role and decoder depth across PE branches; separate trainable up B_i and bias; no private residual",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
+      "training": "Train performance encoder, shared and independent decoder factors, branch queries/norms and MoE from scratch with performance supervision; no SVD initialization or gates",
+      "scope": "Single-circuit pin downstream; no cross-circuit/model/seed sharing. Shared weights do not imply shared activations or guaranteed runtime speedup."
+    },
+    "width_decoder_shared_both_pin": {
+      "model_id": "width_decoder_shared_both_pin",
+      "implementation": "Local from-scratch shared-down-basis extension of the multi-PE ZeroSim-framework readout",
+      "source_files_pin": [
+        "shared_decoder_pin.py",
+        "width_decoder_pin.py",
+        "../shared_decoder_registry_pin.py"
+      ],
+      "shared_scope": "decoder self/cross-attention Q/K/V/O and FFN linear1/linear2",
+      "parameterization": "W_i=B_i A; one trainable down A per corresponding projection role and decoder depth across PE branches; separate trainable up B_i and bias; no private residual",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
+      "training": "Train performance encoder, shared and independent decoder factors, branch queries/norms and MoE from scratch with performance supervision; no SVD initialization or gates",
+      "scope": "Single-circuit pin downstream; no cross-circuit/model/seed sharing. Shared weights do not imply shared activations or guaranteed runtime speedup."
     }
   }
 }

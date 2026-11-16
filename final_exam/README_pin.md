@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**共同下基的宽 decoder 训练**：新增 `width_decoder_shared_kv_pin`、`width_decoder_shared_attention_pin`、`width_decoder_shared_ffn_pin`、`width_decoder_shared_both_pin`。仅在同一模型内部、对应 PE decoder 的相同投影位置共享可训练下基 A，各分支上基 B 独立，从头训练；OP predictor 保持原结构。入口 `single_circuit_pin/train_shared_decoder_pin.sh`，配置 `configs/shared_decoder_pin.json`，恢复入口 `single_circuit_pin/resume_shared_decoder_pin.sh`。多个电路各自提交独立作业，详见 [结构、训练、结果和日志说明](SHARED_DECODER_TRAINING_pin.md)。
+
 **多 PE 宽读出**：`width_decoder_pin` 在每个 PE 后独立读出性能特征，再拼接并用 MoE-MLP 融合；`width_decoder_op_pin` 的器件级 OP 预测器也采用这种结构。对照为 `device_op_cascade_pin`，均不加门控。启动 `single_circuit_pin/train_width_decoder_pin.sh`，详见 [结构、配置、日志和恢复说明](WIDTH_DECODER_pin.md)。
 
 **门控 V6/V7：在 V4/V5 输入末尾显式拼接 NMOS=`[1,0]` / PMOS=`[0,1]`。** 输入由 `2F+8` 扩为 `2F+10`（41 个 OP 字段时 92 维）；类型不参与 OP 标准化，相对 OP 仍由同一样本全部有效 MOS 一起统计。V6 跨 PE2 及后续层共享门控，V7 每层独立；结构层和 PE1 不加门控，仍使用 `strength*tanh(z)`。每版四种训练策略和已有无门控参考，入口为 `final_exam/single_circuit_pin/train_op_gate_pin_v6.sh` / `train_op_gate_pin_v7.sh`，配置为 `final_exam/configs/op_gate_pin_v6.json` / `op_gate_pin_v7.json`。详见 [V6/V7 输入、模型、预算和恢复说明](OP_GATE_V6_V7_pin.md)。

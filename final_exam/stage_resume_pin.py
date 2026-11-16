@@ -50,6 +50,9 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_settings_pin
     if set(record.get('models', [])) & set(LOW_RANK_MODELS_PIN):
         config['low_rank_decoder_pin'] = low_rank_settings_pin(config.get('low_rank_decoder_pin'))
+    from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin
+    if set(record.get('models', [])) & set(SHARED_DECODER_MODELS_PIN):
+        config['shared_decoder_pin'] = shared_decoder_settings_pin(config.get('shared_decoder_pin'))
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):

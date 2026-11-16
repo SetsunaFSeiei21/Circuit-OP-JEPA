@@ -28,6 +28,7 @@ def tiny_inputs(directory):
                            decoder_ffn_dim=16, decoder_layers=1, max_devices=32, dropout=0.)
     config['op_transfer'].update(batch_size=8, progress_every=100)
     config['low_rank_decoder_pin'] = dict(attention_rank=2, ffn_rank=4)
+    config['shared_decoder_pin'] = dict(attention_rank=2, ffn_rank=4)
     config['final_exam_pin']['xgboost'].update(max_depth=2)
     config['final_exam_pin']['model_overrides'] = {'gat_pin': {'ffn_dim': 24}}
     data_path, cfg_path = directory/'data.json', directory/'input.json'

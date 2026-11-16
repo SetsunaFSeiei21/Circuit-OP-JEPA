@@ -1,9 +1,10 @@
 """Torch-free model IDs and configuration checks for multi-PE readout studies."""
 import math
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, validate_low_rank_contract_pin
+from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, validate_shared_decoder_contract_pin
 
 WIDTH_MODELS_PIN = ('width_decoder_pin', 'width_decoder_op_pin')
-ALL_WIDTH_MODELS_PIN = WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN
+ALL_WIDTH_MODELS_PIN = WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN + SHARED_DECODER_MODELS_PIN
 WIDTH_PREDICTOR_PIN = 'width_device_op_predictor_pin'
 
 
@@ -47,7 +48,7 @@ def validate_width_contract_pin(mode, contract):
             if type(branch.get(key)) is not int or branch[key] < 1:
                 raise ValueError(f'Invalid wide decoder {key}')
         if (branch.get('readout') != 'per_pe_decoder_then_dense_moe_mlp'
-                or branch.get('independent_decoders') is not True
+                or branch.get('independent_decoders') is not (mode not in SHARED_DECODER_MODELS_PIN)
                 or branch.get('pe_order') != list(range(1, branch['branch_count'] + 1))
                 or branch.get('concatenated_dim') != branch['branch_count'] * branch['feature_dim']
                 or branch.get('query_kind') != ('metric' if index == 0 else 'physical_device_memory')
@@ -60,6 +61,9 @@ def validate_width_contract_pin(mode, contract):
             raise ValueError('OP readout uses physical-device queries, not performance queries')
         validate_low_rank_contract_pin(mode if index == 0 else 'width_decoder_pin',
                                        branch.get('low_rank'), branch['feature_dim'])
+        validate_shared_decoder_contract_pin(mode if index == 0 else 'width_decoder_pin',
+            branch.get('shared_down_basis'), branch['feature_dim'], branch['branch_count'],
+            branch['decoder_layers'])
         mixture = branch.get('mixture')
         if not isinstance(mixture, dict):
             raise ValueError('Wide readout mixture metadata is missing')

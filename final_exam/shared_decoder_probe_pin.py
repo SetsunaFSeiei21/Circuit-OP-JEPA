@@ -23,10 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN
+from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN
 from final_exam.spectral_probe_pin import read_json, write_json, sha256
 
 TASK = ROOT / 'final_exam/single_circuit_pin'
-SUPPORTED = ('width_decoder_pin', 'width_decoder_op_pin', *LOW_RANK_MODELS_PIN)
+SUPPORTED = ('width_decoder_pin', 'width_decoder_op_pin', *LOW_RANK_MODELS_PIN,
+             *SHARED_DECODER_MODELS_PIN)
 
 
 def inspect_sources_pin(sources, models, seeds, num_samples=128, num_val_samples=128,
