@@ -27,6 +27,7 @@ from final_exam.shared_decoder_registry_pin import (
     SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin, shared_decoder_spec_pin,
 )
 from final_exam.lasd_registry_pin import ALL_LASD_MODELS_PIN as LASD_MODELS_PIN, lasd_settings_pin
+from final_exam.lasd_moe_registry_pin import LASD_MOE_MODELS_PIN, lasd_moe_settings_pin
 # Resolve the lightweight reporting dependencies before importing raw data or
 # training. A late import can mix a newly pulled reporter with an old registry
 # already cached by a long-running process. Keep this callable for the whole run.
@@ -51,11 +52,11 @@ GATE_MODELS_PIN = ('device_op_cascade_pin', 'device_op_gate_pin',
 GATE_MODELS_PIN += VERSIONED_JOINT_GATE_MODELS_PIN
 ALL_GATE_MODELS_PIN = GATE_MODELS_PIN + ALL_STAGED_GATE_MODELS_PIN
 RESUMABLE_GATE_MODELS_PIN = ALL_STAGED_GATE_MODELS_PIN + VERSIONED_JOINT_GATE_MODELS_PIN + ('device_op_cascade_pin',)
-RESUMABLE_MODELS_PIN = RESUMABLE_GATE_MODELS_PIN + WIDTH_MODELS_PIN
+RESUMABLE_MODELS_PIN = RESUMABLE_GATE_MODELS_PIN + WIDTH_MODELS_PIN + LASD_MOE_MODELS_PIN
 RECOVERABLE_STAGES_PIN = frozenset(RESUMABLE_MODELS_PIN + (WIDTH_PREDICTOR_PIN,
     'device_op_predictor_pin', 'design_op_oracle_pin', 'device_op_distill_encoder_pin',
     'device_op_distill_readout_pin', 'device_op_supervised_readout_pin'))
-MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN + WIDTH_MODELS_PIN
+MODEL_NAMES_PIN += ALL_GATE_MODELS_PIN + WIDTH_MODELS_PIN + LASD_MOE_MODELS_PIN
 CASCADE_MODELS_PIN = frozenset({'predicted_op_pin', 'student_predicted_op_pin', 'student_predicted_op_distill_pin'})
 REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
                            'device_op_gate_oracle_pin', 'device_op_gate_only_oracle_pin'})
@@ -101,6 +102,8 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
         config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
     if set(selected) & set(LASD_MODELS_PIN) or 'lasd_pin' in config:
         config['lasd_pin'] = lasd_settings_pin(config.get('lasd_pin'))
+    if set(selected) & set(LASD_MOE_MODELS_PIN) or 'lasd_moe_pin' in config:
+        config['lasd_moe_pin'] = lasd_moe_settings_pin(config.get('lasd_moe_pin'))
     if set(selected) & set(LOW_RANK_MODELS_PIN) or 'low_rank_decoder_pin' in config:
         config['low_rank_decoder_pin'] = low_rank_settings_pin(config.get('low_rank_decoder_pin'))
         effective_model = {**config['model'], **overrides.get('zerosim_supervised_pin', {})}
@@ -137,7 +140,8 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
 def effective_config_pin(config, mode, seed):
     value = copy.deepcopy(config)
     key = 'zerosim_supervised_pin' if mode in (CASCADE_MODELS_PIN | REFERENCES_PIN | set(ALL_GATE_MODELS_PIN)
-        | set(WIDTH_MODELS_PIN) | {WIDTH_PREDICTOR_PIN, 'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
+        | set(WIDTH_MODELS_PIN) | set(LASD_MOE_MODELS_PIN)
+        | {WIDTH_PREDICTOR_PIN, 'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}) else mode
     override = value.get('final_exam_pin', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
     value.setdefault('training', {})['seed'] = seed
@@ -240,7 +244,7 @@ def save_checkpoint_pin(directory, model, ctx, mode, seed, dependencies, options
         payload['factory_name'] = 'deepgen_supervised_pin' if mode == 'deepgen_op_pretrained_pin' else mode
     if mode in ALL_GATE_MODELS_PIN:
         payload['input_contract_pin'] = {**gate_contract_pin(mode), **_gate_metadata_pin(model)}
-    if mode in WIDTH_MODELS_PIN:
+    if mode in WIDTH_MODELS_PIN or mode in LASD_MOE_MODELS_PIN:
         payload['input_contract_pin'] = model.architecture_contract
     atomic_torch_save(directory / 'checkpoint_pin.pt', payload)
     atomic_json(directory / 'config_pin.json', config)
@@ -301,6 +305,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     from final_exam.models.models_pin import build_encoder_pin, build_model_pin, prepare_model_pin
     from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
     from final_exam.models.width_decoder_pin import WidthDeviceOPPredictorPin, WidthDecoderModelPin
+    from final_exam.models.lasd_moe_pin import LASDMoEModelPin
     from final_exam.models.staged_op_gate_pin import StagedOPGateModelPin, StagedOPEncoderDistillationPin
     from final_exam.op_gate_data_pin import prepare_device_predictions_pin, build_shuffle_bank_pin
     from final_exam.stage_resume_pin import (validate_source_pin, validate_data_pin,
@@ -430,6 +435,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     if name in WIDTH_MODELS_PIN or name == WIDTH_PREDICTOR_PIN:
                                         identity['width_architecture'] = (model.head.architecture_contract
                                             if name == WIDTH_PREDICTOR_PIN else model.architecture_contract)
+                                    if name in LASD_MOE_MODELS_PIN:
+                                        identity['lasd_moe_architecture'] = model.architecture_contract
                                     if name in FUSION_STAGED_GATE_MODELS_PIN:
                                         identity['attention_scope'] = staged_gate_spec_pin(name)['attention_scope']
                                     if name in VERSIONED_GATE_MODELS_PIN:
@@ -631,6 +638,28 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             atomic_json(directory / 'config_pin.json', cfg)
                             atomic_json(directory / 'preprocessing_pin.json', ctx.prep)
                             atomic_json(directory / 'manifest_pin.json', manifest)
+                        elif mode in LASD_MOE_MODELS_PIN:
+                            from final_exam.lasd_moe_diagnostics_pin import EncoderGradientNormsPin
+                            kind = 'op_transfer'
+                            op_model = device_predictor(False)
+                            predictor_digest = state_digest(op_model)
+                            deps = dependencies['device_op_predictor_pin'][:]
+                            seed_everything(seed, options['torch_threads'])
+                            model = LASDMoEModelPin(mode, cfg['model'], ctx.prep, op_model,
+                                                   cfg['lasd_moe_pin']).to(device)
+                            initial_encoder = state_digest(model.encoder)
+                            initial_model = state_digest(model)
+                            observer = EncoderGradientNormsPin(model)
+                            model, dep = stage(model, mode, 'readout', cfg, gradient_observer=observer)
+                            deps.append(dep)
+                            if state_digest(op_model) != predictor_digest:
+                                raise AssertionError('Frozen OP predictor changed during LASD-MoE training')
+                            directory.mkdir(parents=True, exist_ok=True)
+                            atomic_json(directory / 'lasd_moe_audit_pin.json', dict(
+                                architecture=model.architecture_contract,
+                                initial_encoder_digest=initial_encoder, initial_model_digest=initial_model,
+                                predictor_digest=predictor_digest,
+                                predictor_checkpoint='../shared_pin/device_op_predictor_pin/checkpoint_pin.pt'))
                         elif mode in WIDTH_MODELS_PIN:
                             kind = 'op_transfer'
                             wide = mode == 'width_decoder_op_pin'
@@ -838,6 +867,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             prepare_model_pin(model, ctx, options, splits=('test',))
                             report = engine.evaluate_model(ctx, model, 'test', options, measured_op=mode in REFERENCES_PIN)
                             report.update(circuit=circuit, granularity='pin')
+                            if mode in LASD_MOE_MODELS_PIN:
+                                from final_exam.lasd_moe_diagnostics_pin import export_lasd_moe_diagnostics_pin
+                                report['lasd_moe_pin'] = model.architecture_contract
+                                report['lasd_moe_diagnostics_pin'] = export_lasd_moe_diagnostics_pin(
+                                    ctx, model, options, directory)
                             if mode in WIDTH_MODELS_PIN:
                                 report['width_decoder_pin'] = model.architecture_contract
                                 if any(key in config for key in ('low_rank_decoder_pin', 'shared_decoder_pin', 'lasd_pin')):

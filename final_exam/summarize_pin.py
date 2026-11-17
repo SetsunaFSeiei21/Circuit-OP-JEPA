@@ -23,6 +23,7 @@ from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_P
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_spec_pin
 from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, shared_decoder_spec_pin
 from final_exam.lasd_registry_pin import ALL_LASD_MODELS_PIN as LASD_MODELS_PIN, lasd_spec_pin
+from final_exam.lasd_moe_registry_pin import LASD_MOE_MODELS_PIN, validate_lasd_moe_contract_pin
 from final_exam.gate_version_registry_pin import (
     V1_JOINT_GATE_MODELS_PIN, V1_STAGED_GATE_MODELS_PIN,
     V2_GATE_MODELS_PIN, V2_JOINT_GATE_MODELS_PIN, V2_STAGED_GATE_MODELS_PIN,
@@ -282,6 +283,10 @@ def summary_rows_pin(results, config=None):
         _require_pin_mode(record.get('mode'))
         _validate_gate_report_contract(record['mode'], record['report'].get('op_gate_pin'))
         validate_width_contract_pin(record['mode'], record['report'].get('width_decoder_pin'))
+        if record['mode'] in LASD_MOE_MODELS_PIN:
+            validate_lasd_moe_contract_pin(record['mode'], record['report'].get('lasd_moe_pin'))
+        elif record['report'].get('lasd_moe_pin') is not None:
+            raise ValueError('A non-LASD-MoE model cannot claim LASD-MoE score fusion')
         groups[_circuit_identity(record, config or {})].append(record)
     rows = []
     for circuit, members in sorted(groups.items()):
@@ -448,6 +453,15 @@ def _configuration_sheet(directory, config, run, results, *, allow_incomplete):
                     actual = record['report']['width_decoder_pin']['performance']['lasd']
                     if actual != expected:
                         raise ValueError(f'LASD report disagrees with saved configuration: {path}')
+        if mode in LASD_MOE_MODELS_PIN:
+            model_config = value.get('model')
+            required = {'encoder_layers', 'cross_layers', 'heads', 'dim', 'decoder_layers'}
+            if not isinstance(model_config, dict) or not required <= set(model_config):
+                raise ValueError(f'LASD-MoE requires complete saved configuration: {path}')
+            for record in results:
+                if record['mode'] == mode and record['seed'] == seed:
+                    validate_lasd_moe_contract_pin(mode, record['report'].get('lasd_moe_pin'),
+                                                  model_config, value.get('lasd_moe_pin'))
         documents.append((mode, seed, path, value))
     if missing and not allow_incomplete:
         raise ValueError(f'Missing per-model effective configurations: {missing}')
@@ -551,6 +565,56 @@ def _lasd_sheet(results, stages):
                    (spec.get('score_gradients', {}).get('previous_score_in_delta', 'attached')
                     if spec.get('enabled') and spec.get('dynamics') else 'not_used')], 38)
     sheet.filter_range = f'A4:U{len(sheet.rows)}'
+    return sheet
+
+
+def _lasd_moe_sheet(results, stages):
+    fields = ('Model', 'Seed', 'Attention score scope', 'PE layers fused', 'Heads',
+              'Score input width', 'Experts', 'Selected experts per node', 'Score stop-gradient',
+              'Hidden states detached', 'Final encoder layers', 'Final encoder mask',
+              'Total parameters', 'Trainable parameters', 'Readout epochs', 'Readout seconds',
+              'Prerequisite epochs', 'Prerequisite seconds', 'Gradient history',
+              'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)')
+    sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
+                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90],
+                  freeze_rows=4, freeze_columns=2)
+    sheet.note('LASD-MoE: node-wise PE layer fusion and score stop-gradient comparison', 1, 34)
+    sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
+               'Each node keeps all heads, uses Top-2 of four experts, and fuses PE hidden states before one '
+               'final encoder and the original metric decoder. No hidden state is detached.', height=56)
+    sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
+               'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '
+               'Prerequisites are shared OP prediction/cache dependencies; do not sum these columns across models. '
+               'TrainingCost counts shared stages once. Diagnostics use validation samples.', height=66)
+    sheet.add([Cell(value, 3) for value in fields], 44)
+    stage_by_id = {stage['stage_id']: stage for stage in stages}
+    seen = set()
+    for record in results:
+        mode, seed = record['mode'], record['seed']
+        if mode not in ('device_op_cascade_pin', *LASD_MOE_MODELS_PIN) or (mode, seed) in seen:
+            continue
+        seen.add((mode, seed))
+        spec = record['report'].get('lasd_moe_pin') or {}
+        stage = next((stage_by_id[identity] for identity in record['stage_ids']
+                      if identity.endswith('/' + mode)), {})
+        prerequisites = [stage_by_id[identity] for identity in set(record['stage_ids'])
+                         if identity != stage.get('stage_id')]
+        diagnostic = record['report'].get('lasd_moe_diagnostics_pin') or {}
+        diagnostic_files = {key: diagnostic[key] for key in ('scores', 'weights', 'experts', 'metadata')
+                            if key in diagnostic}
+        history = (f'seed_{seed}_pin/stages_pin/{mode}/history_pin.json: encoder_gradients'
+                   if spec else None)
+        sheet.add([mode, seed, spec.get('attention_scope', 'none; original cascade'),
+                   spec.get('base_layers', 0), spec.get('heads'), spec.get('input_dim', 0),
+                   spec.get('experts', 0), spec.get('top_k', 0), spec.get('score_detach'),
+                   spec.get('hidden_state_detach'), spec.get('final_encoder_layers', 0),
+                   spec.get('final_attention_mask'), stage.get('parameters'), stage.get('trainable_parameters'),
+                   stage.get('epochs'), stage.get('seconds'),
+                   sum(s.get('epochs', 0) for s in prerequisites),
+                   sum(s.get('seconds', 0) for s in prerequisites), history,
+                   diagnostic.get('split'), json.dumps(diagnostic_files, sort_keys=True),
+                   json.dumps(spec, sort_keys=True)], 42)
+    sheet.filter_range = f'A4:V{len(sheet.rows)}'
     return sheet
 
 
@@ -1196,6 +1260,8 @@ def export_results_pin(source, output=None, *, overwrite=False, allow_incomplete
         sheets.append(_shared_decoder_sheet(results, stages))
     if any(mode in LASD_MODELS_PIN for mode in models):
         sheets.append(_lasd_sheet(results, stages))
+    if any(mode in LASD_MOE_MODELS_PIN for mode in models):
+        sheets.append(_lasd_moe_sheet(results, stages))
     if any(mode in ALL_GATE_REPORTS_PIN for mode in models):
         sheets.append(_model_inputs_sheet(models, results))
     if gate_comparison is not None:

@@ -296,6 +296,9 @@ def op_objective_pin(model, batch):
 
 def describe_model_pin(model):
     """Self-contained pin architecture recipe, independent of teacher files."""
+    from .lasd_moe_pin import LASDMoEModelPin, describe_lasd_moe_model_pin
+    if isinstance(model, LASDMoEModelPin):
+        return describe_lasd_moe_model_pin(model)
     from .width_decoder_pin import WidthDeviceOPPredictorPin, WidthDecoderModelPin, describe_width_model_pin
     if isinstance(model, (WidthDeviceOPPredictorPin, WidthDecoderModelPin)):
         return describe_width_model_pin(model)
@@ -323,6 +326,9 @@ def rebuild_model_pin(recipe, config, prep):
     """Restore pin encoders, pooling, broadcast and frozen branches from metadata."""
     _pin_prep(prep)
     kind = recipe['kind']
+    if kind == 'lasd_moe_pin':
+        from .lasd_moe_pin import rebuild_lasd_moe_model_pin
+        return rebuild_lasd_moe_model_pin(recipe, config, prep)
     if kind in ('width_device_op_predictor_pin', 'width_decoder_pin'):
         from .width_decoder_pin import rebuild_width_model_pin
         return rebuild_width_model_pin(recipe, config, prep)

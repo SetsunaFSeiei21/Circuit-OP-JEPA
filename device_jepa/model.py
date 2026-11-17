@@ -212,10 +212,18 @@ class DeviceEncoder(nn.Module):
         return (self.parameter_value(values) + self.parameter_names.weight[None, None],
                 live & batch["device_mask"].unsqueeze(-1))
 
-    def forward_fusion_memories(self, batch, *, attention_observer=None):
-        """Read every PE output in order without rerunning SE/PE or changing its path."""
-        return self.forward_from_structure(self.structure_encoder(batch), batch,
-                                           return_all_fusion=True, attention_observer=attention_observer)
+    def forward_fusion_memories(self, batch, *, attention_observer=None, return_self_masks=False):
+        """Read every PE output in order without rerunning SE/PE or changing its path.
+
+        Optional original self masks let a later graph block reuse the same
+        topology/role rules; existing callers still receive (memories, padding).
+        """
+        structure = self.structure_encoder(batch)
+        memories, padding = self.forward_from_structure(structure, batch,
+            return_all_fusion=True, attention_observer=attention_observer)
+        if return_self_masks:
+            return memories, padding, structure['self_masks']
+        return memories, padding
 
     def forward_from_structure(self, structure, batch, *, fusion_attention_bias=None,
                                return_all_fusion=False, attention_observer=None):

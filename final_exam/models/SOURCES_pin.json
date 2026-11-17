@@ -926,6 +926,23 @@
       "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
       "scope": "Same parameter count and forward computation as the dynamics model. Prevents direct previous-score shortcut while retaining the encoder depth chain; no claim of accuracy or speed improvement before experiments."
     },
+    "lasd_moe_pin": {
+      "model_id": "lasd_moe_pin",
+      "implementation": "Local implementation of the user-specified node-wise LASD Top-2 MoE layer fusion",
+      "source_files_pin": ["lasd_moe_pin.py", "attention_score_pin.py", "../lasd_moe_registry_pin.py"],
+      "attention": "Native PE self-attention layers only; per-head off-diagonal pre-dropout receive/transmit statistics; SE computation and original masks retained",
+      "performance_readout": "Flatten all PE layers' raw R/T and same-head-index deltas -> 4 independent experts with Top-2 routing -> layer softmax -> node-wise PE hidden-state fusion -> one local EncoderBlock -> existing metric decoder",
+      "op_readout": "Unchanged device_op_predictor_pin trained on ID train, selected on validation then frozen",
+      "scope": "Single-circuit pin experiment. Full score gradients and attached hidden states; no attention gate, additional physical supervision or expert-balancing loss."
+    },
+    "lasd_moe_detach_pin": {
+      "model_id": "lasd_moe_detach_pin",
+      "implementation": "Score-only stop-gradient ablation of lasd_moe_pin",
+      "source_files_pin": ["lasd_moe_pin.py", "attention_score_pin.py", "../lasd_moe_registry_pin.py"],
+      "performance_readout": "Identical parameters and forward computation; detach only flattened R/T and deltas immediately before the shared MoE",
+      "op_readout": "Unchanged frozen device_op_predictor_pin",
+      "scope": "All layer memories, router, experts, layer softmax, final encoder and metric decoder remain trainable. Hidden-state bypass paths remain; no claim that hierarchy bypassing is eliminated."
+    },
     "width_decoder_lasd_pin": {
       "model_id": "width_decoder_lasd_pin",
       "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",

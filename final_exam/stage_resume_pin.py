@@ -29,7 +29,7 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     if record.get('granularity') != 'pin':
         raise ValueError('Resume source is not a pin training run')
     if not set(models) <= set(allowed_models):
-        raise ValueError('Resume supports registered staged/joint gates, wide readouts and their cascade baseline')
+        raise ValueError('Resume supports registered pin gates, wide readouts, LASD-MoE and their cascade baseline')
     if not set(models) <= set(record.get('models', [])) or not set(seeds) <= set(record.get('seeds', [])):
         raise ValueError('Resume models and seeds must be selected from the source run')
     # A cascade-only subset still belongs to its original versioned study. Resolve
@@ -56,6 +56,9 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     from final_exam.lasd_registry_pin import ALL_LASD_MODELS_PIN as LASD_MODELS_PIN, lasd_settings_pin
     if set(record.get('models', [])) & set(LASD_MODELS_PIN):
         config['lasd_pin'] = lasd_settings_pin(config.get('lasd_pin'))
+    from final_exam.lasd_moe_registry_pin import LASD_MOE_MODELS_PIN, lasd_moe_settings_pin
+    if set(record.get('models', [])) & set(LASD_MOE_MODELS_PIN):
+        config['lasd_moe_pin'] = lasd_moe_settings_pin(config.get('lasd_moe_pin'))
     if read_json(source / 'config_pin.json') != config:
         raise ValueError('Resume configuration must match the saved source configuration exactly')
     if bool(record.get('smoke', False)) != bool(smoke):

@@ -213,13 +213,16 @@ def _cpu_state(model):
 
 def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=False,
               repeated=False, after_step=None, before_epoch=None, checkpoint_extra=None,
-              artifact_suffix="", resume_from=None, resume_identity=None):
+              artifact_suffix="", resume_from=None, resume_identity=None, gradient_observer=None):
     """Val-best fitting, optionally recovering into a fresh stage directory.
 
     Passing ``resume_identity`` enables atomic epoch-boundary snapshots even on
     a fresh run. Recovery never writes to ``resume_from``. Legacy best-only
     checkpoints restart the stage from those weights with a fresh optimizer;
     only new ``last`` checkpoints restore an exact completed-epoch boundary.
+    Optional ``gradient_observer(model, epoch)`` records gradients immediately
+    after backward, before clipping. Its ``epoch_record`` is saved in the
+    resumable history; it must not alter gradients or training state.
     """
     if artifact_suffix not in ("", "_pin"):
         raise ValueError("Unsupported artifact suffix")
@@ -395,6 +398,8 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
                     if phase == 'train':
                         optimizer.zero_grad(set_to_none=True)
                         loss.backward()
+                        if gradient_observer is not None:
+                            gradient_observer(model, epoch)
                         nn.utils.clip_grad_norm_(parameters, options['grad_clip'], error_if_nonfinite=True)
                         optimizer.step()
                         steps += 1
@@ -413,6 +418,8 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
             record[phase] = dict(loss=float(epoch_loss), objective_weight=count, skipped_samples=skipped)
             if detail_totals:
                 record[phase]['loss_components'] = {name:float(value/count) for name,value in detail_totals.items()}
+        if gradient_observer is not None:
+            record['encoder_gradients'] = gradient_observer.epoch_record(epoch)
         history.append(record)
         print(f"{stage_id}: epoch {epoch} train={record['train']['loss']:.6g} val={record['val']['loss']:.6g}", flush=True)
         if stopping.update(record['val']['loss'], epoch):

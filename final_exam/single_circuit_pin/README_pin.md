@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**LASD-MoE 层融合**：编辑 `train_lasd_moe_pin.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`，运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh`。默认比较 `device_op_cascade_pin`、`lasd_moe_pin` 和 `lasd_moe_detach_pin`；后两者使用全部 PE 层的逐 Head Score Dynamics（SE 不参与统计与融合） 和 Top-2 MoE，最后仅有一套 Metric Decoder，区别只在 Score 输入是否 detach。配置为 `final_exam/configs/lasd_moe_pin.json`，结果、实验日志和 HPC 日志沿用本目录的 `results_pin`、`logs_pin`、`hpc_logs_pin`，详见 [LASD-MoE 说明](../LASD_MOE_pin.md)。
+
 **共同下基模型训练**：在 `train_shared_decoder_pin.sh` 顶部设置 `CIRCUITS`、`MODELS`、`SEEDS`，运行 `bash final_exam/single_circuit_pin/train_shared_decoder_pin.sh`。默认比较原始 `width_decoder_pin` 与仅 cross-K/V、全部 decoder attention、FFN、attention＋FFN 四种共同下基模型。共享仅发生在一个模型内部对应 PE decoder 的相同投影处，采用从头训练的 `W_i=B_i A`，各电路独立提交。配置为 `final_exam/configs/shared_decoder_pin.json`；结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin`、`logs_pin`、`hpc_logs_pin`。失败后使用 `resume_shared_decoder_pin.sh`，详见 [共同下基训练说明](../SHARED_DECODER_TRAINING_pin.md)。
 
 **同一模型内部的 decoder 共享下基诊断**：编辑 `inspect_shared_decoder_pin.sh` 顶部的 `CIRCUITS` / `SOURCE_RUNS` 配对、`MODELS`、`SEEDS`、候选 `RANKS` 和训练/验证样本数，运行 `bash final_exam/single_circuit_pin/inspect_shared_decoder_pin.sh`。每个 checkpoint 内分别对多个 PE decoder 的对应 Q/K/V/O 或 FFN 拟合共同下基、独立上基；多个电路独立分析，不混合权重。导出各 checkpoint 和汇总 Excel、CSV、图及可选验证误差，不训练、不修改来源 checkpoint。见 [共享下基诊断说明](../SHARED_DECODER_BASIS_pin.md)。

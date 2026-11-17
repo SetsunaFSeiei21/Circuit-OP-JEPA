@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**LASD-MoE 层融合**：新增 `lasd_moe_pin` 与 `lasd_moe_detach_pin`。所有 PE 层的逐 Head Score Dynamics（SE 保持原始前缀） 为每个节点生成 Top-2 MoE 层权重，融合后经过一个 Graph Encoder block 和一套 Metric Decoder；Detach 只作用于 Score 输入，所有层的隐藏表示保持梯度。启动 `single_circuit_pin/train_lasd_moe_pin.sh`，配置 `configs/lasd_moe_pin.json`，默认包含 `device_op_cascade_pin` 对照，详见 [LASD-MoE 结构、梯度边界与使用说明](LASD_MOE_pin.md)。
+
 **共同下基的宽 decoder 训练**：新增 `width_decoder_shared_kv_pin`、`width_decoder_shared_attention_pin`、`width_decoder_shared_ffn_pin`、`width_decoder_shared_both_pin`。仅在同一模型内部、对应 PE decoder 的相同投影位置共享可训练下基 A，各分支上基 B 独立，从头训练；OP predictor 保持原结构。入口 `single_circuit_pin/train_shared_decoder_pin.sh`，配置 `configs/shared_decoder_pin.json`，恢复入口 `single_circuit_pin/resume_shared_decoder_pin.sh`。多个电路各自提交独立作业，详见 [结构、训练、结果和日志说明](SHARED_DECODER_TRAINING_pin.md)。
 
 **多 PE 宽读出**：`width_decoder_pin` 在每个 PE 后独立读出性能特征，再拼接并用 MoE-MLP 融合；`width_decoder_op_pin` 的器件级 OP 预测器也采用这种结构。对照为 `device_op_cascade_pin`，均不加门控。启动 `single_circuit_pin/train_width_decoder_pin.sh`，详见 [结构、配置、日志和恢复说明](WIDTH_DECODER_pin.md)。
