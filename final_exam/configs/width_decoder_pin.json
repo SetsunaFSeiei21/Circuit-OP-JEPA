@@ -61,7 +61,8 @@
     "models": [
       "device_op_cascade_pin",
       "width_decoder_pin",
-      "width_decoder_op_pin"
+      "width_decoder_op_pin",
+      "width_decoder_detach_pin"
     ],
     "model_overrides": {},
     "xgboost": {

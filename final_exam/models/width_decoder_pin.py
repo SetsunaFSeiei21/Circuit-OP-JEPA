@@ -9,7 +9,10 @@ import torch
 from torch import nn
 
 from device_jepa.model import ModelConfig
-from final_exam.width_registry_pin import ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, width_settings_pin
+from final_exam.width_registry_pin import (
+    ALL_WIDTH_MODELS_PIN as WIDTH_MODELS_PIN, WIDTH_DETACH_MODELS_PIN,
+    width_settings_pin, detach_memory_spec_pin,
+)
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_settings_pin, low_rank_spec_pin
 from final_exam.shared_decoder_registry_pin import (
     SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin, shared_decoder_spec_pin,
@@ -68,12 +71,14 @@ class DecoderFeaturesPin(nn.Module):
 
 
 class MultiPEReadoutPin(nn.Module):
-    def __init__(self, model_config, settings, *, output_dim, metric_count=None):
+    def __init__(self, model_config, settings, *, output_dim, metric_count=None,
+                 detach_shallow_memory=False):
         super().__init__()
         self.cfg = ModelConfig(**model_config)
         self.settings = width_settings_pin(settings, model_config)
         self.metric_count = metric_count
         self.output_dim = output_dim
+        self.detach_shallow_memory = detach_shallow_memory
         self.branches = nn.ModuleList(DecoderFeaturesPin(self.cfg, metric_count)
                                       for _ in range(self.cfg.cross_layers))
         self.moe = DenseMoEMLPPin(self.cfg.cross_layers * self.cfg.dim,
@@ -95,6 +100,8 @@ class MultiPEReadoutPin(nn.Module):
             contract['shared_down_basis'] = deepcopy(self.shared_down_spec)
         if hasattr(self, 'lasd_spec'):
             contract['lasd'] = deepcopy(self.lasd_spec)
+        if self.detach_shallow_memory:
+            contract['memory_gradients'] = detach_memory_spec_pin(len(self.branches))
         return contract
 
     def features(self, memories, padding, score_features=None):
@@ -109,6 +116,11 @@ class MultiPEReadoutPin(nn.Module):
                              zip(self.score_adapters, memories, score_features))
         elif score_features is not None:
             raise ValueError('Score features require an enabled LASD readout')
+        if self.detach_shallow_memory:
+            # Cut only these readout edges. The original PE tensors already fed
+            # the next PE normally; all decoders and the final PE stay trainable.
+            memories = tuple(memory.detach() if i < len(memories) - 1 else memory
+                             for i, memory in enumerate(memories))
         return torch.cat([branch(memory, padding)
                           for branch, memory in zip(self.branches, memories)], dim=-1)
 
@@ -150,7 +162,8 @@ class WidthDecoderModelPin(DeviceOPGateModelPin):
         self.mode = mode
         self.width_config = width_settings_pin(width_config, self.model_config)
         self.decoder = MultiPEReadoutPin(self.model_config, self.width_config,
-            output_dim=1, metric_count=len(prep['feature_spec']['metric_names']))
+            output_dim=1, metric_count=len(prep['feature_spec']['metric_names']),
+            detach_shallow_memory=mode in WIDTH_DETACH_MODELS_PIN)
         self.low_rank_config = (low_rank_settings_pin(low_rank_config)
                                 if mode in LOW_RANK_MODELS_PIN else None)
         self.low_rank_spec = low_rank_spec_pin(mode, self.low_rank_config, self.model_config)

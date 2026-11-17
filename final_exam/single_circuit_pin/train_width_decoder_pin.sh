@@ -10,6 +10,7 @@ MODELS=(
     device_op_cascade_pin     # Original device OP predictor and final-PE performance decoder.
     width_decoder_pin        # Original OP predictor; performance decoder after each PE.
     width_decoder_op_pin     # Both OP predictor and performance model read every PE.
+    width_decoder_detach_pin # Original OP predictor; detach shallow decoder memories only.
 )
 SEEDS=(17 29 43)
 # width_decoder_pin controls n_experts, hidden_dim and dropout in CONFIG.

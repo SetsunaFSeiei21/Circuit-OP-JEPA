@@ -1,14 +1,15 @@
 # 多 PE 宽读出：性能端与 OP 预测端
 
-本组实验新增 `width_decoder_pin` 和 `width_decoder_op_pin`，对照为原有 `device_op_cascade_pin`。两种新模型都不使用 OP 门控，也不进行教师 latent 蒸馏。原有门控版本和模型 ID 保留原行为。
+本组实验包含 `width_decoder_pin`、`width_decoder_op_pin` 和浅层读出断梯度版本 `width_decoder_detach_pin`，对照为原有 `device_op_cascade_pin`。这些模型不使用 OP 门控，也不进行教师 latent 蒸馏。原有门控版本和模型 ID 保留原行为。
 
-## 1. 三个模型分别改变哪里
+## 1. 四个模型分别改变哪里
 
 | 模型 ID | 器件级 OP 预测器 | 引脚级性能预测器 |
 |---|---|---|
 | `device_op_cascade_pin` | 原始设计编码器最后一个 PE 的器件特征 → MLP → OP 向量 | 最后一个 PE → 一组指标查询 Decoder → MLP |
 | `width_decoder_pin` | 与对照完全相同，同一 seed 在本次实验内共享冻结 checkpoint | 每个 PE → 独立指标查询 Decoder；拼接同一指标的各层特征 → MoE-MLP |
 | `width_decoder_op_pin` | 每个 PE → 独立器件查询 Decoder；拼接同一器件的各层特征 → MoE-MLP → OP 向量 | 与 `width_decoder_pin` 相同的宽性能读出，使用本模型自己的冻结宽 OP 预测器 |
+| `width_decoder_detach_pin` | 与 `width_decoder_pin` 相同，复用冻结的原始器件级 OP predictor | 与 `width_decoder_pin` 相同的参数和前向结构；仅将非最后一个 PE 的 Decoder 输入 detach，保留最后一个 PE 的读出梯度和完整 Encoder 链 |
 
 这里的“宽”指并列读取多个 PE 的输出，不是仅增加最后一个 Decoder 的 hidden dimension。两端仍使用仓库既有的 ZeroSim SE/PE 编码框架：拓扑结构编码、设计参数/OP 融合、拓扑掩码、端口身份、物理器件身份都沿用原实现。
 
@@ -26,6 +27,31 @@
 默认 3 个 PE、128 维表示、9 个性能指标时，拼接尺寸为 `[B,9,384]`。所有 decoder 分支、下游 SE/PE 与 MoE 在同一性能训练阶段更新。没有逐层额外损失、router balancing loss、门控 loss 或新的蒸馏目标。
 
 PE 分支数由 **`cross_layers`** 决定。当前编码器的结构层数为 `encoder_layers-cross_layers`。例如 `encoder_layers=7,cross_layers=3` 是 4 个结构层和 3 个 PE，仍然有 3 个宽读出分支。
+
+### 2.1 浅层 Decoder 输入 detach 变体
+
+`width_decoder_detach_pin` 将“浅层”定义为 **除最后一个 PE 外的所有 PE**。假设 PE 输出为 `h_l`，原有输出归一化/投影得到 `m_l`，则：
+
+```python
+# Encoder 主干和所有 PE 顺序执行，h_l 正常传给下一层。
+memories, padding = encoder.forward_fusion_memories(inputs)
+decoder_inputs = tuple(m.detach() if i < len(memories) - 1 else m
+                       for i, m in enumerate(memories))
+features = [decoder(m, padding) for decoder, m in zip(decoders, decoder_inputs)]
+prediction = moe(torch.cat(features, dim=-1))
+```
+
+实际 detach 位于 Encoder 的 `output_norm` / `output_projection` **之后**、各性能 Decoder **之前**。因此浅层读出也不直接更新这两个共享输出模块；最后一个 PE 的读出仍会更新它们。
+
+以 3 个 PE 为例：`D1(stopgrad(m1))`、`D2(stopgrad(m2))`、`D3(m3)`。D1/D2/D3 自身的 query、attention、FFN 与 MoE 都正常训练；只有 D1/D2 通过各自 memory 回到 Encoder 的梯度被切断。最终损失仍可经 D3 → PE3 → PE2 → PE1 → SE 更新全部 Encoder。**不在 PE1→PE2 或 PE2→PE3 之间调用 detach，不冻结浅层 Encoder，也不将 Decoder 包在 no_grad 中。**
+
+该变体不增加参数，不额外加入 LASD、门控或损失。与原 `width_decoder_pin` 使用相同初始化、权重和随机状态时，前向数值保持一致；训练后的结果会因梯度路径不同而产生差异。若配置只有 1 个 PE，没有浅层分支，detach 集合为空，前向与反向均退化为原模型。
+
+同一 circuit/seed 下，两者共享一次原始 OP predictor 的训练和冻结 checkpoint，性能模型从头独立训练。原来已经训练过的普通宽模型不能改名后作为 detach 模型的同一次断点续训；新实验必须保留自己的模型 ID 和架构记录。
+
+`memory_gradients` 会写入 checkpoint recipe、`width_audit_pin.json`、`test_pin.json` 以及 Excel 的 `WidthDecoder` 页，记录 1-based 的 detached/attached PE 编号；加载和汇总时校验其与模型 ID 一致。可直接复用下方的训练与恢复脚本，无需额外 shell 脚本。
+
+这项消融检验浅层读出梯度路径的作用，不能仅凭结构修改断言解决了 hierarchy bypassing、提高精度或节省训练时间。最终融合仍可使用浅层 Decoder 的特征；detach 改变梯度路径，不限制 MoE 对浅层特征的依赖。
 
 ## 3. 宽 OP 端如何保持器件对应关系
 
@@ -59,7 +85,7 @@ OP 端和性能端的 Decoder/MoE 都是独立模块，两端不共享参数。�
 
 ## 5. 训练、早停与预算
 
-三个模型都是先 OP、后性能：
+四个模型都是先 OP、后性能：
 
 | 阶段 | 配置项 | 默认最多轮数 | 监督 | 更新范围 |
 |---|---|---:|---|---|
@@ -70,7 +96,7 @@ OP 端和性能端的 Decoder/MoE 都是独立模块，两端不共享参数。�
 
 OP 阶段结束后加载其验证最优权重，冻结全部 OP 参数，并在下游 `train()` 时保持 OP 分支 `eval()`。性能损失不反传进 OP predictor。下游训练、验证、测试都使用预测 OP；真实 OP 仅用于 OP 预测器的训练和验证监督。标准化继续只从 ID 训练集拟合。
 
-同一 seed 内，前两个模型共享一次原始 OP 训练，第三个模型另训一次宽 OP predictor；不是为三个模型重复训练三份相同 OP predictor。每个模型的性能训练是独立的。共享阶段成本按阶段 ID 去重。宽读出增加参数和计算，**相同 epoch 上限不代表相同 FLOPs 或 wall time**，应同时查看 Excel 中的 TrainingCost。
+同一 seed 内，`device_op_cascade_pin`、`width_decoder_pin`、`width_decoder_detach_pin` 共享一次原始 OP 训练；`width_decoder_op_pin` 另训一次宽 OP predictor。每个模型的性能训练是独立的。共享阶段成本按阶段 ID 去重。宽读出增加参数和计算，**相同 epoch 上限不代表相同 FLOPs 或 wall time**，应同时查看 Excel 中的 TrainingCost。
 
 ## 6. 启动、数据量与目录
 
@@ -82,9 +108,12 @@ MODELS=(
     device_op_cascade_pin
     width_decoder_pin
     width_decoder_op_pin
+    width_decoder_detach_pin
 )
 SEEDS=(17 29 43)
 ```
+
+只比较浅层读出 detach 时，将模型数组改为 `MODELS=(width_decoder_pin width_decoder_detach_pin)`；其余配置保持一致。
 
 脚本默认只列 `two_stage_folded_opamp`；上例展示两个电路，每个电路独立提交一个单电路实验，不是 OOD。配置为 `final_exam/configs/width_decoder_pin.json`。`dataset.max_samples_per_circuit=20000` 表示先按 `sampling_seed` 抽取最多 20,000 条，再划分；默认 `null` 使用全量。
 
@@ -109,7 +138,7 @@ bash final_exam/single_circuit_pin/train_width_decoder_pin.sh
 
 最终模型 checkpoint 内也包含自身的冻结 OP predictor、完整架构 recipe、字段顺序和标准化参数；部署不需要从其他实验路径重新寻找 predictor。独立保存的 shared checkpoint 用于审计与复用。`width_audit_pin.json` 记录分支结构、原始 predictor checkpoint 路径、状态摘要和 decoder 参数量。
 
-Excel 保留各模型 MAE/RMSE/R² 的跨 seed 均值与标准差、每个 seed 明细、配置和成本，并增加 `WidthDecoder` 表，明确两端的读出结构、分支数、拼接维数、专家数和冻结状态。仅运行一个 seed 时不能把结果解释为跨 seed 稳定性证据。
+Excel 保留各模型 MAE/RMSE/R² 的跨 seed 均值与标准差、每个 seed 明细、配置和成本，并增加 `WidthDecoder` 表，明确两端的读出结构、分支数、拼接维数、专家数、冻结状态及 Decoder memory 的梯度策略/PE 编号。仅运行一个 seed 时不能把结果解释为跨 seed 稳定性证据。
 
 ## 7. 中断恢复
 
@@ -123,10 +152,11 @@ bash final_exam/single_circuit_pin/resume_width_decoder_pin.sh \
 ## 8. 实现位置与检查范围
 
 - `device_jepa/model.py`：增加只读多 PE 输出接口。默认 `forward` 行为、旧参数名和旧 checkpoint 不变。
-- `final_exam/models/width_decoder_pin.py`：分支 decoder、稠密 MoE、两种宽模型及独立架构保存/重建。
+- `final_exam/models/width_decoder_pin.py`：分支 decoder、稠密 MoE、宽模型及浅层读出 detach、独立架构保存/重建。
 - `final_exam/width_registry_pin.py`：模型名、配置校验和轻量报告契约校验。
 - `final_exam/run_pin.py`：按选择构建依赖、冻结 predictor、分离预测缓存、模型保存、阶段恢复与报告。
 - `final_exam/summarize_pin.py`：原有指标表加宽读出结构表。
 - 新测试覆盖 PE 顺序/梯度、器件与引脚边界、标签隔离、冻结权重、checkpoint 重建、模型子集、混跑缓存、完整阶段复用和中断 epoch 的精确恢复。
+- detach 测试额外检查参数/初始化/前向/dropout RNG 一致性、逐分支梯度切断、Encoder 深层路径保留、每个 Decoder 持续训练、1 个 PE 的边界情况、架构元数据及断点恢复。
 
 这些测试用于验证实现和工程流程；不代表完整 60,000 样本 GPU 实验已经执行，也不预先断言宽读出会提高预测精度。

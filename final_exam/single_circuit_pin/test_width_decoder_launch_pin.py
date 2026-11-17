@@ -6,7 +6,7 @@ from final_exam.single_circuit_pin import test_staged_op_gate_launch_pin as laun
 
 
 class WidthDecoderLauncherPinTests(launcher_tests.StagedGateLauncherPinTests):
-    MODELS = ['device_op_cascade_pin', 'width_decoder_pin', 'width_decoder_op_pin']
+    MODELS = ['device_op_cascade_pin', 'width_decoder_pin', 'width_decoder_op_pin', 'width_decoder_detach_pin']
     SCRIPT_NAME = 'train_width_decoder_pin.sh'
     CONFIG_NAME = 'width_decoder_pin.json'
     RUN_TAG = '_width_decoder_'

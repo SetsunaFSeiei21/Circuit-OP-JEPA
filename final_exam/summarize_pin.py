@@ -462,13 +462,15 @@ def _width_decoder_sheet(results):
     fields = ('Model', 'Seed', 'OP readout', 'OP decoder branches', 'Performance decoder branches',
               'Feature width', 'Concatenated width', 'Decoder layers per branch',
               'MLP experts', 'Expert hidden width', 'MoE dropout', 'OP predictor frozen',
-              'Measured OP at inference', 'Full architecture (JSON)')
-    sheet = Sheet('WidthDecoder', [38, 12, 40, 24, 28, 20, 24, 28, 18, 24, 20, 24, 24, 90],
+              'Measured OP at inference', 'Decoder memory gradient policy',
+              'Detached decoder PE inputs', 'Attached decoder PE inputs', 'Full architecture (JSON)')
+    sheet = Sheet('WidthDecoder', [38, 12, 40, 24, 28, 20, 24, 28, 18, 24, 20, 24, 24, 42, 28, 28, 90],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('Multi-PE decoder comparison', 1, 34)
     sheet.note('Each PE has a decoder branch; concatenate feature vectors for the same metric/device. '
                'Shared-down variants tie corresponding input factors only; see the architecture and SharedDecoder sheet.', height=42)
-    sheet.note('OP predictor is fitted first, then frozen. Equal epochs do not imply equal compute cost.', height=34)
+    sheet.note('OP predictor is fitted first, then frozen. Detached PE inputs refer only to decoder branches; '
+               'the encoder chain and all decoders still train. Equal epochs do not imply equal compute cost.', height=42)
     sheet.add([Cell(value, 3) for value in fields], 40)
     for record in results:
         if record['mode'] not in WIDTH_MODELS_PIN:
@@ -476,11 +478,15 @@ def _width_decoder_sheet(results):
         contract = record['report']['width_decoder_pin']
         performance, predictor = contract['performance'], contract['op_predictor']
         mixture = performance['mixture']
+        gradients = performance.get('memory_gradients', {})
         sheet.add([record['mode'], record['seed'], predictor['readout'], predictor.get('branch_count', 0),
                    performance['branch_count'], performance['feature_dim'], performance['concatenated_dim'],
                    performance['decoder_layers'], mixture['n_experts'], mixture['hidden_dim'],
-                   mixture['dropout'], 'yes', 'no', json.dumps(contract, sort_keys=True)], 38)
-    sheet.filter_range = f'A4:N{len(sheet.rows)}'
+                   mixture['dropout'], 'yes', 'no', gradients.get('policy', 'all_decoder_memories_attached'),
+                   json.dumps(gradients.get('detached_decoder_inputs', [])),
+                   json.dumps(gradients.get('attached_decoder_inputs', list(range(1, performance['branch_count'] + 1)))),
+                   json.dumps(contract, sort_keys=True)], 38)
+    sheet.filter_range = f'A4:Q{len(sheet.rows)}'
     return sheet
 
 

@@ -818,6 +818,18 @@
       "training": "Fit device OP predictor on ID train observations; freeze it; supervise the complete downstream model; no gates or latent distillation",
       "scope": "Single circuit pin downstream; canonical device OP predictor. No claim of original ZeroSim implementation or benchmark reproduction."
     },
+    "width_decoder_detach_pin": {
+      "model_id": "width_decoder_detach_pin",
+      "source_files_pin": [
+        "width_decoder_pin.py",
+        "../width_registry_pin.py"
+      ],
+      "implementation": "Local shallow-decoder stop-gradient variant of width_decoder_pin; unchanged parameters and forward computation",
+      "performance_readout": "Detach each non-final PE memory after encoder output normalization/projection, only at its decoder input; final PE memory attached; independent metric-query decoders -> concatenation -> original dense MoE",
+      "op_readout": "Unchanged device_op_predictor_pin final-device MLP, trained once per circuit/seed then frozen",
+      "training": "All downstream encoder blocks, all decoders and MoE train; shallow encoders receive gradients through the deepest PE path; no encoder-chain detach, gates, latent distillation or LASD",
+      "scope": "Within-model readout gradient ablation; no claim of improved accuracy or reduced compute without experiments."
+    },
     "width_decoder_op_pin": {
       "model_id": "width_decoder_op_pin",
       "source_files_pin": [
