@@ -6,7 +6,8 @@ from final_exam.single_circuit_pin.test_staged_op_gate_launch_pin import StagedG
 
 
 class LASDLauncherPinTests(StagedGateLauncherPinTests):
-    MODELS = ['width_decoder_pin', 'width_decoder_score_pin', 'width_decoder_lasd_pin']
+    MODELS = ['width_decoder_pin', 'width_decoder_score_pin', 'width_decoder_lasd_pin',
+              'width_decoder_score_detach_pin', 'width_decoder_lasd_detach_pin']
     SCRIPT_NAME = 'train_lasd_pin.sh'
     CONFIG_NAME = 'lasd_pin.json'
     RUN_TAG = '_lasd_'

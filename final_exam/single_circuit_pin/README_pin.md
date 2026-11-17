@@ -185,6 +185,7 @@ bash final_exam/single_circuit_pin/train_staged_op_gate_fusion_pin.sh
 新增 `width_decoder_score_pin`（逐 Head R/T）和 `width_decoder_lasd_pin`（再加逐 Head ΔR/ΔT）。
 每个 PE 的独立节点 MLP 改变 Decoder memory；Encoder 消息路径、独立性能 Query 和最终 MoE 保留。
 原 `width_decoder_pin` 作对照。配置：`final_exam/configs/lasd_pin.json`。
+配对断梯度模型为 `width_decoder_score_detach_pin` 和 `width_decoder_lasd_detach_pin`：浅层 memory/Score 在可训练节点 MLP 之前 detach，最深层正常回传；LASD 差分的上一层 Score 也停止梯度。OP 预测器不变。
 
 ```bash
 bash final_exam/single_circuit_pin/train_lasd_pin.sh --dry-run

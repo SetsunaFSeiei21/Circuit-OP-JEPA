@@ -2,6 +2,8 @@
 import math
 
 LASD_MODELS_PIN = ('width_decoder_score_pin', 'width_decoder_lasd_pin')
+LASD_DETACH_MODELS_PIN = ('width_decoder_score_detach_pin', 'width_decoder_lasd_detach_pin')
+ALL_LASD_MODELS_PIN = LASD_MODELS_PIN + LASD_DETACH_MODELS_PIN
 
 
 def lasd_settings_pin(value=None):
@@ -24,16 +26,16 @@ def lasd_settings_pin(value=None):
 
 
 def lasd_spec_pin(mode, value, model_config):
-    if mode not in LASD_MODELS_PIN:
+    if mode not in ALL_LASD_MODELS_PIN:
         return None
     options = lasd_settings_pin(value)
     dim, heads = model_config['dim'], model_config['heads']
     layers = model_config['cross_layers']
     offset = model_config['encoder_layers'] - layers
-    dynamics = mode == 'width_decoder_lasd_pin'
+    dynamics = mode in ('width_decoder_lasd_pin', 'width_decoder_lasd_detach_pin')
     features = (4 if dynamics else 2) * heads
     hidden = options['hidden_dim']
-    return dict(version=1, enabled=options['enabled'], dynamics=dynamics,
+    result = dict(version=1, enabled=options['enabled'], dynamics=dynamics,
         attention_scope='pe_self_attention_only', heads=heads, pe_layers=layers,
         head_reduction='none', difference='same_head_index' if dynamics else 'none',
         first_delta='zero_boundary_fill_not_observed',
@@ -53,10 +55,20 @@ def lasd_spec_pin(mode, value, model_config):
         adapter_parameters=(layers*((dim+features)*hidden+hidden+hidden*dim+dim)
                             if options['enabled'] else 0),
         score_chunk_size=options['score_chunk_size'], checkpoint_scores=options['checkpoint_scores'])
+    if mode in LASD_DETACH_MODELS_PIN:
+        # Keep old model contracts byte-for-byte compatible. A single boolean
+        # would not describe partial detach accurately for the new variants.
+        del result['detach_scores']
+        result['score_gradients'] = dict(
+            active=options['enabled'], policy='detach_shallow_inputs_before_adapter',
+            detached_pe_inputs=list(range(1, layers)), attached_current_pe_inputs=[layers],
+            previous_score_in_delta='stop_gradient' if dynamics else 'not_used',
+            score_adapters_frozen=False)
+    return result
 
 
 def validate_lasd_contract_pin(mode, spec, feature_dim, branch_count):
-    if mode not in LASD_MODELS_PIN:
+    if mode not in ALL_LASD_MODELS_PIN:
         if spec is not None:
             raise ValueError('A non-LASD model cannot claim LASD score fusion')
         return

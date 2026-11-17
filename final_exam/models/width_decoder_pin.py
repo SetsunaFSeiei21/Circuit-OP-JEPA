@@ -17,7 +17,10 @@ from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_setti
 from final_exam.shared_decoder_registry_pin import (
     SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin, shared_decoder_spec_pin,
 )
-from final_exam.lasd_registry_pin import LASD_MODELS_PIN, lasd_settings_pin, lasd_spec_pin
+from final_exam.lasd_registry_pin import (
+    ALL_LASD_MODELS_PIN as LASD_MODELS_PIN, LASD_DETACH_MODELS_PIN,
+    lasd_settings_pin, lasd_spec_pin,
+)
 from .op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
 
@@ -101,7 +104,8 @@ class MultiPEReadoutPin(nn.Module):
         if hasattr(self, 'lasd_spec'):
             contract['lasd'] = deepcopy(self.lasd_spec)
         if self.detach_shallow_memory:
-            contract['memory_gradients'] = detach_memory_spec_pin(len(self.branches))
+            contract['memory_gradients'] = detach_memory_spec_pin(
+                len(self.branches), getattr(self, 'lasd_spec', None))
         return contract
 
     def features(self, memories, padding, score_features=None):
@@ -109,6 +113,15 @@ class MultiPEReadoutPin(nn.Module):
             raise ValueError('Wide readout requires one memory per PE block')
         if any(memory.shape != memories[0].shape for memory in memories):
             raise ValueError('PE memories must preserve graph/device/pin ordering')
+        if self.detach_shallow_memory:
+            # Cut readout edges only, BEFORE adapters so every adapter still
+            # trains. The original tensors fed the next PE normally. Detach
+            # scores as well; otherwise their Q/K path bypasses memory detach.
+            memories = tuple(memory.detach() if i < len(memories) - 1 else memory
+                             for i, memory in enumerate(memories))
+            if score_features is not None:
+                score_features = tuple(score.detach() if i < len(memories) - 1 else score
+                                       for i, score in enumerate(score_features))
         if hasattr(self, 'score_adapters'):
             if score_features is None or len(score_features) != len(memories):
                 raise ValueError('LASD requires one score feature tensor per PE')
@@ -116,11 +129,6 @@ class MultiPEReadoutPin(nn.Module):
                              zip(self.score_adapters, memories, score_features))
         elif score_features is not None:
             raise ValueError('Score features require an enabled LASD readout')
-        if self.detach_shallow_memory:
-            # Cut only these readout edges. The original PE tensors already fed
-            # the next PE normally; all decoders and the final PE stay trainable.
-            memories = tuple(memory.detach() if i < len(memories) - 1 else memory
-                             for i, memory in enumerate(memories))
         return torch.cat([branch(memory, padding)
                           for branch, memory in zip(self.branches, memories)], dim=-1)
 
@@ -163,7 +171,7 @@ class WidthDecoderModelPin(DeviceOPGateModelPin):
         self.width_config = width_settings_pin(width_config, self.model_config)
         self.decoder = MultiPEReadoutPin(self.model_config, self.width_config,
             output_dim=1, metric_count=len(prep['feature_spec']['metric_names']),
-            detach_shallow_memory=mode in WIDTH_DETACH_MODELS_PIN)
+            detach_shallow_memory=mode in WIDTH_DETACH_MODELS_PIN + LASD_DETACH_MODELS_PIN)
         self.low_rank_config = (low_rank_settings_pin(low_rank_config)
                                 if mode in LOW_RANK_MODELS_PIN else None)
         self.low_rank_spec = low_rank_spec_pin(mode, self.low_rank_config, self.model_config)
@@ -215,10 +223,12 @@ class WidthDecoderModelPin(DeviceOPGateModelPin):
                 raise ValueError('LASD PE order must match the original encoder sequence')
             scores.append(self.score_extractor(attention, values, mask, valid))
         memories, padding = self.memory(batch, attention_observer=observe)
-        features, differences = layer_score_features_pin(scores, dynamics=self.lasd_spec['dynamics'])
+        features, differences = layer_score_features_pin(scores, dynamics=self.lasd_spec['dynamics'],
+            detach_previous=self.mode in LASD_DETACH_MODELS_PIN)
         prediction = self.decoder(memories, padding, features)
         if return_scores:
-            # Still differentiable. Only diagnostic serialization detaches.
+            # Raw scores remain live observations; differences follow the
+            # model's gradient policy. Serialization detaches diagnostic data.
             return prediction, dict(scores=torch.stack(scores), differences=torch.stack(differences),
                                     valid=~padding)
         return prediction

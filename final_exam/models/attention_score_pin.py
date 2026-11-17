@@ -29,12 +29,14 @@ than multiplying by zero, so padded NaN entries cannot contaminate real nodes.
     return torch.stack((off_diagonal.sum(-1), off_diagonal.sum(-2)), -1).permute(0, 2, 1, 3)
 
 
-def layer_score_features_pin(scores, *, dynamics, node_ids=None):
+def layer_score_features_pin(scores, *, dynamics, node_ids=None, detach_previous=False):
     """Keep all heads and PE layers; first difference is boundary-filled zero.
 
-The native encoder never samples/reorders tokens. External callers that do
-reorder must provide per-layer node_ids; mismatch is rejected, not subtracted.
-"""
+    The native encoder never samples/reorders tokens. External callers that do
+    reorder must provide per-layer node_ids; mismatch is rejected, not subtracted.
+    Detach variants stop the previous score's direct gradient through a delta;
+    numerical values and current-layer gradients are unchanged.
+    """
     if not scores or any(s.shape != scores[0].shape for s in scores):
         raise ValueError('Layer scores must preserve batch/head/node axes')
     if scores[0].ndim != 4 or scores[0].shape[-1] != 2:
@@ -45,7 +47,11 @@ reorder must provide per-layer node_ids; mismatch is rejected, not subtracted.
             raise ValueError('Cross-layer node identities are not aligned')
     result, differences = [], []
     for i, current in enumerate(scores):
-        delta = torch.zeros_like(current) if i == 0 else current - scores[i-1]
+        if i == 0:
+            delta = torch.zeros_like(current)
+        else:
+            previous = scores[i-1].detach() if detach_previous else scores[i-1]
+            delta = current - previous
         differences.append(delta)
         raw = current.flatten(-2)
         result.append(torch.cat((raw, delta.flatten(-2)), -1) if dynamics else raw)

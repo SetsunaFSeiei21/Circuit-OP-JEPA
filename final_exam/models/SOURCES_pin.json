@@ -910,6 +910,22 @@
       "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
       "scope": "Single-circuit pin performance experiment. No gates, graph pooling, head averaging, query recurrence or physical information-flow claim."
     },
+    "width_decoder_score_detach_pin": {
+      "model_id": "width_decoder_score_detach_pin",
+      "implementation": "Local shallow readout stop-gradient ablation of width_decoder_score_pin",
+      "source_files_pin": ["attention_score_pin.py", "width_decoder_pin.py", "../lasd_registry_pin.py"],
+      "performance_readout": "Detach shallow PE memories AND per-head R/T before each trainable score MLP; deepest memory/current scores attached; independent metric decoders and original MoE train",
+      "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
+      "scope": "Same parameter count and forward computation as the score model. Encoder depth chain remains differentiable; only shallow readout gradient edges are cut."
+    },
+    "width_decoder_lasd_detach_pin": {
+      "model_id": "width_decoder_lasd_detach_pin",
+      "implementation": "Local shallow readout stop-gradient ablation of width_decoder_lasd_pin",
+      "source_files_pin": ["attention_score_pin.py", "width_decoder_pin.py", "../lasd_registry_pin.py"],
+      "performance_readout": "Detach shallow memory/R/T/delta inputs before trainable MLPs; each delta uses current_score - stopgrad(previous_score), first delta zero; final memory/current score, all MLPs/decoders and MoE train",
+      "op_readout": "Unchanged device_op_predictor_pin trained first then frozen",
+      "scope": "Same parameter count and forward computation as the dynamics model. Prevents direct previous-score shortcut while retaining the encoder depth chain; no claim of accuracy or speed improvement before experiments."
+    },
     "width_decoder_lasd_pin": {
       "model_id": "width_decoder_lasd_pin",
       "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",

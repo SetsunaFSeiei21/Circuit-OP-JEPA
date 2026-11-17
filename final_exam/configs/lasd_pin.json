@@ -61,7 +61,9 @@
     "models": [
       "width_decoder_pin",
       "width_decoder_score_pin",
-      "width_decoder_lasd_pin"
+      "width_decoder_lasd_pin",
+      "width_decoder_score_detach_pin",
+      "width_decoder_lasd_detach_pin"
     ],
     "model_overrides": {},
     "xgboost": {

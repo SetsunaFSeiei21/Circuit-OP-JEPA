@@ -1,6 +1,6 @@
 # LASD：宽 Decoder 的逐 Head 注意力分数读出
 
-## 1. 最终规格与三个模型
+## 1. 最终规格与模型
 
 本实现遵循确认后的 **1A、2B、3A**，不是最初文字中的“共享节点 MLP → Sum Pooling → 图级分支”版本。
 
@@ -9,6 +9,8 @@
 | `width_decoder_pin` | 原来的该 PE 节点表示 | 独立性能 Query；所有分支输出拼接后进入原 MoE |
 | `width_decoder_score_pin` | 节点表示 + 每个 Head 的 R、T，经过该 PE 独立 MLP | 同上 |
 | `width_decoder_lasd_pin` | 节点表示 + 每个 Head 的 R、T、ΔR、ΔT，经过该 PE 独立 MLP | 同上 |
+| `width_decoder_score_detach_pin` | 与 Score 模型相同；浅层表示与 R/T 在 MLP **之前** detach | 所有 MLP、Decoder、MoE 继续训练 |
+| `width_decoder_lasd_detach_pin` | 与 Dynamics 模型相同；浅层输入 detach，差分的上一层 Score 停止梯度 | 同上；最深层表示/当前 Score 正常回传 |
 
 新名称中的 score 指分数输入，不是“仅靠分数、丢弃节点表示”。LASD 指 Layer-wise Attention Score Dynamics。
 第一版不加入门控、低秩参数化、共享下基、Attention Rollout、特征流量估计、强化学习或新的 Transformer Decoder。
@@ -59,7 +61,8 @@ Dynamics:   concat(PE_memory, R/T, dR/dT) -> Linear -> ReLU -> Dropout -> Linear
 各 PE 的 Decoder 输出按同一指标对齐拼接，交给原来的 DenseMoEMLPPin。
 
 Score adapter 的输出仅送入对应 Decoder，不写回下一 PE。原节点主干前向更新完全保留。
-但 Score 分支有梯度，会通过 Q/K 和原 mask 中的可学习 bias 更新 Encoder：这是训练信号增加，不是把 Encoder 冻结或断梯度。
+原 Score/Dynamics 模型的所有 Score 分支都有梯度，会通过 Q/K 和原 mask 中的可学习 bias 更新 Encoder。
+新增 detach 变体仅切断浅层读出边，保留最深读出的梯度；精确规则见第 9 节。
 
 ## 4. Softmax、mask、图规模与成本
 
@@ -78,7 +81,13 @@ Score adapter 的输出仅送入对应 Decoder，不写回下一 PE。原节点�
 
 ```bash
 CIRCUITS=(two_stage_folded_opamp Opamp1)
-MODELS=(width_decoder_pin width_decoder_score_pin width_decoder_lasd_pin)
+MODELS=(
+    width_decoder_pin
+    width_decoder_score_pin
+    width_decoder_lasd_pin
+    width_decoder_score_detach_pin
+    width_decoder_lasd_detach_pin
+)
 SEEDS=(17 29 43)
 ```
 
@@ -95,14 +104,16 @@ SEEDS=(17 29 43)
 }
 ```
 
-`enabled=false` 时两个新模型完整旁路分数提取与 adapter，不创建闲置 adapter 参数；相同初始化下与原 width decoder 权重/输出一致。原 `width_decoder_pin` 始终是对照，不受这个开关启用影响。
+`enabled=false` 时所有 Score 模型完整旁路分数提取与 adapter，不创建闲置 adapter 参数。
+原 Score/Dynamics 模型此时等价于 `width_decoder_pin`；两个 detach 变体则等价于 `width_decoder_detach_pin`，仍保留浅层 memory 断梯度。
+相同初始化下参数/前向/相应梯度策略一致。`width_decoder_pin` 始终是原对照，不受此开关启用影响。
 `diagnostic_samples=0` 只关闭训练结束后的逐 Head 导出，不关闭用于预测的 Score 分支。
 `score_chunk_size` 控制每次统计的 Query 数；`checkpoint_scores` 控制反向重算。两者不改变数学定义。
 原始 Encoder、Decoder FFN 和 MoE 配置保持原宽模型默认值：Decoder FFN=2048、每个 PE Decoder 深度=2。
 
 数据量继续用 `dataset.max_samples_per_circuit` 控制，例如 20000 表示先抽总量 20000 再划分；`sampling_seed` 控制抽样。
 默认 OP 预测器最多 30 轮、性能模型最多 60 轮、batch_size=32、patience=10；实际轮数可能因早停缩短。
-同一 circuit/seed 下三种模型复用同一冻结器件级 OP 预测器；性能端从头训练，数据划分、预处理、优化器、epoch 上限和验证选模规则一致。
+同一 circuit/seed 下这些模型复用同一冻结器件级 OP 预测器；性能端从头训练，数据划分、预处理、优化器、epoch 上限和验证选模规则一致。
 新增 adapter 在原模块初始化之后构造，保证相同 seed 下原 Encoder、各 Decoder Query/FFN 和 MoE 的初始权重一致。
 
 ```bash
@@ -145,7 +156,8 @@ final_exam/single_circuit_pin/hpc_logs_pin/<运行名>/
 
 Score Only 目录有相同诊断文件。CSV 每行是一个 sample / PE / token / head，含 R、T、dR、dT、mask 类型、原 token 编号和第一层边界标志。
 Score Only 为诊断也计算差分，但不把差分输入模型。诊断使用验证集选出的最终 checkpoint，在测试集上确定性选择至多指定数量样本，不参与 checkpoint 选择。
-仅在诊断边界 detach；模型内的 scores/differences 始终保持可微。
+原 Score/Dynamics 模型仅在诊断序列化边界 detach；新增 detach 变体按第 9 节切断指定训练边。
+诊断返回的原始 Score 保留计算图，CSV 序列化统一 detach；诊断数值和分数定义不因 detach 改变。
 Excel 保留 MAE/RMSE/R² 的多 seed 均值±样本标准差，并增加 `LASD` 页，列出输入维度、adapter 参数、总参数、实际训练轮数/耗时以及整条部署级联的延迟诊断。
 延迟只重复计时一个驻留测试 batch，包含冻结 OP 预测器、不使用训练时 OP 缓存；不含导入、主机传输和指标计算，不等价于整数据集吞吐量。CUDA 峰值是该进程含驻留数据的口径。
 
@@ -157,7 +169,7 @@ Excel 保留 MAE/RMSE/R² 的多 seed 均值±样本标准差，并增加 `LASD`
 - `final_exam/lasd_registry_pin.py`：模型名、配置解析和结构元数据校验。
 - `run_pin.py` / `stage_resume_pin.py` / `summarize_pin.py`：模型选择、配置保存、续训、参数与耗时统计、Excel 导出。
 - `final_exam/lasd_diagnostics_pin.py`：限制样本数的逐 Head CSV 和元数据导出。
-- `configs/lasd_pin.json` / `single_circuit_pin/train_lasd_pin.sh`：三个模型的同协议入口。
+- `configs/lasd_pin.json` / `single_circuit_pin/train_lasd_pin.sh`：原对照、Score/Dynamics 及对应 detach 变体的同协议入口。
 
 测试覆盖行/列方向、对角线排除、padding、批量隔离、全图守恒、不允许 self 时的 Receive 退化、逐 Head 拼接、第一层边界、节点重排拒绝、跨层梯度、Q/K 与可学习 bias 梯度、bool/float mask、全掩码行、不同分块大小、checkpoint 重算、原主干 dropout/RNG/输出/梯度不变、冻结 OP、标签/真实 OP 无泄漏、保存重建和中断续训、配置一致性及 Excel/脚本入口。
 GPU 专用测试仅在有 CUDA 时执行；小规模验证不代替真实电路上的精度、运行时间和显存实验。
@@ -167,3 +179,75 @@ GPU 专用测试仅在有 CUDA 时执行；小规模验证不代替真实电路�
 如果新模型提升，首先能支持“节点注意力统计辅助宽 Decoder 读出有效”；不能直接据此证明物理信息流、解决过平滑或每层 Head 语义相同。
 Score Only 与 Dynamics 均增加节点 MLP；前者相对 baseline 的提升也可能包含新增容量/读出变换的贡献。后续可加入相同 MLP 但将 score 固定为零的容量对照。当前第一版未加入该额外模型。
 当前没有 GPU 实测精度结论，后续比较应以固定划分、多 seed、同电路/同指标的汇总为准。
+
+## 9. Score / Dynamics 的浅层读出 detach 变体
+
+### 改什么，以及为什么放在这里
+
+沿用 `width_decoder_detach_pin` 的定义：有 L 个 PE 时，只切断 PE1 至 PE(L−1) 各自的读出捷径，PE(L) 保持连接。
+Score 模型不能只 detach 节点表示 h：R/T 是由 Encoder 的 Q/K 计算的，仍有另一条梯度路径。
+也不能直接 detach Score MLP 的输出：那会同时停止浅层 Score MLP 的训练。
+因此同时 detach 浅层 h 和分数输入，然后再执行**可训练的** Score MLP 和 Decoder。
+
+记 `sg(x)` 为前向数值不变、反向梯度为零，`s_l` 为按原顺序展开的逐 Head R/T：
+
+```
+width_decoder_score_detach_pin:
+  l < L: adapter_l(concat(sg(h_l), sg(s_l))) -> decoder_l
+  l = L: adapter_L(concat(h_L, s_L))         -> decoder_L
+
+width_decoder_lasd_detach_pin:
+  delta_1 = 0  # 边界填充
+  delta_l = s_l - sg(s_(l-1)), l >= 2
+  l < L: adapter_l(concat(sg(h_l), sg(s_l), sg(delta_l))) -> decoder_l
+  l = L: adapter_L(concat(h_L, s_L, delta_L))            -> decoder_L
+```
+
+LASD 最后一层差分使用 `s_L - sg(s_(L-1))`，从而不通过差分项直接更新上一层的 Score 路径。
+这不阻止 Encoder 的正常深度反传：最深的节点表示和当前层 Score 仍依赖前面的 SE/PE，早期 Encoder 仍可沿主干收到梯度。
+一共只有一个 PE 时没有浅层读出、没有非零差分；两个新模型分别与对应非 detach 模型的前向和反向一致。
+
+OP 预测器仍用原器件级 `device_op_predictor_pin`，先训练再冻结。没有给 OP 预测器加 LASD、宽 Decoder 或 detach。
+新模型参数量、初始化顺序、Attention mask、dropout、Score 定义、Decoder Query 和 MoE 与各自的非 detach 对照相同。
+相同权重与相同 RNG 下前向输出相同；训练后的权重和结果可以因为梯度路径不同而改变。
+这不是冻结浅层 Encoder，也不是让浅层 Decoder 不训练；所有 Score MLP、性能 Decoder 和 MoE 都训练。
+
+### 怎么比较
+
+仍修改同一个 `train_lasd_pin.sh`，不新增 Bash 入口。例如只比较 Dynamics 的 detach：
+
+```bash
+MODELS=(width_decoder_lasd_pin width_decoder_lasd_detach_pin)
+```
+
+若比较四个带分数模型：
+
+```bash
+MODELS=(
+    width_decoder_score_pin
+    width_decoder_score_detach_pin
+    width_decoder_lasd_pin
+    width_decoder_lasd_detach_pin
+)
+```
+
+可在同一列表加入 `width_decoder_pin` / `width_decoder_detach_pin` 形成不带分数的配对对照。
+使用原 `lasd_pin.json`，不需要额外 detach 超参数；模型名明确决定梯度策略。
+默认 30 轮 OP predictor + 每个下游模型 60 轮 readout 的上限和早停保持不变，且共享阶段每个电路/seed 只训练一次。
+新增模型从头训练；旧的非 detach 实验不能直接当作该模型的同阶段断点恢复。
+
+### 配置、结果和恢复
+
+原有 `results_pin` / `logs_pin` / `hpc_logs_pin` 结构与运行名规则保持不变。
+每个模型仍保存有效配置、checkpoint、测试指标、逐 Head CSV、耗时/参数量和完整结构说明。
+checkpoint 的 `performance.memory_gradients` 与 `performance.lasd.score_gradients` 记录切断的 PE 序号、切断位置、差分的上一层梯度策略，以及 adapter/decoder 是否冻结。
+Excel 的 `WidthDecoder` 页记录 memory 策略；`LASD` 页新增 `Readout gradient policy` 和 `Previous score in delta`，便于识别对照。
+禁用 Score 时会记录实际使用的普通 memory detach 策略。
+重建、汇总和断点恢复均验证模型名/配置/梯度策略的一致性，旧模型的结构元数据格式不变。
+
+### 验证覆盖
+
+新增测试覆盖多个 PE 深度、相同初始化/参数量/前向/dropout RNG、一层 PE 的反向等价性、浅层 memory 与 Score 梯度为零、差分不能绕回上一层、Score MLP 与 Decoder 仍训练、完整 Encoder 深度链仍可反传、OP predictor 冻结、禁用 Score 后等价于普通 detach、checkpoint 严格重建、诊断/Excel、完成阶段复用与中断 epoch 精确恢复。
+CUDA 专项测试在有 GPU 的环境执行；CPU 测试通过不代表实际电路精度或 GPU 性能已经验证。
+
+2026-11-17 本次验证环境为 PyTorch 2.6.0 CPU：新增梯度/训练恢复测试与启动器检查 28 项通过、2 项 CUDA 测试跳过；已有 LASD、宽 Decoder、普通 detach、低秩及汇总/计时相关回归测试 122 项通过、3 项 CUDA 测试跳过。共 150 项通过，5 项因无 CUDA 跳过。尚未运行完整电路训练。

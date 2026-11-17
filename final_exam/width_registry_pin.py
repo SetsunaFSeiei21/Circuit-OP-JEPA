@@ -2,22 +2,31 @@
 import math
 from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, validate_low_rank_contract_pin
 from final_exam.shared_decoder_registry_pin import SHARED_DECODER_MODELS_PIN, validate_shared_decoder_contract_pin
-from final_exam.lasd_registry_pin import LASD_MODELS_PIN, validate_lasd_contract_pin
+from final_exam.lasd_registry_pin import (
+    ALL_LASD_MODELS_PIN, LASD_DETACH_MODELS_PIN, validate_lasd_contract_pin,
+)
 
 WIDTH_MODELS_PIN = ('width_decoder_pin', 'width_decoder_op_pin')
 WIDTH_DETACH_MODELS_PIN = ('width_decoder_detach_pin',)
 ALL_WIDTH_MODELS_PIN = (WIDTH_MODELS_PIN + LOW_RANK_MODELS_PIN + SHARED_DECODER_MODELS_PIN
-                       + LASD_MODELS_PIN + WIDTH_DETACH_MODELS_PIN)
+                       + ALL_LASD_MODELS_PIN + WIDTH_DETACH_MODELS_PIN)
 WIDTH_PREDICTOR_PIN = 'width_device_op_predictor_pin'
 
 
-def detach_memory_spec_pin(branch_count):
+def detach_memory_spec_pin(branch_count, lasd_spec=None):
     """Only shallow performance-decoder inputs are detached; PE depth is 1-based."""
-    return dict(version=1, policy='detach_shallow_decoder_memory',
+    result = dict(version=1, policy='detach_shallow_decoder_memory',
                 detached_decoder_inputs=list(range(1, branch_count)),
                 attached_decoder_inputs=[branch_count],
                 location='after_encoder_output_norm_and_projection_before_decoder',
                 encoder_chain_detached=False, decoders_frozen=False)
+    if lasd_spec is not None and lasd_spec['enabled']:
+        result.update(policy='detach_shallow_memory_and_score_inputs',
+                      location='before_score_adapter_after_encoder_output_norm_and_projection',
+                      score_adapters_frozen=False,
+                      previous_delta_score_detached=lasd_spec['dynamics'],
+                      final_current_score_detached=False)
+    return result
 
 
 def width_settings_pin(value=None, model_config=None):
@@ -78,8 +87,9 @@ def validate_width_contract_pin(mode, contract):
             branch['decoder_layers'])
         validate_lasd_contract_pin(mode if index == 0 else 'width_decoder_pin',
                                   branch.get('lasd'), branch['feature_dim'], branch['branch_count'])
-        expected_gradients = (detach_memory_spec_pin(branch['branch_count'])
-                              if index == 0 and mode in WIDTH_DETACH_MODELS_PIN else None)
+        expected_gradients = (detach_memory_spec_pin(branch['branch_count'], branch.get('lasd'))
+                              if index == 0 and mode in
+                              WIDTH_DETACH_MODELS_PIN + LASD_DETACH_MODELS_PIN else None)
         if branch.get('memory_gradients') != expected_gradients:
             raise ValueError('Wide decoder memory gradient policy disagrees with model ID')
         mixture = branch.get('mixture')

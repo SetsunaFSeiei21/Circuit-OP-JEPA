@@ -26,7 +26,7 @@ from final_exam.low_rank_registry_pin import LOW_RANK_MODELS_PIN, low_rank_setti
 from final_exam.shared_decoder_registry_pin import (
     SHARED_DECODER_MODELS_PIN, shared_decoder_settings_pin, shared_decoder_spec_pin,
 )
-from final_exam.lasd_registry_pin import LASD_MODELS_PIN, lasd_settings_pin
+from final_exam.lasd_registry_pin import ALL_LASD_MODELS_PIN as LASD_MODELS_PIN, lasd_settings_pin
 # Resolve the lightweight reporting dependencies before importing raw data or
 # training. A late import can mix a newly pulled reporter with an old registry
 # already cached by a long-running process. Keep this callable for the whole run.

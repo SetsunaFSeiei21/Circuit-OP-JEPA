@@ -4,12 +4,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
 
-# Experiment settings. Original width readout, per-head scores, and per-head score dynamics.
+# Experiment settings. Width baseline, per-head scores/dynamics and paired shallow detach.
 CIRCUITS=(two_stage_folded_opamp)
 MODELS=(
     width_decoder_pin          # Original independent PE decoders -> MoE.
     width_decoder_score_pin    # Per-head R/T -> per-PE memory MLP -> decoder.
     width_decoder_lasd_pin     # Add per-head cross-PE differences.
+    width_decoder_score_detach_pin # Detach shallow memory + scores BEFORE trainable MLPs.
+    width_decoder_lasd_detach_pin  # Also stop previous-score gradients in each delta.
 )
 SEEDS=(17 29 43)
 # width_decoder_pin controls the unchanged MoE; lasd_pin controls the new node-memory adapters.
