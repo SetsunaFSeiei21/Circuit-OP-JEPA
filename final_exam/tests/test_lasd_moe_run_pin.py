@@ -12,7 +12,9 @@ from device_jepa.training import state_digest
 from experiments.op_transfer import engine
 from final_exam.data_pin import PinDataContext
 from final_exam.run_pin import MODEL_NAMES_PIN, load_checkpoint_pin
-from final_exam.lasd_moe_registry_pin import HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin
+from final_exam.lasd_moe_registry_pin import (
+    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin,
+)
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
 from final_exam.tests.test_summary_pin import workbook, text_values, record
 from final_exam.tests.test_width_decoder_run_pin import setup
@@ -25,10 +27,15 @@ def configure(cfg, path):
     path.write_text(json.dumps(cfg))
 
 
-@pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN])
+@pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN,
+                                  ('lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN)])
 def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup, pair):
     root, cfg, data_path, config, run = setup
     configure(cfg, config)
+    has_hyper = HYPER_LASD_MOE_MODEL_PIN in pair
+    if has_hyper:
+        cfg['lasd_moe_pin']['hyper_connection_streams'] = 3
+        config.write_text(json.dumps(cfg))
     modes = ('device_op_cascade_pin', *pair)
     assert set(pair) <= set(MODEL_NAMES_PIN)
     out, result = run('lasd_moe_complete', modes)
@@ -71,17 +78,21 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
         assert stage['epochs'] == 2 and stage['seconds'] > 0
         history = json.loads((out / f'seed_17_pin/stages_pin/{mode}/history_pin.json').read_text())
         assert history and all('encoder_gradients' in row for row in history)
-    assert len({a['initial_encoder_digest'] for a in audits}) == 1
-    assert len({a['initial_model_digest'] for a in audits}) == 1
+    if has_hyper:
+        assert audits[1]['architecture']['hyper_connection']['streams'] == 3
+        assert costs[1]['trainable_parameters'] > costs[0]['trainable_parameters']
+    else:
+        assert len({a['initial_encoder_digest'] for a in audits}) == 1
+        assert len({a['initial_model_digest'] for a in audits}) == 1
+        assert costs[0]['parameters'] == costs[1]['parameters']
+        assert costs[0]['trainable_parameters'] == costs[1]['trainable_parameters']
     assert len({a['predictor_digest'] for a in audits}) == 1
-    assert costs[0]['parameters'] == costs[1]['parameters']
-    assert costs[0]['trainable_parameters'] == costs[1]['trainable_parameters']
     sheets = workbook(out / 'summary_pin.xlsx')
     assert {'LASD_MoE', 'MAE', 'RMSE', 'R2', 'TrainingCost', 'Configuration'} <= set(sheets)
     texts = text_values(sheets['LASD_MoE'])
     assert all(mode in texts for mode in modes)
     assert any('lasd_moe_scores_pin.csv' in text for text in texts if text)
-    if pair == HEADWISE_LASD_MOE_MODELS_PIN:
+    if has_hyper or pair == HEADWISE_LASD_MOE_MODELS_PIN:
         assert 'B,N,H,L' in texts
     with patch.object(torch.optim.AdamW, 'step', side_effect=AssertionError('retrained completed stage')):
         resumed, _ = run('lasd_moe_completed_resume', modes, out)

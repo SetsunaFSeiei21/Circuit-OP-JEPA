@@ -51,7 +51,7 @@ class EncoderBlock(nn.Module):
         self.ffn_norm = nn.LayerNorm(cfg.dim)
         self.drop = nn.Dropout(cfg.dropout)
 
-    def forward(self, x, self_mask, parameter_tokens, cross_mask, valid, *, attention_observer=None):
+    def self_attention_update(self, x, self_mask, valid, attention_observer=None):
         # Optional read-only differentiable statistics. Never replace the message
         # path, consume its dropout RNG, or feed observer outputs into the encoder.
         if attention_observer is not None:
@@ -71,7 +71,15 @@ class EncoderBlock(nn.Module):
                           and self_mask.requires_grad and not qkv_requires_grad)
         backend = sdpa_kernel(SDPBackend.MATH) if mask_only_grad else nullcontext()
         with backend:
-            update = self.self_attn(x, x, x, attn_mask=self_mask, need_weights=False)[0]
+            return self.self_attn(x, x, x, attn_mask=self_mask, need_weights=False)[0]
+
+    @staticmethod
+    def readout_tokens(state):
+        """One node vector per PE memory tap. The native block has one residual stream."""
+        return state
+
+    def forward(self, x, self_mask, parameter_tokens, cross_mask, valid, *, attention_observer=None):
+        update = self.self_attention_update(x, self_mask, valid, attention_observer)
         x = self.self_norm(x + self.drop(update))
         if self.cross_attn is not None:
             update = self.cross_attn(x, parameter_tokens, parameter_tokens,
@@ -284,13 +292,13 @@ class DeviceEncoder(nn.Module):
                     attention_observer(index, attention, values, self_mask, node_valid)
                 x = block(x, mask, p, cross_mask, valid, attention_observer=observe)
             if return_all_fusion:
-                # Read-only taps: the next PE still receives raw x, exactly as
-                # before. All taps use the existing output projection/norm.
-                memories.append(self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1))
+                # Read a node vector while passing the complete state to the next PE.
+                memory = self.output_projection(self.output_norm(block.readout_tokens(x))) * valid.unsqueeze(-1)
+                memories.append(memory)
         if return_all_fusion:
             return tuple(memories), ~valid
-        x = self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1)
-        return x, ~valid
+        x = self.fusion_blocks[-1].readout_tokens(x)
+        return self.output_projection(self.output_norm(x)) * valid.unsqueeze(-1), ~valid
 
 
 class OperatingPointDeviceEncoder(DeviceEncoder):

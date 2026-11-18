@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+比较逐头 LASD-MoE 的普通残差与 FlowNet Hyper-Connection 时，运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection`。它在相同电路和 seed 上训练 `lasd_moe_headwise_detach_pin` 与 `lasd_moe_headwise_detach_hc_pin`，新模型默认在每个性能 PE 内保留 4 条全维残差流。[结构与训练说明](../LASD_MOE_pin.md)
+
 **LASD-MoE 层融合**使用 `train_lasd_moe_pin.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`。默认比较 `device_op_cascade_pin`、`lasd_moe_pin` 和 `lasd_moe_detach_pin`。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise` 会选择 `lasd_moe_headwise_pin` 与 `lasd_moe_headwise_detach_pin`。每个模型目录的 `lasd_moe_weights_pin.csv` 可按引脚和头查看各 PE 的权重。结果、实验日志和 HPC 日志分别位于本目录的 `results_pin`、`logs_pin`、`hpc_logs_pin`。[LASD-MoE 结构与训练说明](../LASD_MOE_pin.md)
 
 **共同下基模型训练**：在 `train_shared_decoder_pin.sh` 顶部设置 `CIRCUITS`、`MODELS`、`SEEDS`，运行 `bash final_exam/single_circuit_pin/train_shared_decoder_pin.sh`。默认比较原始 `width_decoder_pin` 与仅 cross-K/V、全部 decoder attention、FFN、attention＋FFN 四种共同下基模型。共享仅发生在一个模型内部对应 PE decoder 的相同投影处，采用从头训练的 `W_i=B_i A`，各电路独立提交。配置为 `final_exam/configs/shared_decoder_pin.json`；结果、实验日志和 HPC 日志仍分别放在本任务的 `results_pin`、`logs_pin`、`hpc_logs_pin`。失败后使用 `resume_shared_decoder_pin.sh`，详见 [共同下基训练说明](../SHARED_DECODER_TRAINING_pin.md)。

@@ -35,21 +35,31 @@ SLURM_MAIL_TYPE="${SLURM_MAIL_TYPE:-BEGIN,END,FAIL}"
 
 DRY_RUN=0
 SMOKE=0
+model_preset=""
 for argument in "$@"; do
     case "$argument" in
         --dry-run) DRY_RUN=1 ;;
         --smoke) SMOKE=1 ;;
-        --headwise) MODELS=(lasd_moe_headwise_pin lasd_moe_headwise_detach_pin) ;;
+        --headwise|--hyper-connection)
+            if [[ -n "$model_preset" && "$model_preset" != "$argument" ]]; then
+                echo 'Select one model preset per submission.' >&2; exit 2
+            fi
+            model_preset="$argument" ;;
         -h|--help)
-            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise] [--dry-run] [--smoke]'
+            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --hyper-connection] [--dry-run] [--smoke]'
             echo 'Edit CIRCUITS, MODELS, SEEDS, CONFIG and cluster settings at the top.'
             echo '--headwise selects lasd_moe_headwise_pin and lasd_moe_headwise_detach_pin for the configured circuits and seeds.'
+            echo '--hyper-connection compares lasd_moe_headwise_detach_pin and lasd_moe_headwise_detach_hc_pin.'
             echo 'Each circuit submits an independent job. --dry-run creates no output directories.'
             echo '--smoke shortens training; dataset.max_samples_per_circuit controls sample count.'
             exit 0 ;;
         *) echo "Unknown option: $argument; use --help" >&2; exit 2 ;;
     esac
 done
+case "$model_preset" in
+    --headwise) MODELS=(lasd_moe_headwise_pin lasd_moe_headwise_detach_pin) ;;
+    --hyper-connection) MODELS=(lasd_moe_headwise_detach_pin lasd_moe_headwise_detach_hc_pin) ;;
+esac
 (( ${#CIRCUITS[@]} && ${#MODELS[@]} && ${#SEEDS[@]} )) || {
     echo 'CIRCUITS, MODELS and SEEDS must be nonempty.' >&2; exit 2;
 }

@@ -1,8 +1,8 @@
 """Per-node Top-2 expert routing of PE memories, with score-only stop-grad.
 
-The original graph/attention masks and hidden-state chain are unchanged. Score
-statistics are pre-dropout observations of the same Q/K and masks. One final
-native graph block and one existing metric decoder consume the fused memory.
+Score statistics are pre-dropout observations of the actual PE Q/K and masks.
+The HC variant carries multiple residual streams through the performance PEs.
+One final native graph block and one existing metric decoder consume the fused memory.
 """
 from copy import deepcopy
 
@@ -11,9 +11,10 @@ from torch import nn
 
 from device_jepa.model import EncoderBlock, ModelConfig
 from final_exam.lasd_moe_registry_pin import (
-    HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
+    LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
 )
 from .attention_score_pin import AttentionScoreExtractorPin, layer_score_features_pin
+from .hyper_connection_pin import HyperConnectionPEBlockPin
 from .op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
 
@@ -96,8 +97,7 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             raise ValueError('Unknown LASD-MoE model')
         if type(predictor) is not DeviceOPPredictorPin:
             raise ValueError('LASD-MoE requires the ordinary device-level OP predictor')
-        # All original modules initialize first; the pair's only difference is
-        # a forward stop-gradient operation and not a parameter/buffer/RNG change.
+        # Initialize the common network in the same order for each paired experiment.
         super().__init__('device_op_cascade_pin', config, prep, predictor)
         self.mode = mode
         self.lasd_moe_config = lasd_moe_settings_pin(lasd_moe_config)
@@ -107,8 +107,15 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             self.lasd_moe_config['score_chunk_size'], self.lasd_moe_config['checkpoint_scores'])
         self.layer_fusion = Top2LayerMoEPin(
             self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
-            output_heads=cfg.heads if mode in HEADWISE_LASD_MOE_MODELS_PIN else None)
+            output_heads=cfg.heads if self.lasd_moe_spec.get('layer_weight_axes') == 'B,N,H,L' else None)
         self.final_graph_encoder = EncoderBlock(cfg, cross=False)
+        if 'hyper_connection' in self.lasd_moe_spec:
+            # Wrap the already initialized PE sublayers so the control starts with
+            # the same attention, FFN, router and decoder weights at a given seed.
+            streams = self.lasd_moe_spec['hyper_connection']['streams']
+            self.encoder.fusion_blocks = nn.ModuleList(
+                HyperConnectionPEBlockPin(block, streams, index)
+                for index, block in enumerate(self.encoder.fusion_blocks))
 
     @property
     def architecture_contract(self):

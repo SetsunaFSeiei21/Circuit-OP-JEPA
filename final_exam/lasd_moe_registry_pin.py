@@ -2,16 +2,23 @@
 import math
 
 HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin')
-LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN)
+HYPER_LASD_MOE_MODEL_PIN = 'lasd_moe_headwise_detach_hc_pin'
+LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
+                       HYPER_LASD_MOE_MODEL_PIN)
 
 
 def lasd_moe_settings_pin(value=None):
     result = dict(n_experts=4, top_k=2, hidden_dim=128, dropout=0.,
                   score_chunk_size=128, checkpoint_scores=True, diagnostic_samples=8)
     if value is not None:
-        if not isinstance(value, dict) or set(value) - set(result):
+        if not isinstance(value, dict) or set(value) - (set(result) | {'hyper_connection_streams'}):
             raise ValueError('Unknown lasd_moe_pin configuration keys')
         result.update(value)
+    # Keep older saved settings intact for exact stage resume and checkpoint replay.
+    if 'hyper_connection_streams' in result:
+        streams = result['hyper_connection_streams']
+        if type(streams) is not int or streams < 1:
+            raise ValueError('lasd_moe_pin.hyper_connection_streams must be a positive integer')
     for key in ('n_experts', 'top_k', 'hidden_dim', 'score_chunk_size', 'diagnostic_samples'):
         if type(result[key]) is not int or result[key] < (0 if key == 'diagnostic_samples' else 1):
             raise ValueError(f'Invalid lasd_moe_pin.{key}')
@@ -46,7 +53,8 @@ def lasd_moe_spec_pin(mode, value, model_config):
         padding='exclude_query_key_routing_and_fusion',
         node_order='unchanged_graph_token_then_native_pin_port_order',
         layer_memory='shared_existing_output_norm_and_projection_per_pe_block',
-        normalization='none_raw_scores', score_detach=mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin'),
+        normalization='none_raw_scores',
+        score_detach=mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN),
         hidden_state_detach=False, routing='selected_top2_logits_softmax',
         expert='independent_linear_gelu_dropout_linear',
         experts=options['n_experts'], top_k=options['top_k'], hidden_dim=options['hidden_dim'],
@@ -57,7 +65,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
         decoder='one_existing_metric_query_decoder', decoder_layers=model_config['decoder_layers'],
         op_predictor='ordinary_frozen_device_op_predictor', requires_measured_op=False,
         score_chunk_size=options['score_chunk_size'], checkpoint_scores=options['checkpoint_scores'])
-    if mode in HEADWISE_LASD_MOE_MODELS_PIN:
+    if mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN):
         if model_config['dim'] % heads:
             raise ValueError('Headwise PE fusion requires feature width divisible by head count')
         spec.update(version=2, layer_fusion='node_wise_headwise_softmax_weighted_sum',
@@ -65,6 +73,14 @@ def lasd_moe_spec_pin(mode, value, model_config):
                     channels_per_head=model_config['dim'] // heads,
                     fusion_channels='contiguous_groups_of_projected_pe_memory',
                     expert_selection_scope='one_top2_pair_per_node')
+    if mode == HYPER_LASD_MOE_MODEL_PIN:
+        spec.update(version=3, layer_memory='sum_residual_streams_then_shared_output_norm_and_projection',
+                    hyper_connection=dict(streams=options.get('hyper_connection_streams', 4),
+                        scope='performance_pe_only', sublayers=['self_attention', 'parameter_op_cross_attention', 'ffn'],
+                        independent_per_sublayer=True, dynamic='static_plus_scaled_tanh_of_layernorm_projection',
+                        initial_read='pe_index_mod_streams', initial_carry='identity', initial_write=1.,
+                        initial_dynamic_projection=0., initial_dynamic_scale=0.01,
+                        normalization='native_post_norm_per_stream', readout='sum_each_pe_for_lasd'))
     return spec
 
 
@@ -87,5 +103,10 @@ def validate_lasd_moe_contract_pin(mode, spec, model_config=None, value=None):
                 hidden_dim=spec.get('hidden_dim'), dropout=spec.get('dropout'),
                 score_chunk_size=spec.get('score_chunk_size'),
                 checkpoint_scores=spec.get('checkpoint_scores'))
+            if mode == HYPER_LASD_MOE_MODEL_PIN:
+                hyper = spec.get('hyper_connection')
+                if not isinstance(hyper, dict):
+                    raise ValueError('Missing LASD-MoE hyper-connection architecture')
+                value['hyper_connection_streams'] = hyper.get('streams')
     if spec != lasd_moe_spec_pin(mode, value, model_config):
         raise ValueError('LASD-MoE architecture contract disagrees with saved configuration')

@@ -11,6 +11,7 @@
 | `lasd_moe_detach_pin` | 与 `lasd_moe_pin` 完全相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
 | `lasd_moe_headwise_pin` | 每个节点的每个头独立学习一组 PE 层权重 | 正常回传 | 所有层正常回传 |
 | `lasd_moe_headwise_detach_pin` | 与 `lasd_moe_headwise_pin` 相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
+| `lasd_moe_headwise_detach_hc_pin` | PE 内使用 FlowNet 的动态 Hyper-Connection，各 PE 的输出继续逐头融合 | MoE 输入前执行一次 detach | 所有 PE 与残差流参数正常回传 |
 
 模型继续使用现有级联输入：器件级 OP 预测器先从拓扑与设计参数学习训练集 OP，随后冻结。预测 OP 按 owner 对齐广播到原生引脚节点，与设计参数一起进入性能 Encoder。OP 预测器本身不采用 LASD-MoE，不增加真实 OP 推理输入，也不增加额外物理监督。
 
@@ -89,7 +90,19 @@ u_i=\sum_{e\in\operatorname{Top2}(r_i)}p_{i,e}f_e(z_i),\qquad
 
 每个 PE 的完整节点输出经过已有的输出归一化与投影。将同一节点的 128 个投影通道按原顺序分成 8 组，头 0 使用各 PE 的第 0–15 通道，头 1 使用第 16–31 通道，以此类推。每个头用自己的三个权重加权求和得到 16 维，依次拼回 128 维，送入已有的最终 Graph Encoder 与 Metric Decoder。这里的头编号指投影后的融合通道组。原生 self-attention 中各个头的输出已经经过注意力输出投影和后续 PE 运算。
 
-一般配置下，层权重形状为 `[B,N,H,L]`，通道组宽度为 `D/H`。每个有效节点、每个头的 L 个权重之和为 1。两种逐头模型的参数量相同，相比基础版，新增参数都来自四个 expert 的最后一层。默认配置增加 `4 × (128 + 1) × (24 − 3) = 10,836` 个参数。
+一般配置下，层权重形状为 `[B,N,H,L]`，通道组宽度为 `D/H`。每个有效节点、每个头的 L 个权重之和为 1。普通逐头版与对应的 detach 版参数量相同。相对基础版，四个 expert 的最后一层在默认配置下共增加 `4 × (128 + 1) × (24 − 3) = 10,836` 个参数。
+
+### 4.2 PE 内的动态 Hyper-Connection
+
+`lasd_moe_headwise_detach_hc_pin` 与 `lasd_moe_headwise_detach_pin` 配对，检验 **PE 内的残差连接**对相同逐头读出的影响。FlowNet 将输入复制为多条全维残差流，每个子层先混合这些流并读出一个向量做计算，随后将一次计算的结果按流写回。上游注意力与 FFN 各有独立的读写参数，默认保留 4 条流，在所有块结束时求和。[FlowNet 算子](https://github.com/Yutong-Feng/FlowNet/blob/57ad6128c2a1980d0aa73325a844659262271797/src/layers/hyper_connect.py#L7-L56) · [FlowBlock 调用位置](https://github.com/Yutong-Feng/FlowNet/blob/57ad6128c2a1980d0aa73325a844659262271797/src/blocks/hyper_flow.py#L201-L239) · [上游默认配置](https://github.com/Yutong-Feng/FlowNet/blob/57ad6128c2a1980d0aa73325a844659262271797/conf/model/flownet.yaml#L7)
+
+对单个引脚，设输入为 `X[R,D]`。模块从逐流 LayerNorm 后的表示生成两组系数，在可学习的静态参数上叠加经 tanh 和可学习尺度缩放的动态项。读出系数与写回系数都允许取负值。初始化时动态投影为零，两个尺度均为 0.01。
+
+1. **读出。** 计算 `Aᵀ X`，其中 `A` 的形状为 `[R,R+1]`。结果的首行作为子层输入，其余 R 行作为各流的旁路。初始化时读取编号为 `PE索引 % R` 的流（PE 索引从 0 起），旁路为单位映射。
+2. **写回。** 给定一次子层计算及 dropout 后的更新 `u[D]`，第 r 条流得到 `旁路[r] + β[r] × u`。每个 β 的静态初值为 1。
+3. **接入引脚模型。** 最后一层 SE 的输出在首个 PE 处展开。每个性能 PE 的 self-attention、设计参数/预测 OP 的 cross-attention、FFN 分别使用一套系数。FlowNet 在子层算子之前归一化分支输入。此变体沿用引脚 PE 原有的 post-norm，在每次写回后对每条流归一化。每个 PE 结束时，完整的 R 条流送给下一层，同时对 R 条流求和并经过原有的输出 LayerNorm 和投影，供 LASD 逐头融合。[引脚 PE 实现](models/hyper_connection_pin.py)
+
+默认设置下，一个引脚在 PE 内有 **4 条 128 维残差流**。LASD MoE 仍从 3 个 PE 的真实 self-attention 输入提取 R/T 与差分，对这组分数执行 detach，再输出 **8 组 × 3 个 PE 权重**。这 8 组权重用来融合投影后的 8 组 16 维通道。3 个 PE 的 9 个残差混合模块共增加 **9,450 个可训练参数**。OP 预测器继续冻结，SE、最终 Graph Encoder 和 Metric Decoder 使用原有结构。
 
 ## 5. Detach 的准确边界
 
@@ -121,13 +134,16 @@ Detach 在 MoE 之前，因此 Router 和 Expert 仍训练，层权重和融合�
   "dropout": 0.0,
   "score_chunk_size": 128,
   "checkpoint_scores": true,
-  "diagnostic_samples": 8
+  "diagnostic_samples": 8,
+  "hyper_connection_streams": 4
 }
 ```
 
 首版固定四个 expert、Top-2；参数验证拒绝其他值，避免相同模型名对应不同实验定义。`hidden_dim` 是每个 Expert 的隐藏维度，`dropout` 是专家 MLP 的 dropout。`model.dropout` 继续控制原始 Encoder/Decoder。
 
 `score_chunk_size` 和 `checkpoint_scores` 控制提取的计算方式，不改变数学定义；`diagnostic_samples=0` 关闭训练后样本级诊断，不关闭模型使用的 Score 分支。
+
+`hyper_connection_streams` 是 HC 模型的残差流数量，取正整数，缺省为 4。单流初始化时与普通残差的前向计算一致，此后其读写系数也可学习。显存和训练时间按实际配置测量。
 
 默认预算：
 
@@ -165,6 +181,13 @@ bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise
 ```
 
+比较普通残差与 Hyper-Connection 时使用同一脚本的 `--hyper-connection` 预设。它选择 `lasd_moe_headwise_detach_pin` 和 `lasd_moe_headwise_detach_hc_pin`，使用脚本顶部的电路和 seed。两组复用同一电路、同一 seed 的冻结 OP 预测器。如只训练 HC 模型，可把脚本顶部设为 `MODELS=(lasd_moe_headwise_detach_hc_pin)`，然后无参数运行。
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection
+```
+
 ```bash
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh
@@ -186,7 +209,7 @@ bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh
 
 ### 7.1 从中断实验恢复
 
-四个 LASD-MoE 模型以及 `device_op_cascade_pin` 都使用现有的 `resume_width_decoder_pin.sh` 恢复。参数可以是原实验根目录，也可以是其中的 `training_pin` 目录。
+各 LASD-MoE 模型以及 `device_op_cascade_pin` 都使用现有的 `resume_width_decoder_pin.sh` 恢复。参数可以是原实验根目录，也可以是其中的 `training_pin` 目录。
 
 ```bash
 LASD_SOURCE_RUN="/path/to/results_pin/two_stage_folded_opamp_lasd_moe_..._pin"
@@ -241,7 +264,7 @@ final_exam/single_circuit_pin/hpc_logs_pin/<运行名>/
 | `stages_pin/<模型名>/history_pin.json` | 每个 epoch 的训练/验证 loss 与 `encoder_gradients` 梯度统计 |
 | `stages_pin/<模型名>/cost_pin.json` | 阶段训练成本，包括实际 epoch 数与累计训练耗时 |
 
-逐头版的 `layer_weight_summary.per_head` 按 `[H,L]` 保存各头的层权重统计。外层摘要先在同一节点内对头取均值，便于与基础版对照。Expert 使用次数按节点统计。工作簿 `summary_pin.xlsx` 的 `LASD_MoE` 页也标出层权重轴顺序、expert 输出维度和每个融合头的通道数。
+逐头版的 `layer_weight_summary.per_head` 按 `[H,L]` 保存各头的层权重统计。外层摘要先在同一节点内对头取均值，便于与基础版对照。Expert 使用次数按节点统计。工作簿 `summary_pin.xlsx` 的 `LASD_MoE` 页标出层权重轴顺序、expert 输出维度、每个融合头的通道数和每个 PE 的残差流数。HC 模型的 `lasd_moe_weights_pin.csv` 记录的是各头对各 PE 的融合权重。残差流的混合模块参数随 checkpoint 保存。
 
 梯度在 `backward()` 之后、梯度裁剪之前统计。每个 SE、PE 和额外 Final Encoder block 独立记录 L2 范数的 batch 平均值、最大值和 batch 数。SE 梯度诊断用于观察原主干传播，**不表示 SE 被加入 Score 提取或隐藏表示融合**。参数梯度范数也不等同于节点激活梯度范数，不能互换解释。
 

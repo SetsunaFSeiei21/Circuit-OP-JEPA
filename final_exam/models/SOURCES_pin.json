@@ -957,6 +957,17 @@
       "performance_readout": "Flattened R/T and their differences are detached before routing. All PE memories, expert outputs and headwise layer weights carry gradients.",
       "op_readout": "Frozen device_op_predictor_pin"
     },
+    "lasd_moe_headwise_detach_hc_pin": {
+      "model_id": "lasd_moe_headwise_detach_hc_pin",
+      "implementation": "Independent PyTorch implementation of FlowNet dynamic residual-stream mixing in the PE stack of lasd_moe_headwise_detach_pin",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_paths": ["src/layers/hyper_connect.py", "src/blocks/hyper_flow.py", "conf/model/flownet.yaml"],
+      "source_files_pin": ["hyper_connection_pin.py", "lasd_moe_pin.py", "../lasd_moe_registry_pin.py"],
+      "performance_readout": "Replicate the SE output into full-width streams. Mix and update them independently at each PE self-attention, design/OP cross-attention and FFN. Sum streams at each PE tap before the existing headwise readout.",
+      "adaptation": "Use the pin encoder's native post-norm per stream. Observe the actual mixed input to PE self-attention. Detach only score dynamics before the layer-selection MoE.",
+      "op_readout": "Frozen device_op_predictor_pin"
+    },
     "width_decoder_lasd_pin": {
       "model_id": "width_decoder_lasd_pin",
       "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",

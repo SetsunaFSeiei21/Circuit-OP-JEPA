@@ -65,6 +65,15 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
         self.assertEqual(len(set(run_ids)), 2)
         self.assertEqual(before, sorted(str(p) for p in self.root.rglob('*')))
 
+    def test_hyper_connection_compares_the_detached_pair(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        args = ['bash', str(script), '--hyper-connection', '--dry-run']
+        cmd = shlex.split(subprocess.check_output(args, env=environment, text=True))
+        self.assertEqual(cmd[cmd.index('--models') + 1:cmd.index('--seeds')],
+                         ['lasd_moe_headwise_detach_pin', 'lasd_moe_headwise_detach_hc_pin'])
+        self.assertEqual(subprocess.run([*args, '--headwise'], env=environment,
+                                        capture_output=True).returncode, 2)
+
     def test_new_cluster_environment_is_forwarded_to_job(self):
         script, _, environment, _ = self.fixture(
             'test "$JEPA_CONDA_HOME" = /public/home/test/anaconda3 || exit 31\n'
@@ -89,7 +98,7 @@ class LASDMoEResumeLaunchPinTests(unittest.TestCase):
         source, training, _, environment = self.bash_fixture('exit 99')
         config = json.loads((resume_tests.FINAL_ROOT / 'configs/lasd_moe_pin.json').read_text())
         models = ['device_op_cascade_pin', 'lasd_moe_pin', 'lasd_moe_detach_pin',
-                  'lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin']
+                  'lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin', 'lasd_moe_headwise_detach_hc_pin']
         record = json.loads((training / 'run_pin.json').read_text())
         record['models'] = models
         for path in (source / 'run_pin.json', training / 'run_pin.json'):

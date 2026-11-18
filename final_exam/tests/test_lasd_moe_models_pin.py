@@ -6,7 +6,8 @@ import torch
 
 from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
-    HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
+    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN,
+    lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
 from final_exam.models.attention_score_pin import AttentionScoreExtractorPin
 from final_exam.models.lasd_moe_pin import (
@@ -156,13 +157,14 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0
     count = int(diag['valid'].sum())
-    expected_axes = (count, cfg['heads']) if mode in HEADWISE_LASD_MOE_MODELS_PIN else (count,)
+    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN)
+    expected_axes = (count, cfg['heads']) if headwise else (count,)
     node_weights = diag['layer_weights'][diag['valid']]
     assert node_weights.shape == (*expected_axes, cfg['cross_layers'])
     torch.testing.assert_close(node_weights.sum(-1), torch.ones(expected_axes))
     assert torch.count_nonzero(diag['layer_weights'][~diag['valid']]) == 0
     output.square().sum().backward()
-    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin'):
+    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN):
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
@@ -218,7 +220,8 @@ def test_detach_pair_same_parameters_forward_rng_and_native_initialization(input
 
 
 @pytest.mark.parametrize('config', [{'n_experts': 3}, {'top_k': 1}, {'hidden_dim': 0},
-    {'checkpoint_scores': 1}, {'dropout': float('nan')}, {'head_average': True}])
+    {'checkpoint_scores': 1}, {'dropout': float('nan')}, {'head_average': True},
+    {'hyper_connection_streams': 0}, {'hyper_connection_streams': True}, {'hyper_connection_streams': 2.5}])
 def test_reject_invalid_settings(config):
     with pytest.raises(ValueError):
         lasd_moe_settings_pin(config)
