@@ -1,7 +1,8 @@
-"""Per-node Top-2 expert routing of PE memories, with score-only stop-grad.
+"""Per-node Top-2 expert routing of PE memories with explicit gradient boundaries.
 
 Score statistics are pre-dropout observations of the actual PE Q/K and masks.
 The HC variant carries multiple residual streams through the performance PEs.
+Headwise v1 adds the final PE memory to fusion and optionally detaches branch inputs.
 One final native graph block and one existing metric decoder consume the fused memory.
 """
 from copy import deepcopy
@@ -140,12 +141,17 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             raise ValueError('Encoder memories must preserve the same node order and shape')
         scores = torch.stack(observed, dim=2)
         features, differences = score_dynamics_pin(scores)
-        # The only gradient difference within each pair of model IDs. Never detach
-        # memories, router/expert parameters, selected weights or layer weights.
+        # Each contract specifies the score and fusion-memory boundaries independently.
+        # The encoder chain and the explicit final-PE residual always carry gradients.
         moe_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
         valid = ~padding
         logits, routing = self.layer_fusion(moe_input, valid)
-        fused, weights = _fuse_pe_memories_pin(memories, logits, padding)
+        fusion_inputs = memories
+        if self.lasd_moe_spec['hidden_state_detach']:
+            fusion_inputs = tuple(memory.detach() for memory in memories)
+        fused, weights = _fuse_pe_memories_pin(fusion_inputs, logits, padding)
+        if self.lasd_moe_spec.get('residual_connection') == 'last_pe_memory_add':
+            fused = memories[-1] + fused
         memory = self.final_graph_encoder(fused, masks[0], None, None, valid)
         if return_scores:
             return memory, padding, dict(scores=scores, differences=differences,

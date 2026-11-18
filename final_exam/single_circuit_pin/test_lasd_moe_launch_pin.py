@@ -74,6 +74,26 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
         self.assertEqual(subprocess.run([*args, '--headwise'], env=environment,
                                         capture_output=True).returncode, 2)
 
+    def test_headwise_v1_keeps_circuits_and_seeds_and_rejects_mixed_presets(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        script.write_text(script.read_text().replace(
+            'CIRCUITS=(two_stage_folded_opamp)', 'CIRCUITS=(Opamp1 two_stage_folded_opamp)'
+        ).replace('SEEDS=(17 29 43)', 'SEEDS=(29)'))
+        args = ['bash', str(script), '--headwise-v1', '--dry-run']
+        output = subprocess.check_output(args, env=environment, text=True)
+        commands = [shlex.split(line) for line in output.splitlines()]
+        self.assertEqual(len(commands), 2)
+        self.assertEqual([cmd[cmd.index('--circuit') + 1] for cmd in commands],
+                         ['Opamp1', 'two_stage_folded_opamp'])
+        for cmd in commands:
+            self.assertEqual(cmd[cmd.index('--models') + 1:cmd.index('--seeds')],
+                             ['lasd_moe_headwise_pin_v1', 'lasd_moe_headwise_detach_pin_v1'])
+            self.assertEqual(cmd[cmd.index('--seeds') + 1:cmd.index('--device')], ['29'])
+        for other in ('--headwise', '--hyper-connection'):
+            with self.subTest(preset=other):
+                self.assertEqual(subprocess.run([*args, other], env=environment,
+                                               capture_output=True).returncode, 2)
+
     def test_new_cluster_environment_is_forwarded_to_job(self):
         script, _, environment, _ = self.fixture(
             'test "$JEPA_CONDA_HOME" = /public/home/test/anaconda3 || exit 31\n'
@@ -98,7 +118,8 @@ class LASDMoEResumeLaunchPinTests(unittest.TestCase):
         source, training, _, environment = self.bash_fixture('exit 99')
         config = json.loads((resume_tests.FINAL_ROOT / 'configs/lasd_moe_pin.json').read_text())
         models = ['device_op_cascade_pin', 'lasd_moe_pin', 'lasd_moe_detach_pin',
-                  'lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin', 'lasd_moe_headwise_detach_hc_pin']
+                  'lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin', 'lasd_moe_headwise_detach_hc_pin',
+                  'lasd_moe_headwise_pin_v1', 'lasd_moe_headwise_detach_pin_v1']
         record = json.loads((training / 'run_pin.json').read_text())
         record['models'] = models
         for path in (source / 'run_pin.json', training / 'run_pin.json'):

@@ -129,8 +129,8 @@ def _gate_version(mode):
 
 def _require_pin_mode(mode):
     if (not isinstance(mode, str) or len(mode) <= 4
-            or not (mode.endswith('_pin') or mode in VERSIONED_GATE_MODELS_PIN)):
-        raise ValueError('Pin reports require every model name to end in _pin or use a registered versioned gate name')
+            or not (mode.endswith('_pin') or mode in VERSIONED_GATE_MODELS_PIN or mode in LASD_MOE_MODELS_PIN)):
+        raise ValueError('Pin reports require every model name to end in _pin or use a registered versioned model name')
 
 
 def _validate_gate_report_contract(mode, contract):
@@ -571,19 +571,20 @@ def _lasd_sheet(results, stages):
 def _lasd_moe_sheet(results, stages):
     fields = ('Model', 'Seed', 'Attention score scope', 'PE layers fused', 'Heads',
               'Score input width', 'Experts', 'Selected experts per node', 'Score stop-gradient',
-              'Hidden states detached', 'Final encoder layers', 'Final encoder mask',
+              'Fusion memories detached', 'Final encoder layers', 'Final encoder mask',
               'Total parameters', 'Trainable parameters', 'Readout epochs', 'Readout seconds',
               'Prerequisite epochs', 'Prerequisite seconds', 'Gradient history',
               'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)',
               'Layer weight axes', 'Expert output width', 'Channels per fusion head',
-              'Residual streams per PE')
+              'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
-                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28],
+                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
                'Each node keeps all heads, uses Top-2 of four experts, and fuses PE hidden states before one '
-               'final encoder and the original metric decoder. No hidden state is detached.', height=56)
+               'final encoder and the original metric decoder. Headwise v1 adds the final PE memory as a live '
+               'residual. Its detached variant stops gradients at both score and memory inputs to fusion.', height=72)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
                'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '
                'Prerequisites are shared OP prediction/cache dependencies; do not sum these columns across models. '
@@ -618,8 +619,10 @@ def _lasd_moe_sheet(results, stages):
                    json.dumps(spec, sort_keys=True),
                    spec.get('layer_weight_axes', 'B,N,L') if spec else None,
                    spec.get('expert_output_dim', spec.get('base_layers')),
-                   spec.get('channels_per_head'), spec.get('hyper_connection', {}).get('streams', 1)], 42)
-    sheet.filter_range = f'A4:Z{len(sheet.rows)}'
+                   spec.get('channels_per_head'), spec.get('hyper_connection', {}).get('streams', 1),
+                   spec.get('residual_connection', 'none'),
+                   spec.get('hidden_state_detach_scope') if spec.get('hidden_state_detach') else 'none'], 42)
+    sheet.filter_range = f'A4:AB{len(sheet.rows)}'
     return sheet
 
 

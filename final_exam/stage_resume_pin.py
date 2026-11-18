@@ -35,8 +35,9 @@ def validate_source_pin(path, config, models, seeds, *, output, logs, smoke, all
     # A cascade-only subset still belongs to its original versioned study. Resolve
     # its defaults even when the requested subset no longer names that gate;
     # explicit values must still match exactly (never copy source settings).
-    from final_exam.gate_version_registry_pin import gate_version_pin
-    versions = {gate_version_pin(mode) for mode in record.get('models', [])}
+    from final_exam.gate_version_registry_pin import VERSIONED_GATE_MODELS_PIN, gate_version_pin
+    versions = {gate_version_pin(mode) for mode in record.get('models', [])
+                if mode in VERSIONED_GATE_MODELS_PIN}
     version = next((v for v in ('v7', 'v6', 'v5', 'v4', 'v3', 'v2') if v in versions), None)
     # A wide-readout subset can omit the legacy cascade that caused gate
     # defaults to be resolved in the original paired run. Resolve only defaults

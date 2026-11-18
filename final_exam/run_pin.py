@@ -64,7 +64,7 @@ REFERENCES_PIN = frozenset({'op_oracle_pin', 'design_op_oracle_pin',
 
 def _pin_name(name):
     """Keep registered version suffixes verbatim in checkpoints/logs/stage IDs."""
-    return name if name.endswith('_pin') or name in VERSIONED_GATE_MODELS_PIN else name + '_pin'
+    return name if name.endswith('_pin') or name in MODEL_NAMES_PIN else name + '_pin'
 
 
 def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_config_version=None):
@@ -116,7 +116,7 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
             shared_decoder_spec_pin(mode, config['shared_decoder_pin'], effective_model)
     if set(selected) & set(ALL_GATE_MODELS_PIN) or 'op_gate_pin' in config:
         from final_exam.models.op_gate_pin import validate_gate_config_pin
-        versions = {gate_version_pin(mode) for mode in selected}
+        versions = {gate_version_pin(mode) for mode in selected if mode in VERSIONED_GATE_MODELS_PIN}
         version = gate_config_version or next((v for v in ('v7', 'v6', 'v5', 'v4', 'v3', 'v2') if v in versions), None)
         if versions & {'v4', 'v5', 'v6', 'v7'}:
             effective_model = {**config['model'], **overrides.get('zerosim_supervised_pin', {})}
@@ -323,7 +323,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     if resume_from is not None:
         from final_exam.stage_resume_pin import training_directory_pin, read_json
         source_record = read_json(training_directory_pin(resume_from) / 'run_pin.json')
-        source_versions = {gate_version_pin(mode) for mode in source_record.get('models', [])}
+        source_versions = {gate_version_pin(mode) for mode in source_record.get('models', [])
+                           if mode in VERSIONED_GATE_MODELS_PIN}
         source_gate_version = next((v for v in ('v7', 'v6', 'v5', 'v4', 'v3', 'v2') if v in source_versions), None)
     config, models = validate_request_pin(json.loads(Path(config_path).read_text()), models, seeds, device, smoke,
                                          gate_config_version=source_gate_version)
@@ -440,12 +441,13 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                     if name in FUSION_STAGED_GATE_MODELS_PIN:
                                         identity['attention_scope'] = staged_gate_spec_pin(name)['attention_scope']
                                     if name in VERSIONED_GATE_MODELS_PIN:
-                                        identity.update(gate_version=gate_version_pin(name),
+                                        gate_version = gate_version_pin(name)
+                                        identity.update(gate_version=gate_version,
                                             attention_scope=gate_contract_pin(name)['attention_scope'])
-                                    if gate_version_pin(name) in ('v2', 'v3', 'v4', 'v5', 'v6', 'v7'):
-                                        identity['gate_normalization'] = copy.deepcopy(model.gate.normalization_contract)
-                                    if gate_version_pin(name) in ('v3', 'v4', 'v5', 'v6', 'v7'):
-                                        identity['gate_architecture'] = copy.deepcopy(model.gate.architecture_contract)
+                                        if gate_version in ('v2', 'v3', 'v4', 'v5', 'v6', 'v7'):
+                                            identity['gate_normalization'] = copy.deepcopy(model.gate.normalization_contract)
+                                        if gate_version in ('v3', 'v4', 'v5', 'v6', 'v7'):
+                                            identity['gate_architecture'] = copy.deepcopy(model.gate.architecture_contract)
                                     if hasattr(model, 'teacher_scaler'):
                                         identity['teacher_scaler_digest'] = scaler_digest_pin(model.teacher_scaler.state_dict())
                                     resume_args = dict(resume_identity=identity,

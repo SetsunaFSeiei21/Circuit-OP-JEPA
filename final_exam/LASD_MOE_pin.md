@@ -11,6 +11,8 @@
 | `lasd_moe_detach_pin` | 与 `lasd_moe_pin` 完全相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
 | `lasd_moe_headwise_pin` | 每个节点的每个头独立学习一组 PE 层权重 | 正常回传 | 所有层正常回传 |
 | `lasd_moe_headwise_detach_pin` | 与 `lasd_moe_headwise_pin` 相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
+| `lasd_moe_headwise_pin_v1` | 最后一层 PE 输出 + 逐头融合输出 | 正常回传 | 残差主路与融合分支均正常回传 |
+| `lasd_moe_headwise_detach_pin_v1` | 与 `lasd_moe_headwise_pin_v1` 相同 | MoE 输入前执行一次 detach | 所有 PE 输出进入融合时 detach，最后 PE 残差与层间主路正常回传 |
 | `lasd_moe_headwise_detach_hc_pin` | PE 内使用 FlowNet 的动态 Hyper-Connection，各 PE 的输出继续逐头融合 | MoE 输入前执行一次 detach | 所有 PE 与残差流参数正常回传 |
 
 模型继续使用现有级联输入：器件级 OP 预测器先从拓扑与设计参数学习训练集 OP，随后冻结。预测 OP 按 owner 对齐广播到原生引脚节点，与设计参数一起进入性能 Encoder。OP 预测器本身不采用 LASD-MoE，不增加真实 OP 推理输入，也不增加额外物理监督。
@@ -23,7 +25,7 @@
 2. 仅收集每个 PE block 的节点隐藏表示与 self-attention 的逐 Head R/T；SE 只执行原始拓扑编码。
 3. 在节点维度保留全部 PE 层、全部 Head 的 Score Dynamics。
 4. 一个共享 Top-2 MoE 为每个节点输出所有 PE 层的融合权重。
-5. 加权融合后的节点序列经过一个额外的 Graph Encoder block。
+5. 加权融合后的节点序列经过一个额外的 Graph Encoder block。两个 `_v1` 逐头模型在这一步先加上最后一层 PE 的输出。
 6. 交给现有的一套 Metric Query Decoder 预测性能。
 
 **L 是 `model.cross_layers`，仅包含参数融合 PE。** 例如 `encoder_layers=6, cross_layers=3`：先正常执行 3 个 SE，再收集 3 个 PE 的 Score 与输出，融合这三个 PE 层的表示，最后追加一个 Graph Encoder block。SE 不提取 Score、不参与层权重或隐藏表示融合；最终 block 也不进入 Score 历史。第一层 PE 的差分直接置零，不与最后一层 SE 比较。
@@ -106,7 +108,7 @@ u_i=\sum_{e\in\operatorname{Top2}(r_i)}p_{i,e}f_e(z_i),\qquad
 
 ## 5. Detach 的准确边界
 
-基础版和逐头版各自都有一对普通与 detach 模型。每对内部使用相同参数形状、前向计算与初始化过程。
+每对普通与 detach 模型使用相同参数形状、前向计算与初始化过程。下面先说明原有基础版、逐头版和 HC 版的 Score detach。
 
 ```python
 # 普通版本
@@ -120,7 +122,28 @@ Detach 在 MoE 之前，因此 Router 和 Expert 仍训练，层权重和融合�
 
 普通版本可同时通过 Hidden State Fusion 和 Score 分支影响原始 Encoder；Detach 版关闭直接的 Score 分支梯度，但仍通过融合隐藏表示更新原始 Encoder。Q/K 仍可能从正常 Attention 消息传递及 Hidden State Fusion 获得梯度。不能把 Detach 版解释为冻结 Attention。
 
-这与旧的 `width_decoder_lasd_detach_pin` 不同：旧模型切断浅层 memory/Score 通往对应 Decoder 的读出边，并对差分上一层 Score 断梯度；新模型只在完整 Score 特征送入 MoE 前 detach 一次，**所有 PE 层的 hidden-state 读出边都保持连接**。因此新模型不宣称消除了 Hierarchy Bypassing。
+旧的 `width_decoder_lasd_detach_pin` 切断浅层 memory/Score 通往对应 Decoder 的读出边，并对差分上一层 Score 断梯度。原有的 `lasd_moe_headwise_detach_pin` 只在完整 Score 特征送入 MoE 前 detach 一次，各 PE 层的 hidden-state 融合边都保留梯度。
+
+### 5.1 最后 PE 残差与融合分支 detach 的 v1 模型
+
+设 `h1, h2, h3` 是原有接口返回的 PE memory，即每个 PE block 输出经过共享 `output_norm` 和 `output_projection` 后的表示。两个 v1 模型都使用 `x = h3 + fused`，然后将 x 送入现有 Final Graph Encoder 和性能 Decoder。层数可配置，残差自动取最后一个 PE memory。直接相加的系数为 1，此项操作增加 0 个参数。
+
+```python
+# lasd_moe_headwise_pin_v1
+logits, _ = layer_fusion(score_features, valid)
+fused, _ = fuse_pe_memories(memories, logits, padding)
+x = memories[-1] + fused
+
+# lasd_moe_headwise_detach_pin_v1
+logits, _ = layer_fusion(score_features.detach(), valid)
+fusion_inputs = tuple(memory.detach() for memory in memories)
+fused, _ = fuse_pe_memories(fusion_inputs, logits, padding)
+x = memories[-1] + fused
+```
+
+`lasd_moe_headwise_detach_pin_v1` 的损失通过最后 PE 的残差进入 Encoder，再沿 PE3 → PE2 → PE1 → SE 反传。所有层之间传递的隐藏表示都保留梯度。融合分支的数值仍取自同一次前向中的 PE1、PE2、PE3，detach 切断的是这三个读出输入与 Encoder 的梯度连接。MoE 的 Router、Experts 和逐头 softmax 权重仍通过 `fused` 学习。
+
+两个 v1 模型的逐头权重仍沿 PE 层维归一化。最后 PE 还具有额外的系数为 1 的残差，因此完整的 `x` 包含两部分贡献。诊断 CSV 记录的是融合分支内的权重，相加残差由结构记录中的 `residual_connection` 描述。
 
 ## 6. 配置、预算与实验控制
 
@@ -180,6 +203,15 @@ SEEDS=(17 29 43)
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise
 ```
+
+训练这次新增的两个残差逐头版本，使用 `--headwise-v1`。它选择 `lasd_moe_headwise_pin_v1` 和 `lasd_moe_headwise_detach_pin_v1`，沿用脚本顶部的 `CIRCUITS`、`SEEDS`、资源设置与同一份 `configs/lasd_moe_pin.json`。
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1 --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1
+```
+
+也可以在脚本顶部直接写 `MODELS=(lasd_moe_headwise_pin_v1 lasd_moe_headwise_detach_pin_v1)` 后无参数启动。若希望把上一版放在同一轮实验比较，可把四个逐头模型都写入 `MODELS` 后无参数启动。每次提交选择一个模型预设，脚本会拒绝同时传入 `--headwise`、`--headwise-v1`、`--hyper-connection` 中的多个选项。
 
 比较普通残差与 Hyper-Connection 时使用同一脚本的 `--hyper-connection` 预设。它选择 `lasd_moe_headwise_detach_pin` 和 `lasd_moe_headwise_detach_hc_pin`，使用脚本顶部的电路和 seed。两组复用同一电路、同一 seed 的冻结 OP 预测器。如只训练 HC 模型，可把脚本顶部设为 `MODELS=(lasd_moe_headwise_detach_hc_pin)`，然后无参数运行。
 
@@ -272,6 +304,6 @@ padding 不参与节点分数、层权重和 expert 使用率统计。诊断保�
 
 ## 9. 验证与结果解释
 
-核心测试检查 R/T 方向、self/padding 排除、分块与原 Attention 一致性、第一层差分零填充、节点对齐、Top-2 路由和层权重归一化、两模型相同权重下的前向一致性，以及 Detach 仅关闭 Score 梯度的边界。工程检查覆盖保存/重建、配置与模型名一致性、结果汇总、Slurm 参数与目录隔离。
+核心测试检查 R/T 方向、self/padding 排除、分块与原 Attention 一致性、第一层差分零填充、节点对齐、Top-2 路由和层权重归一化、每对模型相同权重下的前向一致性，以及各版本规定的梯度边界。v1 测试还检查最后 PE 残差、三个融合输入 detach 与 MoE 梯度。工程检查覆盖保存/重建、配置与模型名一致性、结果汇总、Slurm 参数与目录隔离。
 
 相同参数规模与相同初始化不意味着两模型优化过程相同；其梯度路径是本次实验变量。该结构没有将 Attention Score 等同于真实物理信息流，也没有证明低秩、过平滑改善或 Expert 专门化。精度、收敛速度与稳定性必须由真实电路的多 seed 实验给出；小规模 CPU/GPU 烟测只验证代码运行路径。

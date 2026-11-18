@@ -7,6 +7,7 @@ import torch
 from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
     HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN,
+    RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
     lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
 from final_exam.models.attention_score_pin import AttentionScoreExtractorPin
@@ -157,18 +158,24 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0
     count = int(diag['valid'].sum())
-    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN)
+    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN,
+                        *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN)
     expected_axes = (count, cfg['heads']) if headwise else (count,)
     node_weights = diag['layer_weights'][diag['valid']]
     assert node_weights.shape == (*expected_axes, cfg['cross_layers'])
     torch.testing.assert_close(node_weights.sum(-1), torch.ones(expected_axes))
     assert torch.count_nonzero(diag['layer_weights'][~diag['valid']]) == 0
     output.square().sum().backward()
-    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN):
+    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN,
+                'lasd_moe_headwise_detach_pin_v1'):
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
-    assert all(memory.grad is not None and memory.grad.abs().sum() > 0 for memory in retained_memories)
+    if mode == 'lasd_moe_headwise_detach_pin_v1':
+        assert all(memory.grad is None for memory in retained_memories[:-1])
+        assert retained_memories[-1].grad.abs().sum() > 0
+    else:
+        assert all(memory.grad is not None and memory.grad.abs().sum() > 0 for memory in retained_memories)
     assert model.layer_fusion.router.weight.grad.abs().sum() > 0
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.layer_fusion.experts.parameters())
     for block in list(model.encoder.structure_encoder.blocks) + list(model.encoder.fusion_blocks):
@@ -193,7 +200,8 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         rebuild_lasd_moe_model_pin(bad, cfg, prep)
 
 
-@pytest.mark.parametrize('modes', [('lasd_moe_pin', 'lasd_moe_detach_pin'), HEADWISE_LASD_MOE_MODELS_PIN])
+@pytest.mark.parametrize('modes', [('lasd_moe_pin', 'lasd_moe_detach_pin'), HEADWISE_LASD_MOE_MODELS_PIN,
+                                  RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN])
 def test_detach_pair_same_parameters_forward_rng_and_native_initialization(inputs, modes):
     cfg, prep, support, batch = inputs
     cfg = {**cfg, 'dropout': .2}

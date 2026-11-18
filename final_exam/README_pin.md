@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+逐头 LASD 的 `lasd_moe_headwise_pin_v1` 和 `lasd_moe_headwise_detach_pin_v1` 使用最后 PE 输出加逐头融合输出。detach v1 对分数和融合分支的所有 PE 输入执行 stop-gradient，最后 PE 残差和 Encoder 层间主路正常反传。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1` 可比较这两个模型。[v1 梯度与启动说明](LASD_MOE_pin.md)
+
 **LASD-MoE 层融合**使用所有 PE 层的逐头 Score Dynamics。基础版为每个节点生成一组层权重，逐头版为每个节点的每个头各生成一组层权重。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise` 可比较逐头模型及其 Score detach 对照。给同一个脚本传入 `--hyper-connection` 可比较 `lasd_moe_headwise_detach_pin` 和使用 PE 多残差流的 `lasd_moe_headwise_detach_hc_pin`。配置位于 `final_exam/configs/lasd_moe_pin.json`。[结构、梯度与运行说明](LASD_MOE_pin.md)
 
 **共同下基的宽 decoder 训练**：新增 `width_decoder_shared_kv_pin`、`width_decoder_shared_attention_pin`、`width_decoder_shared_ffn_pin`、`width_decoder_shared_both_pin`。仅在同一模型内部、对应 PE decoder 的相同投影位置共享可训练下基 A，各分支上基 B 独立，从头训练；OP predictor 保持原结构。入口 `single_circuit_pin/train_shared_decoder_pin.sh`，配置 `configs/shared_decoder_pin.json`，恢复入口 `single_circuit_pin/resume_shared_decoder_pin.sh`。多个电路各自提交独立作业，详见 [结构、训练、结果和日志说明](SHARED_DECODER_TRAINING_pin.md)。

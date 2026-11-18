@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1` 可比较 `lasd_moe_headwise_pin_v1` 与 `lasd_moe_headwise_detach_pin_v1`。两者都将最后 PE 输出加到逐头融合输出上，detach 版切断融合分支的分数和所有 PE 输入梯度。电路和 seed 在同一脚本顶部设置，结果写入本目录的 `results_pin`，实验与集群日志写入 `logs_pin` 和 `hpc_logs_pin`。[v1 结构与梯度说明](../LASD_MOE_pin.md)
+
 比较逐头 LASD-MoE 的普通残差与 FlowNet Hyper-Connection 时，运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection`。它在相同电路和 seed 上训练 `lasd_moe_headwise_detach_pin` 与 `lasd_moe_headwise_detach_hc_pin`，新模型默认在每个性能 PE 内保留 4 条全维残差流。[结构与训练说明](../LASD_MOE_pin.md)
 
 **LASD-MoE 层融合**使用 `train_lasd_moe_pin.sh` 顶部的 `CIRCUITS`、`MODELS`、`SEEDS`。默认比较 `device_op_cascade_pin`、`lasd_moe_pin` 和 `lasd_moe_detach_pin`。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise` 会选择 `lasd_moe_headwise_pin` 与 `lasd_moe_headwise_detach_pin`。每个模型目录的 `lasd_moe_weights_pin.csv` 可按引脚和头查看各 PE 的权重。结果、实验日志和 HPC 日志分别位于本目录的 `results_pin`、`logs_pin`、`hpc_logs_pin`。[LASD-MoE 结构与训练说明](../LASD_MOE_pin.md)

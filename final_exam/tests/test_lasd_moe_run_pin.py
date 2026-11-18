@@ -14,6 +14,7 @@ from final_exam.data_pin import PinDataContext
 from final_exam.run_pin import MODEL_NAMES_PIN, load_checkpoint_pin
 from final_exam.lasd_moe_registry_pin import (
     HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin,
+    RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
 )
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
 from final_exam.tests.test_summary_pin import workbook, text_values, record
@@ -27,7 +28,7 @@ def configure(cfg, path):
     path.write_text(json.dumps(cfg))
 
 
-@pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN,
+@pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
                                   ('lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN)])
 def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup, pair):
     root, cfg, data_path, config, run = setup
@@ -92,8 +93,14 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
     texts = text_values(sheets['LASD_MoE'])
     assert all(mode in texts for mode in modes)
     assert any('lasd_moe_scores_pin.csv' in text for text in texts if text)
-    if has_hyper or pair == HEADWISE_LASD_MOE_MODELS_PIN:
+    if has_hyper or pair in (HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN):
         assert 'B,N,H,L' in texts
+    if pair == RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN:
+        assert {'Fusion memories detached', 'Final PE residual', 'Hidden-state detach scope'} <= set(texts)
+        assert 'last_pe_memory_add' in texts and 'fusion_inputs_only' in texts
+        assert all(a['architecture']['residual_connection'] == 'last_pe_memory_add' for a in audits)
+        assert audits[0]['architecture']['hidden_state_detach'] is False
+        assert audits[1]['architecture']['hidden_state_detach'] is True
     with patch.object(torch.optim.AdamW, 'step', side_effect=AssertionError('retrained completed stage')):
         resumed, _ = run('lasd_moe_completed_resume', modes, out)
         _, subset = run('lasd_moe_subset_resume', [pair[1]], out)

@@ -2,9 +2,10 @@
 import math
 
 HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin')
+RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin_v1', 'lasd_moe_headwise_detach_pin_v1')
 HYPER_LASD_MOE_MODEL_PIN = 'lasd_moe_headwise_detach_hc_pin'
 LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
-                       HYPER_LASD_MOE_MODEL_PIN)
+                       HYPER_LASD_MOE_MODEL_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN)
 
 
 def lasd_moe_settings_pin(value=None):
@@ -65,7 +66,8 @@ def lasd_moe_spec_pin(mode, value, model_config):
         decoder='one_existing_metric_query_decoder', decoder_layers=model_config['decoder_layers'],
         op_predictor='ordinary_frozen_device_op_predictor', requires_measured_op=False,
         score_chunk_size=options['score_chunk_size'], checkpoint_scores=options['checkpoint_scores'])
-    if mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN):
+    if mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN,
+                *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN):
         if model_config['dim'] % heads:
             raise ValueError('Headwise PE fusion requires feature width divisible by head count')
         spec.update(version=2, layer_fusion='node_wise_headwise_softmax_weighted_sum',
@@ -81,6 +83,11 @@ def lasd_moe_spec_pin(mode, value, model_config):
                         initial_read='pe_index_mod_streams', initial_carry='identity', initial_write=1.,
                         initial_dynamic_projection=0., initial_dynamic_scale=0.01,
                         normalization='native_post_norm_per_stream', readout='sum_each_pe_for_lasd'))
+    if mode in RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN:
+        detached = mode == 'lasd_moe_headwise_detach_pin_v1'
+        spec.update(version=4, residual_connection='last_pe_memory_add',
+                    score_detach=detached, hidden_state_detach=detached,
+                    hidden_state_detach_scope='fusion_inputs_only', final_pe_residual_detach=False)
     return spec
 
 
