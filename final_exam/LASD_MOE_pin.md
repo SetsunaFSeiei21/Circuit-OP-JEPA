@@ -2,15 +2,15 @@
 
 ## 1. 本次实现范围
 
-新增两个独立模型，旧模型、配置和启动脚本继续保留：
+同一个单电路训练入口支持以下对照。
 
 | 模型名称 | 层融合方式 | Score 分支梯度 | 节点隐藏表示梯度 |
 |---|---|---|---|
 | `device_op_cascade_pin` | 原始对照，仅使用最终 Encoder memory | 无新增分支 | 原始传播路径 |
 | `lasd_moe_pin` | 所有 PE 层的 Score Dynamics → Top-2 MoE → 逐节点层权重 | 正常回传 | 所有层正常回传 |
 | `lasd_moe_detach_pin` | 与 `lasd_moe_pin` 完全相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
-
-这次按“当前只实现 Score Dynamics 和对应 Detach 版本”的范围交付两个新增模型。Uniform Fusion、Score-MLP、LASD-MLP 可作为后续消融；本版本没有将这些尚未实现的模型注册进模型列表。
+| `lasd_moe_headwise_pin` | 每个节点的每个头独立学习一组 PE 层权重 | 正常回传 | 所有层正常回传 |
+| `lasd_moe_headwise_detach_pin` | 与 `lasd_moe_headwise_pin` 相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
 
 模型继续使用现有级联输入：器件级 OP 预测器先从拓扑与设计参数学习训练集 OP，随后冻结。预测 OP 按 owner 对齐广播到原生引脚节点，与设计参数一起进入性能 Encoder。OP 预测器本身不采用 LASD-MoE，不增加真实 OP 推理输入，也不增加额外物理监督。
 
@@ -67,14 +67,14 @@ T_i^{(l,h)}=\sum_{j\ne i}A_{ji}^{(l,h)}.
 
 每个节点保留全部 PE 层的 R/T 和 ΔR/ΔT，展开顺序为 `layer → head → [R,T,ΔR,ΔT]`，共 `4 × L × H` 个数。默认 L=3、H=8，MoE 输入是 **96 维**。这个展开顺序保存在 checkpoint 结构契约中，重建时会校验；同一节点的所有 PE 层、所有 Head 共同构成一个 Router 输入。
 
-Router 输出 4 个 expert logits，每个节点选择其中最大的两个；选中 logits 在这两个 expert 间归一化。四个 Expert 的参数独立，每个都是两层非线性 MLP，输出 L 个层 logits。仅被选中的两个 expert 贡献该节点结果；未选中的 expert 不参与该节点的融合。
+Router 为每个节点选出 4 个 expert 中得分最高的两个，并在这两个 expert 间归一化。每个 expert 都是参数独立的两层 MLP。基础版每个 expert 输出 L 个层 logits，逐头版每个 expert 输出 H × L 个 logits。同一个节点的所有融合头共享本次 Top-2 选择。
 
 \[
 u_i=\sum_{e\in\operatorname{Top2}(r_i)}p_{i,e}f_e(z_i),\qquad
 \alpha_i=\operatorname{softmax}_{\text{layer}}(u_i).
 \]
 
-这里有两次不同的归一化：先在选中的两个 expert 上混合输出，再沿 L 个 PE 层生成融合权重。每个有效节点的层权重和为 1，padding 节点输出清零。所有 Head 的分数共同决定一组 L 维层权重，不生成 Head 独立层权重。
+在基础版中，所有头的分数共同决定一组 L 维权重。有效节点的层权重和为 1，padding 节点的权重清零。
 
 \[
 \widetilde h_i=\sum_{l=1}^{L}\alpha_i^{(l)}h_i^{(l)},\qquad
@@ -83,9 +83,17 @@ u_i=\sum_{e\in\operatorname{Top2}(r_i)}p_{i,e}f_e(z_i),\qquad
 
 本版不增加 capacity dropping、不引入 expert load-balancing loss。Expert 使用失衡应通过诊断观察，不能假定四个 expert 会自动等量使用。
 
+### 4.1 逐头融合
+
+以 3 个 PE、8 个头、128 维隐藏表示为例，每个引脚的 96 维 Score Dynamics 进入 MoE。两个选中 expert 各输出 24 个 logits，按路由权重混合，再重排为 `[8, 3]`。每一行只沿 PE1、PE2、PE3 做 softmax，得到 8 组独立的三层权重。
+
+每个 PE 的完整节点输出经过已有的输出归一化与投影。将同一节点的 128 个投影通道按原顺序分成 8 组，头 0 使用各 PE 的第 0–15 通道，头 1 使用第 16–31 通道，以此类推。每个头用自己的三个权重加权求和得到 16 维，依次拼回 128 维，送入已有的最终 Graph Encoder 与 Metric Decoder。这里的头编号指投影后的融合通道组。原生 self-attention 中各个头的输出已经经过注意力输出投影和后续 PE 运算。
+
+一般配置下，层权重形状为 `[B,N,H,L]`，通道组宽度为 `D/H`。每个有效节点、每个头的 L 个权重之和为 1。两种逐头模型的参数量相同，相比基础版，新增参数都来自四个 expert 的最后一层。默认配置增加 `4 × (128 + 1) × (24 − 3) = 10,836` 个参数。
+
 ## 5. Detach 的准确边界
 
-两个新增模型拥有相同模块与参数形状，配对使用相同 seed 和初始化过程。唯一的训练区别是：
+基础版和逐头版各自都有一对普通与 detach 模型。每对内部使用相同参数形状、前向计算与初始化过程。
 
 ```python
 # 普通版本
@@ -150,6 +158,13 @@ SEEDS=(17 29 43)
 
 每个电路独立提交一个 Slurm 作业，一个作业内按 seed/model 依次执行并共享允许复用的阶段。不同电路不共享模型权重、预处理统计或训练数据。
 
+只跑两个逐头版本时，在同一个脚本上加 `--headwise`。该参数覆盖 `MODELS`，沿用脚本顶部的 `CIRCUITS`、`SEEDS`、资源与配置。也可以直接在 `MODELS` 中按名称组合基础版和逐头版。
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise
+```
+
 ```bash
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh
@@ -171,7 +186,7 @@ bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh
 
 ### 7.1 从中断实验恢复
 
-沿用现有恢复入口 `resume_width_decoder_pin.sh`。这是历史文件名，其内部调用公共恢复器，已支持这两个 LASD-MoE 模型以及 `device_op_cascade_pin`；无需另建恢复脚本。将下面路径替换为要恢复的旧实验根目录，也可以传入其中的 `training_pin` 目录：
+四个 LASD-MoE 模型以及 `device_op_cascade_pin` 都使用现有的 `resume_width_decoder_pin.sh` 恢复。参数可以是原实验根目录，也可以是其中的 `training_pin` 目录。
 
 ```bash
 LASD_SOURCE_RUN="/path/to/results_pin/two_stage_folded_opamp_lasd_moe_..._pin"
@@ -215,16 +230,18 @@ final_exam/single_circuit_pin/hpc_logs_pin/<运行名>/
 
 保留模型结构契约、数据划分、有效配置、冻结 OP 预测器 checkpoint、所用 seed 与实际阶段成本。汇总沿用 MAE/RMSE/R² 与多 seed 的均值±标准差。
 
-两种新模型各自导出相同格式的诊断。逐样本诊断使用**验证集**中按既定顺序选取的至多 `diagnostic_samples` 条样本，在 checkpoint 选择完成后运行，不反向影响选模：
+模型按既定顺序从**验证集**选取至多 `diagnostic_samples` 条样本，在 checkpoint 选择完成后导出诊断。
 
 | 文件 | 内容 |
 |---|---|
 | `lasd_moe_scores_pin.csv` | 每个 sample/node/PE/head 的 R、T、ΔR、ΔT，保留节点身份和层位置 |
-| `lasd_moe_weights_pin.csv` | 每个有效节点对各 PE 的融合权重 |
+| `lasd_moe_weights_pin.csv` | 基础版按节点、PE 输出一行。逐头版按节点、`head`（从 0 起）、`pe_layer`（从 1 起）输出 `layer_weight` |
 | `lasd_moe_experts_pin.csv` | 节点的 Router、选中 expert 和混合权重 |
 | `lasd_moe_diagnostics_pin.json` | 验证集 sample IDs、有效节点数、结构契约、分数统计、层权重与 expert 使用汇总，以及文件清单 |
 | `stages_pin/<模型名>/history_pin.json` | 每个 epoch 的训练/验证 loss 与 `encoder_gradients` 梯度统计 |
 | `stages_pin/<模型名>/cost_pin.json` | 阶段训练成本，包括实际 epoch 数与累计训练耗时 |
+
+逐头版的 `layer_weight_summary.per_head` 按 `[H,L]` 保存各头的层权重统计。外层摘要先在同一节点内对头取均值，便于与基础版对照。Expert 使用次数按节点统计。工作簿 `summary_pin.xlsx` 的 `LASD_MoE` 页也标出层权重轴顺序、expert 输出维度和每个融合头的通道数。
 
 梯度在 `backward()` 之后、梯度裁剪之前统计。每个 SE、PE 和额外 Final Encoder block 独立记录 L2 范数的 batch 平均值、最大值和 batch 数。SE 梯度诊断用于观察原主干传播，**不表示 SE 被加入 Score 提取或隐藏表示融合**。参数梯度范数也不等同于节点激活梯度范数，不能互换解释。
 

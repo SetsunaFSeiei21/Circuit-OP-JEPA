@@ -6,11 +6,11 @@ import torch
 
 from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
-    LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
+    HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
 from final_exam.models.attention_score_pin import AttentionScoreExtractorPin
 from final_exam.models.lasd_moe_pin import (
-    LASDMoEModelPin, Top2LayerMoEPin, score_dynamics_pin,
+    LASDMoEModelPin, Top2LayerMoEPin, _fuse_pe_memories_pin, score_dynamics_pin,
     describe_lasd_moe_model_pin, rebuild_lasd_moe_model_pin,
 )
 from final_exam.models.op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
@@ -34,9 +34,10 @@ def test_score_feature_order_deltas_and_reorder_rejection():
         score_dynamics_pin(scores, node_ids=[ids, ids.flip(-1), ids, ids])
 
 
-def test_sparse_moe_matches_top2_reference_with_padding_and_live_router():
+@pytest.mark.parametrize('output_heads', [None, 1, 8])
+def test_sparse_moe_matches_top2_reference_with_padding_and_live_router(output_heads):
     torch.manual_seed(83)
-    moe = Top2LayerMoEPin(16, 3, {'hidden_dim': 9})
+    moe = Top2LayerMoEPin(16, 3, {'hidden_dim': 9}, output_heads=output_heads)
     features = torch.randn(2, 5, 16, requires_grad=True)
     valid = torch.tensor([[True]*5, [True, True, False, False, False]])
     features.data[~valid] = float('nan')
@@ -46,6 +47,8 @@ def test_sparse_moe_matches_top2_reference_with_padding_and_live_router():
     weights = logits.softmax(-1)
     expected = sum(expert(safe) * ((selected == i).to(safe.dtype)*weights).sum(-1, keepdim=True)
                    for i, expert in enumerate(moe.experts)).masked_fill(~valid.unsqueeze(-1), 0.)
+    if output_heads is not None:
+        expected = expected.unflatten(-1, (output_heads, 3))
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(info['selected_weights'][valid].sum(-1), torch.ones(int(valid.sum())))
     assert (info['selected_experts'][~valid] == -1).all()
@@ -56,6 +59,44 @@ def test_sparse_moe_matches_top2_reference_with_padding_and_live_router():
     for i in range(2):
         out, _ = moe(features[i:i+1], valid[i:i+1])
         torch.testing.assert_close(out, actual[i:i+1])
+
+
+def test_heads_mix_their_own_projected_channels_across_pe_layers():
+    # Each layer has four channels; the two heads use different PE mixtures.
+    memories = [torch.tensor(values, dtype=torch.float32).expand(1, 3, 4)
+                for values in ([1, 2, 3, 4], [10, 20, 30, 40], [100, 200, 300, 400])]
+    mixture = torch.tensor([[.2, .3, .5], [.7, .2, .1]])
+    logits = torch.stack((mixture, mixture.flip(0), mixture)).log().unsqueeze(0)
+    padding = torch.tensor([[False, False, True]])
+    fused, weights = _fuse_pe_memories_pin(memories, logits, padding)
+    expected = torch.tensor([[[53.2, 106.4, 38.1, 50.8],
+                              [12.7, 25.4, 159.6, 212.8], [0., 0., 0., 0.]]])
+    torch.testing.assert_close(fused, expected)
+    torch.testing.assert_close(weights[0, 0], mixture)
+    assert torch.count_nonzero(weights[padding]) == 0
+    # A shared distribution on every head recovers the original full-vector fusion.
+    scalar = logits[:, :, 0, :]
+    original, _ = _fuse_pe_memories_pin(memories, scalar, padding)
+    headwise, _ = _fuse_pe_memories_pin(memories, scalar.unsqueeze(2).expand_as(logits), padding)
+    torch.testing.assert_close(headwise, original)
+
+
+def test_default_eight_heads_each_return_three_pe_weights(inputs):
+    cfg, prep, support, batch = inputs
+    cfg = {**cfg, 'dim': 128, 'heads': 8, 'encoder_layers': 6, 'cross_layers': 3}
+    predictor = DeviceOPPredictorPin(cfg, prep, support)
+    shared = LASDMoEModelPin('lasd_moe_pin', cfg, prep, predictor)
+    model = LASDMoEModelPin('lasd_moe_headwise_pin', cfg, prep, predictor).eval()
+    assert (sum(p.numel() for p in model.parameters()) -
+            sum(p.numel() for p in shared.parameters())) == 10836
+    with torch.no_grad():
+        memory, padding, info = model.memory(batch, return_scores=True)
+    assert memory.shape == (*padding.shape, 128)
+    assert info['selected_experts'].shape == (*padding.shape, 2)
+    assert info['score_features'].shape == (*padding.shape, 96)
+    assert info['layer_weights'].shape == (*padding.shape, 8, 3)
+    sums = info['layer_weights'][~padding].sum(-1)
+    torch.testing.assert_close(sums, torch.ones_like(sums))
 
 
 def test_sparse_dispatch_preserves_autocast_gradient_dtype():
@@ -114,11 +155,14 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert output.shape == batch['performance'].shape
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0
-    torch.testing.assert_close(diag['layer_weights'][diag['valid']].sum(-1),
-                               torch.ones(int(diag['valid'].sum())))
+    count = int(diag['valid'].sum())
+    expected_axes = (count, cfg['heads']) if mode in HEADWISE_LASD_MOE_MODELS_PIN else (count,)
+    node_weights = diag['layer_weights'][diag['valid']]
+    assert node_weights.shape == (*expected_axes, cfg['cross_layers'])
+    torch.testing.assert_close(node_weights.sum(-1), torch.ones(expected_axes))
     assert torch.count_nonzero(diag['layer_weights'][~diag['valid']]) == 0
     output.square().sum().backward()
-    if mode == 'lasd_moe_detach_pin':
+    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin'):
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
@@ -147,16 +191,17 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         rebuild_lasd_moe_model_pin(bad, cfg, prep)
 
 
-def test_detach_pair_same_parameters_forward_rng_and_native_initialization(inputs):
+@pytest.mark.parametrize('modes', [('lasd_moe_pin', 'lasd_moe_detach_pin'), HEADWISE_LASD_MOE_MODELS_PIN])
+def test_detach_pair_same_parameters_forward_rng_and_native_initialization(inputs, modes):
     cfg, prep, support, batch = inputs
     cfg = {**cfg, 'dropout': .2}
     predictor = DeviceOPPredictorPin(cfg, prep, support)
     torch.manual_seed(11)
     baseline = DeviceOPGateModelPin('device_op_cascade_pin', cfg, prep, predictor)
     torch.manual_seed(11)
-    model = LASDMoEModelPin('lasd_moe_pin', cfg, prep, predictor, {'dropout': .15})
+    model = LASDMoEModelPin(modes[0], cfg, prep, predictor, {'dropout': .15})
     torch.manual_seed(11)
-    detached = LASDMoEModelPin('lasd_moe_detach_pin', cfg, prep, predictor, {'dropout': .15})
+    detached = LASDMoEModelPin(modes[1], cfg, prep, predictor, {'dropout': .15})
     assert state_digest(model) == state_digest(detached)
     assert state_digest(model.encoder) == state_digest(baseline.encoder)
     assert state_digest(model.decoder) == state_digest(baseline.decoder)

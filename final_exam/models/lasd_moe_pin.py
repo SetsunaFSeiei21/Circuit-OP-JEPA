@@ -11,7 +11,7 @@ from torch import nn
 
 from device_jepa.model import EncoderBlock, ModelConfig
 from final_exam.lasd_moe_registry_pin import (
-    LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
+    HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
 )
 from .attention_score_pin import AttentionScoreExtractorPin, layer_score_features_pin
 from .op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
@@ -35,15 +35,17 @@ class Top2LayerMoEPin(nn.Module):
     and expert outputs remain differentiable. There is no capacity truncation,
     token dropping, expert balancing penalty or hidden feature input to routing.
     """
-    def __init__(self, input_dim, layers, settings):
+    def __init__(self, input_dim, layers, settings, *, output_heads=None):
         super().__init__()
         self.settings = lasd_moe_settings_pin(settings)
         self.input_dim, self.layers = input_dim, layers
+        self.output_shape = (layers,) if output_heads is None else (output_heads, layers)
+        self.output_dim = layers if output_heads is None else output_heads * layers
         count, hidden = self.settings['n_experts'], self.settings['hidden_dim']
         self.router = nn.Linear(input_dim, count)
         self.experts = nn.ModuleList(nn.Sequential(
             nn.Linear(input_dim, hidden), nn.GELU(), nn.Dropout(self.settings['dropout']),
-            nn.Linear(hidden, layers)) for _ in range(count))
+            nn.Linear(hidden, self.output_dim)) for _ in range(count))
 
     def forward(self, features, valid):
         if (features.ndim != 3 or features.shape[-1] != self.input_dim
@@ -57,7 +59,7 @@ class Top2LayerMoEPin(nn.Module):
         flat = safe.flatten(0, 1)
         routes, route_weights = chosen.flatten(0, 1), weights.flatten(0, 1)
         flat_valid = valid.flatten()
-        output = safe.new_zeros(flat.shape[0], self.layers)
+        output = safe.new_zeros(flat.shape[0], self.output_dim)
         for index, expert in enumerate(self.experts):
             nodes, slots = torch.where((routes == index) & flat_valid[:, None])
             # Top-k returns distinct expert IDs, so node indices here are unique.
@@ -66,11 +68,25 @@ class Top2LayerMoEPin(nn.Module):
             contribution = torch.zeros_like(output)
             contribution[nodes] = values.to(contribution.dtype)
             output = output + contribution
-        output = output.reshape(*features.shape[:2], self.layers)
+        output = output.reshape(*features.shape[:2], *self.output_shape)
         return output, dict(
             router_probs=logits.softmax(-1).masked_fill(~valid.unsqueeze(-1), 0.),
             selected_experts=chosen.masked_fill(~valid.unsqueeze(-1), -1),
             selected_weights=weights)
+
+
+def _fuse_pe_memories_pin(memories, logits, padding):
+    """Softmax over PE depth. Headwise logits index contiguous projected channels."""
+    states = torch.stack(memories, dim=2)  # B,N,L,D
+    if logits.ndim == 3:
+        weights = logits.softmax(-1).masked_fill(padding.unsqueeze(-1), 0.)
+        return (states * weights.unsqueeze(-1)).sum(2), weights
+    heads = logits.size(2)
+    weights = logits.softmax(-1).masked_fill(padding[:, :, None, None], 0.)
+    # Align each group's logits [B,N,H,L] with its D/H channels in every PE.
+    states = states.unflatten(-1, (heads, -1)).transpose(2, 3)  # B,N,H,L,D/H
+    fused = (states * weights.unsqueeze(-1)).sum(dim=3)
+    return fused.flatten(-2), weights
 
 
 class LASDMoEModelPin(DeviceOPGateModelPin):
@@ -89,8 +105,9 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         cfg = ModelConfig(**self.model_config)
         self.score_extractor = AttentionScoreExtractorPin(
             self.lasd_moe_config['score_chunk_size'], self.lasd_moe_config['checkpoint_scores'])
-        self.layer_fusion = Top2LayerMoEPin(4*cfg.cross_layers*cfg.heads,
-                                           cfg.cross_layers, self.lasd_moe_config)
+        self.layer_fusion = Top2LayerMoEPin(
+            self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
+            output_heads=cfg.heads if mode in HEADWISE_LASD_MOE_MODELS_PIN else None)
         self.final_graph_encoder = EncoderBlock(cfg, cross=False)
 
     @property
@@ -116,13 +133,12 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             raise ValueError('Encoder memories must preserve the same node order and shape')
         scores = torch.stack(observed, dim=2)
         features, differences = score_dynamics_pin(scores)
-        # The only gradient difference between the two model IDs. Never detach
+        # The only gradient difference within each pair of model IDs. Never detach
         # memories, router/expert parameters, selected weights or layer weights.
         moe_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
         valid = ~padding
         logits, routing = self.layer_fusion(moe_input, valid)
-        weights = logits.softmax(-1).masked_fill(padding.unsqueeze(-1), 0.)
-        fused = (torch.stack(memories, dim=2) * weights.unsqueeze(-1)).sum(2)
+        fused, weights = _fuse_pe_memories_pin(memories, logits, padding)
         memory = self.final_graph_encoder(fused, masks[0], None, None, valid)
         if return_scores:
             return memory, padding, dict(scores=scores, differences=differences,

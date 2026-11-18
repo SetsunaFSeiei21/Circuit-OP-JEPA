@@ -160,6 +160,30 @@ def test_sample_cap_and_disabled_diagnostics(tmp_path):
     assert not disabled.exists()
 
 
+def test_headwise_export_preserves_individual_pe_weights_and_node_route_counts(tmp_path):
+    model = _ObservedModel()
+    model.mode = 'lasd_moe_headwise_pin'
+    model.lasd_moe_spec['layer_weight_axes'] = 'B,N,H,L'
+    old = model.observed['layer_weights']
+    model.observed['layer_weights'] = torch.stack((old, old.flip(-1)), dim=2)
+    result = export_lasd_moe_diagnostics_pin(_Context(), model, {'batch_size': 16}, tmp_path)
+    with (tmp_path / result['weights']).open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 6 * 2 * 2
+    for row in rows:
+        b = {'sample_a': 0, 'sample_b': 1}[row['sample_id']]
+        node, head, layer = int(row['token_index']), int(row['head']), int(row['pe_layer']) - 1
+        assert model.observed['valid'][b, node]
+        assert float(row['layer_weight']) == pytest.approx(model.observed['layer_weights'][b, node, head, layer].item())
+    report = json.loads((tmp_path / result['metadata']).read_text())
+    summary = report['layer_weight_summary']
+    assert summary['per_head']['axes'] == 'H,L'
+    assert summary['node_weighted_mean'] == pytest.approx([.5, .5])
+    assert summary['per_head']['sample_weighted_mean'][0] == pytest.approx([.55, .45])
+    assert summary['per_head']['node_weighted_mean'][1] == pytest.approx([(4*.8+2*.1)/6, (4*.2+2*.9)/6])
+    assert report['expert_summary']['selection_counts'] == [0, 0, 6, 6]
+
+
 def test_identity_misalignment_is_rejected_and_flags_restored(tmp_path):
     model, ctx = _ObservedModel(), _Context()
     ctx.batch['_group_keys'][0].pop()

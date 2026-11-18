@@ -108,6 +108,7 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     sample_ids, sizes, identities, statistics = [], [], [], []
     sample_layer_means, all_weights, all_probs, all_choices, all_mix = [], [], [], [], []
     spec = model.lasd_moe_spec
+    headwise = spec.get('layer_weight_axes') == 'B,N,H,L'
     try:
         with torch.random.fork_rng(devices=devices), torch.no_grad():
             model.eval()
@@ -117,11 +118,13 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                     'scores', 'differences', 'valid', 'layer_weights', 'router_probs',
                     'selected_experts', 'selected_weights')}
                 scores, differences, valid = data['scores'], data['differences'], data['valid']
+                layer_shape = (spec['heads'],) if headwise else ()
+                weight_shape = (*valid.shape, *layer_shape, len(spec['layer_masks']))
                 if (scores.ndim != 5 or scores.shape[-1] != 2 or differences.shape != scores.shape
                         or scores.shape[:2] != valid.shape or valid.dtype != torch.bool
                         or scores.shape[2] != len(spec['layer_masks'])
                         or scores.shape[3] != spec['heads']
-                        or data['layer_weights'].shape != scores.shape[:3]
+                        or data['layer_weights'].shape != weight_shape
                         or data['router_probs'].shape != (*valid.shape, spec['experts'])
                         or data['selected_experts'].shape != (*valid.shape, spec['top_k'])
                         or data['selected_weights'].shape != data['selected_experts'].shape):
@@ -161,9 +164,13 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                                         token_index=position, token_id=name, is_graph=position == 0,
                                         valid_tokens=len(names))
                         for layer, mask in enumerate(spec['layer_masks']):
-                            weight_rows.append(dict(**identity, pe_layer=layer+1,
-                                                    layer_weight=float(weights[row, layer])))
+                            if not headwise:
+                                weight_rows.append(dict(**identity, pe_layer=layer+1,
+                                                        layer_weight=float(weights[row, layer])))
                             for head in range(scores.shape[3]):
+                                if headwise:
+                                    weight_rows.append(dict(**identity, pe_layer=layer+1, head=head,
+                                                            layer_weight=float(weights[row, head, layer])))
                                 r, t = scores[b, position, layer, head].tolist()
                                 dr, dt = differences[b, position, layer, head].tolist()
                                 score_rows.append(dict(**identity, pe_layer=layer+1, mask=mask,
@@ -195,14 +202,24 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     _write_csv(directory / files['scores'], score_rows)
     _write_csv(directory / files['weights'], weight_rows)
     _write_csv(directory / files['experts'], expert_rows)
+    sample_mean = torch.stack(sample_layer_means).mean(0)
+    head_summary = {}
+    if headwise:
+        head_summary = dict(per_head=dict(axes='H,L',
+            node_weighted_mean=all_weights.mean(0).tolist(),
+            sample_weighted_mean=sample_mean.tolist(),
+            node_weighted_std=all_weights.std(0, unbiased=False).tolist()))
+        # For comparison with the scalar variants, average groups within each node.
+        all_weights = all_weights.mean(1)
+        sample_mean = sample_mean.mean(0)
     report = dict(model=model.mode, split='val', checkpoint_selection=False,
         sample_ids=sample_ids, valid_token_counts=sizes, identities=identities,
         contract=spec, files=files, statistics=statistics,
         layer_weight_summary=dict(
             node_weighted_mean=all_weights.mean(0).tolist(),
-            sample_weighted_mean=torch.stack(sample_layer_means).mean(0).tolist(),
+            sample_weighted_mean=sample_mean.tolist(),
             node_weighted_std=all_weights.std(0, unbiased=False).tolist(),
-            valid_nodes=node_count, includes_graph_token=True),
+            valid_nodes=node_count, includes_graph_token=True, **head_summary),
         expert_summary=dict(
             selection_counts=counts.tolist(), valid_nodes=node_count,
             selection_fraction_of_nodes=(counts.double()/node_count).tolist(),

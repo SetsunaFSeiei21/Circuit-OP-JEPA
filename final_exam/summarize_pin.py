@@ -574,11 +574,12 @@ def _lasd_moe_sheet(results, stages):
               'Hidden states detached', 'Final encoder layers', 'Final encoder mask',
               'Total parameters', 'Trainable parameters', 'Readout epochs', 'Readout seconds',
               'Prerequisite epochs', 'Prerequisite seconds', 'Gradient history',
-              'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)')
+              'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)',
+              'Layer weight axes', 'Expert output width', 'Channels per fusion head')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
-                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90],
+                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30],
                   freeze_rows=4, freeze_columns=2)
-    sheet.note('LASD-MoE: node-wise PE layer fusion and score stop-gradient comparison', 1, 34)
+    sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
                'Each node keeps all heads, uses Top-2 of four experts, and fuses PE hidden states before one '
                'final encoder and the original metric decoder. No hidden state is detached.', height=56)
@@ -613,8 +614,11 @@ def _lasd_moe_sheet(results, stages):
                    sum(s.get('epochs', 0) for s in prerequisites),
                    sum(s.get('seconds', 0) for s in prerequisites), history,
                    diagnostic.get('split'), json.dumps(diagnostic_files, sort_keys=True),
-                   json.dumps(spec, sort_keys=True)], 42)
-    sheet.filter_range = f'A4:V{len(sheet.rows)}'
+                   json.dumps(spec, sort_keys=True),
+                   spec.get('layer_weight_axes', 'B,N,L') if spec else None,
+                   spec.get('expert_output_dim', spec.get('base_layers')),
+                   spec.get('channels_per_head')], 42)
+    sheet.filter_range = f'A4:Y{len(sheet.rows)}'
     return sheet
 
 

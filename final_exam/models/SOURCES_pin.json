@@ -943,6 +943,20 @@
       "op_readout": "Unchanged frozen device_op_predictor_pin",
       "scope": "All layer memories, router, experts, layer softmax, final encoder and metric decoder remain trainable. Hidden-state bypass paths remain; no claim that hierarchy bypassing is eliminated."
     },
+    "lasd_moe_headwise_pin": {
+      "model_id": "lasd_moe_headwise_pin",
+      "implementation": "Local extension of lasd_moe_pin with per-head PE depth weights",
+      "source_files_pin": ["lasd_moe_pin.py", "attention_score_pin.py", "../lasd_moe_registry_pin.py"],
+      "performance_readout": "The two experts selected per node each output H by L logits. Each head mixes its corresponding D/H contiguous projected PE channels across layers.",
+      "op_readout": "Frozen device_op_predictor_pin"
+    },
+    "lasd_moe_headwise_detach_pin": {
+      "model_id": "lasd_moe_headwise_detach_pin",
+      "implementation": "Score stop-gradient variant of lasd_moe_headwise_pin",
+      "source_files_pin": ["lasd_moe_pin.py", "attention_score_pin.py", "../lasd_moe_registry_pin.py"],
+      "performance_readout": "Flattened R/T and their differences are detached before routing. All PE memories, expert outputs and headwise layer weights carry gradients.",
+      "op_readout": "Frozen device_op_predictor_pin"
+    },
     "width_decoder_lasd_pin": {
       "model_id": "width_decoder_lasd_pin",
       "implementation": "Local LASD memory adapter following the user-selected per-head node-score specification",

@@ -132,6 +132,7 @@ def main(argv=None):
         if circuit != args.circuit:
             raise ValueError(f"SQLite circuit {circuit!r} differs from selected {args.circuit!r}")
         config, models = validate_request_pin(config, args.models, args.seeds, args.device, smoke=args.smoke)
+        config.setdefault("final_exam_pin", {})["models"] = models
     except (ValueError, OSError, TypeError, KeyError, argparse.ArgumentTypeError) as error:
         parser.error(str(error))
 

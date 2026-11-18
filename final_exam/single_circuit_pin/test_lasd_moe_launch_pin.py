@@ -34,6 +34,19 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
         self.assertEqual(spec['attention_scope'], 'pe_self_attention_only')
         self.assertEqual(spec['base_layers'], cfg['model']['cross_layers'])
         self.assertEqual(spec['input_dim'], 96)
+        self.assertEqual(spec['version'], 1)
+        self.assertNotIn('layer_weight_axes', spec)
+        per_head = lasd_moe_spec_pin('lasd_moe_headwise_pin', cfg['lasd_moe_pin'], cfg['model'])
+        self.assertEqual((per_head['input_dim'], per_head['expert_output_dim'],
+                          per_head['channels_per_head']), (96, 24, 16))
+
+    def test_headwise_flag_selects_only_the_two_new_models(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        run = subprocess.run(['bash', str(script), '--dry-run', '--headwise'], env=environment,
+                             text=True, capture_output=True, check=True)
+        args = shlex.split(run.stdout)
+        self.assertEqual(args[args.index('--models') + 1:args.index('--seeds')],
+                         ['lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin'])
 
     def test_two_circuits_have_separate_jobs_and_run_roots(self):
         script, task, environment, _ = self.fixture('exit 99')
@@ -75,7 +88,8 @@ class LASDMoEResumeLaunchPinTests(unittest.TestCase):
     def test_existing_resume_launcher_accepts_lasd_models_without_raw_import_or_writes(self):
         source, training, _, environment = self.bash_fixture('exit 99')
         config = json.loads((resume_tests.FINAL_ROOT / 'configs/lasd_moe_pin.json').read_text())
-        models = ['device_op_cascade_pin', 'lasd_moe_pin', 'lasd_moe_detach_pin']
+        models = ['device_op_cascade_pin', 'lasd_moe_pin', 'lasd_moe_detach_pin',
+                  'lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin']
         record = json.loads((training / 'run_pin.json').read_text())
         record['models'] = models
         for path in (source / 'run_pin.json', training / 'run_pin.json'):

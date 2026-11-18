@@ -12,7 +12,7 @@ from device_jepa.training import state_digest
 from experiments.op_transfer import engine
 from final_exam.data_pin import PinDataContext
 from final_exam.run_pin import MODEL_NAMES_PIN, load_checkpoint_pin
-from final_exam.lasd_moe_registry_pin import lasd_moe_spec_pin
+from final_exam.lasd_moe_registry_pin import HEADWISE_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
 from final_exam.tests.test_summary_pin import workbook, text_values, record
 from final_exam.tests.test_width_decoder_run_pin import setup
@@ -25,11 +25,12 @@ def configure(cfg, path):
     path.write_text(json.dumps(cfg))
 
 
-def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup):
+@pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN])
+def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup, pair):
     root, cfg, data_path, config, run = setup
     configure(cfg, config)
-    modes = ('device_op_cascade_pin', *MODES)
-    assert set(MODES) <= set(MODEL_NAMES_PIN)
+    modes = ('device_op_cascade_pin', *pair)
+    assert set(pair) <= set(MODEL_NAMES_PIN)
     out, result = run('lasd_moe_complete', modes)
     assert len(result['results']) == 3 and len(result['stages']) == 5
     assert json.loads((out / 'run_pin.json').read_text())['status'] == 'complete'
@@ -46,7 +47,7 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup)
     poisoned['op_mask'] = ~poisoned['op_mask']
     poisoned['owner_op_mask'] = ~poisoned['owner_op_mask']
     audits, costs = [], []
-    for mode in MODES:
+    for mode in pair:
         directory = out / f'seed_17_pin/{mode}'
         audits.append(json.loads((directory / 'lasd_moe_audit_pin.json').read_text()))
         model, checkpoint = load_checkpoint_pin(directory / 'checkpoint_pin.pt')
@@ -80,9 +81,11 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup)
     texts = text_values(sheets['LASD_MoE'])
     assert all(mode in texts for mode in modes)
     assert any('lasd_moe_scores_pin.csv' in text for text in texts if text)
+    if pair == HEADWISE_LASD_MOE_MODELS_PIN:
+        assert 'B,N,H,L' in texts
     with patch.object(torch.optim.AdamW, 'step', side_effect=AssertionError('retrained completed stage')):
         resumed, _ = run('lasd_moe_completed_resume', modes, out)
-        _, subset = run('lasd_moe_subset_resume', [MODES[1]], out)
+        _, subset = run('lasd_moe_subset_resume', [pair[1]], out)
     assert len(subset['results']) == 1 and len(subset['stages']) == 3
     for mode in modes:
         a, _ = load_checkpoint_pin(out / f'seed_17_pin/{mode}/checkpoint_pin.pt')
@@ -105,7 +108,7 @@ def test_saved_lasd_moe_configuration_tampering_rejects_export(setup):
     assert not (out / 'reexport_pin.xlsx').exists()
 
 
-@pytest.mark.parametrize('mode', MODES)
+@pytest.mark.parametrize('mode', LASD_MOE_MODELS_PIN)
 def test_interrupted_epoch_recovers_exact_weights_and_gradient_history(setup, mode):
     root, cfg, data_path, config, run = setup
     configure(cfg, config)

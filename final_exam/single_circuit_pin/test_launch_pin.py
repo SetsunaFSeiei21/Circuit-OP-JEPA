@@ -187,6 +187,7 @@ class LauncherTests(unittest.TestCase):
             output = launch.main(arguments)
         record = json.loads((output / "run_pin.json").read_text())
         config = json.loads((output / "config_pin.json").read_text())
+        self.assertEqual(config["final_exam_pin"]["models"], record["models"])
         self.assertEqual(record["status"], "complete")
         self.assertEqual(record["models"], ["mlp_pin"])
         self.assertEqual(config["dataset"], {"train_circuits": ["NamedCircuit"], "ood_circuits": []})
