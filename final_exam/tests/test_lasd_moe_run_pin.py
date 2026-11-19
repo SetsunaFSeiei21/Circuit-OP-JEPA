@@ -14,7 +14,7 @@ from final_exam.data_pin import PinDataContext
 from final_exam.run_pin import MODEL_NAMES_PIN, load_checkpoint_pin
 from final_exam.lasd_moe_registry_pin import (
     HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, HYPER_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin,
-    RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
+    RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
 )
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
 from final_exam.tests.test_summary_pin import workbook, text_values, record
@@ -29,7 +29,7 @@ def configure(cfg, path):
 
 
 @pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
-                                  HYPER_LASD_MOE_MODELS_PIN,
+                                  HYPER_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
                                   ('lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN)])
 def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup, pair):
     root, cfg, data_path, config, run = setup
@@ -37,6 +37,9 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
     has_hyper = any(mode in HYPER_LASD_MOE_MODELS_PIN for mode in pair)
     if has_hyper:
         cfg['lasd_moe_pin']['hyper_connection_streams'] = 3
+        config.write_text(json.dumps(cfg))
+    if pair == GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+        cfg['lasd_moe_pin']['global_std_epsilon'] = 2e-7
         config.write_text(json.dumps(cfg))
     modes = ('device_op_cascade_pin', *pair)
     assert set(pair) <= set(MODEL_NAMES_PIN)
@@ -70,11 +73,14 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
         report = json.loads((directory / 'test_pin.json').read_text())
         assert report['lasd_moe_pin'] == model.architecture_contract
         assert report['lasd_moe_pin']['base_layers'] == cfg['model']['cross_layers']
-        assert report['lasd_moe_pin']['input_dim'] == 4 * cfg['model']['cross_layers'] * cfg['model']['heads']
+        assert report['lasd_moe_pin']['input_dim'] == (10 if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN else 4) * cfg['model']['cross_layers'] * cfg['model']['heads']
         diagnostic = report['lasd_moe_diagnostics_pin']
         assert diagnostic['split'] == 'val' and diagnostic['samples'] > 0
         for key in ('scores', 'weights', 'experts', 'metadata'):
             assert (directory / diagnostic[key]).is_file()
+        if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+            assert (directory / diagnostic['global_scores']).is_file()
+            assert report['lasd_moe_pin']['global_context']['epsilon'] == 2e-7
         stage = next(s for s in result['stages'] if s['stage_id'].endswith('/' + mode))
         costs.append(stage)
         assert stage['epochs'] == 2 and stage['seconds'] > 0
@@ -95,7 +101,7 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
     texts = text_values(sheets['LASD_MoE'])
     assert all(mode in texts for mode in modes)
     assert any('lasd_moe_scores_pin.csv' in text for text in texts if text)
-    if has_hyper or pair in (HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN):
+    if has_hyper or pair in (HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN):
         assert 'B,N,H,L' in texts
     if pair == RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN:
         assert {'Fusion memories detached', 'Final PE residual', 'Hidden-state detach scope'} <= set(texts)
@@ -103,6 +109,9 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
         assert all(a['architecture']['residual_connection'] == 'last_pe_memory_add' for a in audits)
         assert audits[0]['architecture']['hidden_state_detach'] is False
         assert audits[1]['architecture']['hidden_state_detach'] is True
+    if pair == GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+        assert 'Global score statistics' in texts
+        assert any('lasd_moe_global_scores_pin.csv' in text for text in texts if text)
     with patch.object(torch.optim.AdamW, 'step', side_effect=AssertionError('retrained completed stage')):
         resumed, _ = run('lasd_moe_completed_resume', modes, out)
         _, subset = run('lasd_moe_subset_resume', [pair[1]], out)

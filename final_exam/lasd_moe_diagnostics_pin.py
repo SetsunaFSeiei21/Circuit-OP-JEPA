@@ -105,6 +105,7 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                if device.type == 'cuda' else [])
     flags = [(module, module.training) for module in model.modules()]
     score_rows, weight_rows, expert_rows = [], [], []
+    global_rows = []
     sample_ids, sizes, identities, statistics = [], [], [], []
     sample_layer_means, all_weights, all_probs, all_choices, all_mix = [], [], [], [], []
     spec = model.lasd_moe_spec
@@ -117,6 +118,11 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                 data = {key: observed[key].detach().cpu() for key in (
                     'scores', 'differences', 'valid', 'layer_weights', 'router_probs',
                     'selected_experts', 'selected_weights')}
+                if 'global_context' in spec:
+                    for key in ('global_statistics', 'global_differences'):
+                        data[key] = observed[key].detach().cpu()
+                        if data[key].shape != (data['valid'].shape[0], spec['base_layers'], spec['heads'], 3):
+                            raise ValueError('LASD-MoE global diagnostic axes disagree with the saved contract')
                 scores, differences, valid = data['scores'], data['differences'], data['valid']
                 layer_shape = (spec['heads'],) if headwise else ()
                 weight_shape = (*valid.shape, *layer_shape, len(spec['layer_masks']))
@@ -159,6 +165,16 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                             receive_std_by_head=selected.std(0, unbiased=False)[:, 0].tolist(),
                             transmit_std_by_head=selected.std(0, unbiased=False)[:, 1].tolist(),
                             max_conservation_error=float((total[:, 0] - total[:, 1]).abs().max())))
+                        if 'global_context' in spec:
+                            for head in range(spec['heads']):
+                                mean_r, std_r, std_t = data['global_statistics'][b, layer, head].tolist()
+                                dmean_r, dstd_r, dstd_t = data['global_differences'][b, layer, head].tolist()
+                                global_rows.append(dict(sample_id=sample_id, circuit=circuit, topology=topology,
+                                    valid_tokens=len(names), pe_layer=layer+1, mask=mask, head=head,
+                                    mean_receive=mean_r, std_receive=std_r, std_transmit=std_t,
+                                    delta_mean_receive=dmean_r, delta_std_receive=dstd_r,
+                                    delta_std_transmit=dstd_t, delta_is_boundary_fill=layer == 0,
+                                    std_epsilon=spec['global_context']['epsilon']))
                     for row, (position, name) in enumerate(zip(positions, names)):
                         identity = dict(sample_id=sample_id, circuit=circuit, topology=topology,
                                         token_index=position, token_id=name, is_graph=position == 0,
@@ -202,6 +218,9 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     _write_csv(directory / files['scores'], score_rows)
     _write_csv(directory / files['weights'], weight_rows)
     _write_csv(directory / files['experts'], expert_rows)
+    if 'global_context' in spec:
+        files['global_scores'] = 'lasd_moe_global_scores_pin.csv'
+        _write_csv(directory / files['global_scores'], global_rows)
     sample_mean = torch.stack(sample_layer_means).mean(0)
     head_summary = {}
     if headwise:
@@ -235,6 +254,12 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
             'First PE delta is boundary zero; same-index heads across layers need not share semantics.',
             'Alternating local/global masks contribute to observed cross-layer changes.',
             'Pre-clip gradient norms in stage history measure full block gradients, not score-path attribution.'])
+    if 'global_context' in spec:
+        report['notes'].append(
+            'global_scores CSV contains the actual MoE graph inputs: mean R, sqrt(population variance R + '
+            'epsilon), sqrt(population variance T + epsilon), and adjacent-PE differences. '
+            'Existing statistics std fields remain unstabilized descriptive values. No mean T input, '
+            'Gaussian fit, running statistics or batch-level pooling is used.')
     (directory / files['metadata']).write_text(
         json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + '\n', encoding='utf-8')
     return dict(samples=len(sample_ids), split='val', **files)

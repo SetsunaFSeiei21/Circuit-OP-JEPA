@@ -193,6 +193,36 @@ def test_identity_misalignment_is_rejected_and_flags_restored(tmp_path):
     assert model.training
 
 
+def test_global_csv_records_actual_stabilized_inputs_once_per_graph_layer_head(tmp_path):
+    from final_exam.models.global_score_pin import GlobalScoreStatisticsPin
+    model, ctx = _ObservedModel(), _Context()
+    model.mode = 'lasd_moe_headwise_global_pin'
+    model.lasd_moe_spec.update(base_layers=2, layer_weight_axes='B,N,H,L',
+                               global_context={'epsilon': .01})
+    old = model.observed['layer_weights']
+    model.observed['layer_weights'] = torch.stack((old, old.flip(-1)), dim=2)
+    _, statistics, differences = GlobalScoreStatisticsPin(.01)(
+        model.observed['scores'], model.observed['valid'])
+    model.observed.update(global_statistics=statistics, global_differences=differences)
+    result = export_lasd_moe_diagnostics_pin(ctx, model, {'batch_size': 16}, tmp_path)
+    with (tmp_path / result['global_scores']).open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 2*2*2  # Samples, layers, heads; not repeated once per node.
+    for row in rows:
+        b = ctx.batch['_sample_ids'].index(row['sample_id'])
+        layer, head = int(row['pe_layer']) - 1, int(row['head'])
+        assert int(row['valid_tokens']) == int(model.observed['valid'][b].sum())
+        values = [float(row[key]) for key in ('mean_receive', 'std_receive', 'std_transmit')]
+        delta = [float(row[key]) for key in ('delta_mean_receive', 'delta_std_receive', 'delta_std_transmit')]
+        assert values == pytest.approx(statistics[b, layer, head].tolist())
+        assert delta == pytest.approx(differences[b, layer, head].tolist())
+        assert row['delta_is_boundary_fill'] == str(layer == 0)
+        assert float(row['std_epsilon']) == .01
+        assert 'mean_transmit' not in row
+    report = json.loads((tmp_path / result['metadata']).read_text())
+    assert report['files']['global_scores'] == result['global_scores']
+
+
 def test_mixed_topology_identity_is_rejected(tmp_path):
     model, ctx = _ObservedModel(), _Context()
     ctx.batch['_group_keys'][0][0] = json.dumps(['C3', 'other']) + ':' + 'M3:D'.encode().hex()

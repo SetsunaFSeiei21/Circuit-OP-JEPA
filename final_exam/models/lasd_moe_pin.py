@@ -15,6 +15,7 @@ from final_exam.lasd_moe_registry_pin import (
     LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
 )
 from .attention_score_pin import AttentionScoreExtractorPin, layer_score_features_pin
+from .global_score_pin import GlobalScoreStatisticsPin
 from .hyper_connection_pin import HyperConnectionPEBlockPin
 from .op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
@@ -106,6 +107,8 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         cfg = ModelConfig(**self.model_config)
         self.score_extractor = AttentionScoreExtractorPin(
             self.lasd_moe_config['score_chunk_size'], self.lasd_moe_config['checkpoint_scores'])
+        if 'global_context' in self.lasd_moe_spec:
+            self.global_scores = GlobalScoreStatisticsPin(self.lasd_moe_spec['global_context']['epsilon'])
         self.layer_fusion = Top2LayerMoEPin(
             self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
             output_heads=cfg.heads if self.lasd_moe_spec.get('layer_weight_axes') == 'B,N,H,L' else None)
@@ -141,10 +144,20 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             raise ValueError('Encoder memories must preserve the same node order and shape')
         scores = torch.stack(observed, dim=2)
         features, differences = score_dynamics_pin(scores)
+        valid = ~padding
+        global_diagnostics = {}
+        if 'global_context' in self.lasd_moe_spec:
+            context, statistics, global_differences = self.global_scores(scores, valid)
+            global_diagnostics = dict(node_score_features=features,
+                global_score_features=context, global_statistics=statistics,
+                global_differences=global_differences)
+            # Pool within each graph first, then broadcast only to that graph's
+            # nodes. No BatchNorm, cross-sample pooling or attention changes.
+            features = torch.cat((features, context[:, None].expand(-1, scores.size(1), -1)), dim=-1)
+            features = features.masked_fill(padding.unsqueeze(-1), 0.)
         # Each contract specifies the score and fusion-memory boundaries independently.
         # The encoder chain and the explicit final-PE residual always carry gradients.
         moe_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
-        valid = ~padding
         logits, routing = self.layer_fusion(moe_input, valid)
         fusion_inputs = memories
         if self.lasd_moe_spec['hidden_state_detach']:
@@ -155,7 +168,8 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         memory = self.final_graph_encoder(fused, masks[0], None, None, valid)
         if return_scores:
             return memory, padding, dict(scores=scores, differences=differences,
-                score_features=features, layer_weights=weights, valid=valid, **routing)
+                score_features=features, layer_weights=weights, valid=valid,
+                **global_diagnostics, **routing)
         return memory, padding
 
     def forward(self, batch, *, return_scores=False):

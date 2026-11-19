@@ -576,9 +576,10 @@ def _lasd_moe_sheet(results, stages):
               'Prerequisite epochs', 'Prerequisite seconds', 'Gradient history',
               'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)',
               'Layer weight axes', 'Expert output width', 'Channels per fusion head',
-              'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope')
+              'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope',
+              'Global score statistics', 'Global score input width', 'Global std epsilon')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
-                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32],
+                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32, 36, 28, 24],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
@@ -603,7 +604,7 @@ def _lasd_moe_sheet(results, stages):
         prerequisites = [stage_by_id[identity] for identity in set(record['stage_ids'])
                          if identity != stage.get('stage_id')]
         diagnostic = record['report'].get('lasd_moe_diagnostics_pin') or {}
-        diagnostic_files = {key: diagnostic[key] for key in ('scores', 'weights', 'experts', 'metadata')
+        diagnostic_files = {key: diagnostic[key] for key in ('scores', 'weights', 'experts', 'metadata', 'global_scores')
                             if key in diagnostic}
         history = (f'seed_{seed}_pin/stages_pin/{mode}/history_pin.json: encoder_gradients'
                    if spec else None)
@@ -621,8 +622,11 @@ def _lasd_moe_sheet(results, stages):
                    spec.get('expert_output_dim', spec.get('base_layers')),
                    spec.get('channels_per_head'), spec.get('hyper_connection', {}).get('streams', 1),
                    spec.get('residual_connection', 'none'),
-                   spec.get('hidden_state_detach_scope') if spec.get('hidden_state_detach') else 'none'], 42)
-    sheet.filter_range = f'A4:AB{len(sheet.rows)}'
+                   spec.get('hidden_state_detach_scope') if spec.get('hidden_state_detach') else 'none',
+                   ', '.join(spec.get('global_context', {}).get('statistics', [])),
+                   spec.get('global_context', {}).get('input_dim', 0),
+                   spec.get('global_context', {}).get('epsilon')], 42)
+    sheet.filter_range = f'A4:AE{len(sheet.rows)}'
     return sheet
 
 

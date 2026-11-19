@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**逐头全图统计对照**：新增 `lasd_moe_headwise_global_pin` 和 `lasd_moe_headwise_detach_global_pin`，在节点分数后拼接每图/PE/head 的 μR、σR、σT 及其跨层差分。默认输入 96→240 维，输出仍为每节点 8×3 个层权重；detach 只作用于全部分数输入，PE 隐藏表示正常反传。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --global-stats`，可比较普通逐头模型和全图扩展，各有正常梯度/detach 两种，共四个模型。电路、seed 和配置仍在原脚本设置。[计算口径、配置、诊断和续训说明](LASD_MOE_pin.md)
+
 HC 的分数梯度对照：`lasd_moe_headwise_hc_pin` 保留完整 Score 梯度，`lasd_moe_headwise_detach_hc_pin` 仅 detach MoE 的分数输入。两者的结构、参数量和前向计算相同，PE 隐藏表示均不 detach。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection-grad`，电路与 seed 仍在原脚本顶部设置。[HC 配对与运行说明](LASD_MOE_pin.md)
 
 逐头 LASD 的 `lasd_moe_headwise_pin_v1` 和 `lasd_moe_headwise_detach_pin_v1` 使用最后 PE 输出加逐头融合输出。detach v1 对分数和融合分支的所有 PE 输入执行 stop-gradient，最后 PE 残差和 Encoder 层间主路正常反传。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1` 可比较这两个模型。[v1 梯度与启动说明](LASD_MOE_pin.md)

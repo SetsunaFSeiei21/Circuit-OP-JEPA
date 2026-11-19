@@ -2,22 +2,30 @@
 import math
 
 HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin', 'lasd_moe_headwise_detach_pin')
+GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN = (
+    'lasd_moe_headwise_global_pin', 'lasd_moe_headwise_detach_global_pin')
 RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin_v1', 'lasd_moe_headwise_detach_pin_v1')
 HYPER_LASD_MOE_MODEL_PIN = 'lasd_moe_headwise_detach_hc_pin'
 # Keep the singular name as the original detached model for existing callers.
 HYPER_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_hc_pin', HYPER_LASD_MOE_MODEL_PIN)
 LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
-                       *HYPER_LASD_MOE_MODELS_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN)
+                       *HYPER_LASD_MOE_MODELS_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
+                       *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN)
 
 
 def lasd_moe_settings_pin(value=None):
     result = dict(n_experts=4, top_k=2, hidden_dim=128, dropout=0.,
                   score_chunk_size=128, checkpoint_scores=True, diagnostic_samples=8)
     if value is not None:
-        if not isinstance(value, dict) or set(value) - (set(result) | {'hyper_connection_streams'}):
+        if not isinstance(value, dict) or set(value) - (set(result) | {
+                'hyper_connection_streams', 'global_std_epsilon'}):
             raise ValueError('Unknown lasd_moe_pin configuration keys')
         result.update(value)
     # Keep older saved settings intact for exact stage resume and checkpoint replay.
+    if 'global_std_epsilon' in result:
+        epsilon = result['global_std_epsilon']
+        if type(epsilon) not in (int, float) or not math.isfinite(epsilon) or epsilon <= 0:
+            raise ValueError('lasd_moe_pin.global_std_epsilon must be finite and positive')
     if 'hyper_connection_streams' in result:
         streams = result['hyper_connection_streams']
         if type(streams) is not int or streams < 1:
@@ -69,7 +77,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
         op_predictor='ordinary_frozen_device_op_predictor', requires_measured_op=False,
         score_chunk_size=options['score_chunk_size'], checkpoint_scores=options['checkpoint_scores'])
     if mode in (*HEADWISE_LASD_MOE_MODELS_PIN, *HYPER_LASD_MOE_MODELS_PIN,
-                *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN):
+                *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN):
         if model_config['dim'] % heads:
             raise ValueError('Headwise PE fusion requires feature width divisible by head count')
         spec.update(version=2, layer_fusion='node_wise_headwise_softmax_weighted_sum',
@@ -90,6 +98,21 @@ def lasd_moe_spec_pin(mode, value, model_config):
         spec.update(version=4, residual_connection='last_pe_memory_add',
                     score_detach=detached, hidden_state_detach=detached,
                     hidden_state_detach_scope='fusion_inputs_only', final_pe_residual_detach=False)
+    if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+        spec.update(version=5, input_dim=10*layers*heads,
+                    score_detach=mode == 'lasd_moe_headwise_detach_global_pin',
+                    feature_order='node_R_T_deltas_flat_then_global_statistics_deltas_flat',
+                    score_detach_scope='node_and_global_features_before_moe',
+                    global_context=dict(
+                        statistics=['mean_R', 'std_R', 'std_T'], axes='B,L,H,3',
+                        reduction='valid_nodes_within_each_sample_including_graph_token',
+                        variance='population_divisor_N', std='sqrt_variance_plus_epsilon',
+                        epsilon=options.get('global_std_epsilon', 1e-8),
+                        difference='adjacent_pe_same_head_index',
+                        first_delta='zero_boundary_fill_not_observed',
+                        feature_order='layer_then_head_then_meanR_stdR_stdT_deltaMeanR_deltaStdR_deltaStdT',
+                        input_dim=6*layers*heads, broadcast='same_graph_valid_nodes_only',
+                        distribution_assumption='none', running_statistics=False))
     return spec
 
 
@@ -117,5 +140,10 @@ def validate_lasd_moe_contract_pin(mode, spec, model_config=None, value=None):
                 if not isinstance(hyper, dict):
                     raise ValueError('Missing LASD-MoE hyper-connection architecture')
                 value['hyper_connection_streams'] = hyper.get('streams')
+            if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+                context = spec.get('global_context')
+                if not isinstance(context, dict):
+                    raise ValueError('Missing LASD-MoE global context architecture')
+                value['global_std_epsilon'] = context.get('epsilon')
     if spec != lasd_moe_spec_pin(mode, value, model_config):
         raise ValueError('LASD-MoE architecture contract disagrees with saved configuration')

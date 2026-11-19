@@ -1,5 +1,84 @@
 # LASD-MoE：逐节点的 Encoder 层融合
 
+## 新增：逐头全图统计对照（2026-11-19）
+
+这次在普通逐头模型上扩展 MoE 输入。新增两个模型，原有模型的名称、配置默认值与 checkpoint 契约保持不变。
+
+| 模型 | MoE 输入 | Score 梯度 | PE 隐藏表示梯度 |
+|---|---|---|---|
+| `lasd_moe_headwise_pin` | 节点 R、T、ΔR、ΔT | 回传 | 回传 |
+| `lasd_moe_headwise_global_pin` | 节点特征 + 全图 μR、σR、σT 及其差分 | 两部分均回传 | 回传 |
+| `lasd_moe_headwise_detach_pin` | 节点 R、T、ΔR、ΔT | detach | 回传 |
+| `lasd_moe_headwise_detach_global_pin` | 节点特征 + 全图 μR、σR、σT 及其差分 | 两部分一起 detach | 回传 |
+
+### 统计口径与数学定义
+
+对每个样本、每个 PE、每个 attention head 独立计算。设 V 为该图的有效 token 集合，N=|V|。**V 包括原始 index 0 的 GRAPH token 和有效引脚/外部端口 token，排除 padding**；不是只统计 MOS，也不跨样本聚合。沿用原模型在原 mask 后、attention dropout 前的 softmax；R/T 仍排除对角项，不重新归一化。
+
+\[
+\mu_R=\frac1N\sum_{i\in V}R_i,\quad
+\sigma_R=\sqrt{\frac1N\sum_{i\in V}(R_i-\mu_R)^2+\varepsilon},\quad
+\sigma_T=\sqrt{\frac1N\sum_{i\in V}(T_i-\mu_T)^2+\varepsilon}.
+\]
+
+均值、方差是当前图上的描述统计，不需要高斯分布假设，不拟合训练集统计，也不使用 BatchNorm 或 running mean。方差除以 N；这里没有 N−1 的样本估计修正。μT 只用于计算 σT，不作为输入，因为同一有效方阵的非对角元素总行和等于总列和，故 μR 与 μT 在浮点误差范围内相等。
+
+令 `g[l,h] = [μR, σR, σT]`，`Δg[l,h] = g[l,h] - g[l-1,h]`。第一 PE 的 Δg 为边界填充 0；不借用 SE 或其他样本作为前一层。使用当前统计和差分表达当前及前一层的变化，不重复拼接上一层统计。各层相同 head 索引仍不意味着语义已对齐。局部/全局 attention mask 的交替也会影响这些统计。
+
+全图统计原始值不会替代或归一化节点分数。共享给同一图的每个有效节点后，MoE 输入是：
+
+```text
+Concat(
+  Flatten_PE_head([R_i, T_i, ΔR_i, ΔT_i]),
+  Flatten_PE_head([μR, σR, σT, ΔμR, ΔσR, ΔσT])
+)
+```
+
+`L=model.cross_layers`，`H=model.heads`，输入宽度由 `4LH` 变为 `10LH`。默认 3 PE × 8 heads 时，96+144=240 维。输出仍是每节点 H×L 个 logits：8 个通道组各自对 3 个 PE 做 softmax、混合对应 D/H 维表示，再拼回 128 维。全图统计对同图节点相同，但保留的局部特征使各节点仍可得到不同权重。
+
+`global_score_pin.py` 是无可训练参数的独立 PyTorch 模块，直接聚合已提取的 `[B,N,L,H,2]`，不构建额外 N×N attention 矩阵。半精度输入在 float32 中计算均值/方差；double 保持 double。默认 ε=1e-8，因此有效图中完全相同的分数对应 σ=1e-4，这是数值稳定项，不是观测波动。零有效 token 的独立模块测试返回全零；实际模型总有 GRAPH token。输出 padding 特征清零。
+
+### 梯度和对照范围
+
+带 `detach` 的新增版本在节点特征与全图特征拼接完毕后执行一次 stop-gradient，避免全图分支绕过原有分数 detach。**PE1、PE2、PE3 的隐藏表示均不 detach**，Encoder 主链、MoE Router、Expert、融合权重、Final Graph Encoder 和性能 Decoder 正常训练。两种新模型的参数形状、相同 seed 下的初始化和前向完全一致。
+
+本次不加入 HC、不加入 `_v1` 的最后 PE 加法残差、不改变 OP 预测器、原始 attention、图拓扑或损失。统计模块自身无参数，但 MoE 的 Router/Expert 第一层因输入增加而增加参数。默认 hidden_dim=128 时增加 `(4+4×128)×144=74,304` 个参数；参数量和时间继续由现有 TrainingCost 表记录。模型效果需要在相同 split、sampling seed 和训练 seed 下运行验证；此修改不预设精度收益。
+
+### 运行、配置、输出与续训
+
+在原来的 `final_exam/single_circuit_pin/train_lasd_moe_pin.sh` 顶部设置 CIRCUITS、SEEDS、CONFIG、集群环境。无需新目录或新 bash：
+
+```bash
+# 同时运行上表四个对照；一个电路一个 Slurm 作业。
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --global-stats --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --global-stats
+```
+
+`--global-stats` 只覆盖 MODELS，保留脚本的 CIRCUITS、SEEDS、CONFIG；与其他模型 preset 互斥。只跑新增两个模型时，将脚本 MODELS 改为下面的内容，并**不传任何模型 preset**：
+
+```bash
+MODELS=(lasd_moe_headwise_global_pin lasd_moe_headwise_detach_global_pin)
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh
+```
+
+这里第一行是脚本内的设置示例，不是临时环境变量。配置继续使用 `final_exam/configs/lasd_moe_pin.json`。可选在现有 `lasd_moe_pin` 对象增加 `"global_std_epsilon": 1e-8`；不填写就使用该值。非正数、NaN、Infinity、布尔值会被拒绝。未给旧配置增加新默认键，以兼容既有 checkpoint 的精确配置校验。OP 训练预算仍由 `op_transfer.epochs.op_predictor` 控制，性能训练由 `op_transfer.epochs.readout` 控制，沿用原有早停。
+
+结果、实验日志、HPC 日志分别继续在 `single_circuit_pin/results_pin/<run_id>/`、`logs_pin/<run_id>/`、`hpc_logs_pin/<run_id>/`。模型结果位于 `training_pin/seed_<seed>_pin/<model>/`，继续输出 checkpoint、配置、test 指标、梯度 history 和 summary_pin.xlsx（MAE/RMSE/R²、参数量、时间等）。LASD_MoE 工作表增加全图统计名称、维度、ε，保留完整架构契约。
+
+诊断仍只用配置指定数量的验证样本（`diagnostic_samples`，默认 8；0 关闭）。新增 `lasd_moe_global_scores_pin.csv`，每样本/PE/head 一行，保存 μR、稳定化 σR、稳定化 σT、三项差分、有效 token 数、mask、ε、首层边界标志。原有 scores/weights/experts CSV 保留。原诊断 JSON 的 std 字段仍是未加 ε 的描述性标准差；新增 CSV 才是实际送入 MoE 的稳定化全图值。记录时才 detach；训练阶段按模型版本确定梯度边界。
+
+使用已有续训入口，不重导入原始数据：
+
+```bash
+bash final_exam/single_circuit_pin/resume_width_decoder_pin.sh /绝对路径/原结果目录
+```
+
+续训保留原运行的模型、seed、配置、数据与 manifest。新增模型可恢复 optimizer、已完成 epoch、随机状态和最佳验证权重；不能把旧 96 维模型 checkpoint 当作新 240 维模型直接续训。架构契约记录统计定义与 ε，配置不一致时拒绝加载。
+
+### 验证项目
+
+单元测试覆盖人口方差/标准差、逐样本隔离、padding NaN 排除、节点重排不变性、首层零填充、逐层差分、常数/单节点/空图、半精度累积与数值梯度。模型测试单独隔离全图分数路径，检查 detach 阻断 Q/K 的额外梯度、隐藏路径仍回传，配对模型前向/RNG/参数相同。端到端小数据 CPU 测试覆盖训练、独立 checkpoint 重建、诊断与 XLSX、完成阶段跳过、模拟中断后的精确续训；实际集群精度和耗时仍需实验测量。
+
 ## 1. 本次实现范围
 
 同一个单电路训练入口支持以下对照。
