@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection-grad` 可比较 `lasd_moe_headwise_hc_pin` 与 `lasd_moe_headwise_detach_hc_pin`。前者保留分数梯度，后者只 detach 分数；HC、MoE、参数量及前向计算保持相同。沿用顶部的电路、seed 和配置，日志与结果目录不变。只训练新模型时设 `MODELS=(lasd_moe_headwise_hc_pin)` 并无参数启动。[HC 分数梯度说明](../LASD_MOE_pin.md)
+
 运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1` 可比较 `lasd_moe_headwise_pin_v1` 与 `lasd_moe_headwise_detach_pin_v1`。两者都将最后 PE 输出加到逐头融合输出上，detach 版切断融合分支的分数和所有 PE 输入梯度。电路和 seed 在同一脚本顶部设置，结果写入本目录的 `results_pin`，实验与集群日志写入 `logs_pin` 和 `hpc_logs_pin`。[v1 结构与梯度说明](../LASD_MOE_pin.md)
 
 比较逐头 LASD-MoE 的普通残差与 FlowNet Hyper-Connection 时，运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection`。它在相同电路和 seed 上训练 `lasd_moe_headwise_detach_pin` 与 `lasd_moe_headwise_detach_hc_pin`，新模型默认在每个性能 PE 内保留 4 条全维残差流。[结构与训练说明](../LASD_MOE_pin.md)

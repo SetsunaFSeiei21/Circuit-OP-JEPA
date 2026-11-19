@@ -13,6 +13,7 @@
 | `lasd_moe_headwise_detach_pin` | 与 `lasd_moe_headwise_pin` 相同 | MoE 输入前执行一次 detach | 所有层正常回传 |
 | `lasd_moe_headwise_pin_v1` | 最后一层 PE 输出 + 逐头融合输出 | 正常回传 | 残差主路与融合分支均正常回传 |
 | `lasd_moe_headwise_detach_pin_v1` | 与 `lasd_moe_headwise_pin_v1` 相同 | MoE 输入前执行一次 detach | 所有 PE 输出进入融合时 detach，最后 PE 残差与层间主路正常回传 |
+| `lasd_moe_headwise_hc_pin` | PE 内使用动态 Hyper-Connection，各 PE 的输出继续逐头融合 | 正常回传 | 所有 PE 与残差流参数正常回传 |
 | `lasd_moe_headwise_detach_hc_pin` | PE 内使用 FlowNet 的动态 Hyper-Connection，各 PE 的输出继续逐头融合 | MoE 输入前执行一次 detach | 所有 PE 与残差流参数正常回传 |
 
 模型继续使用现有级联输入：器件级 OP 预测器先从拓扑与设计参数学习训练集 OP，随后冻结。预测 OP 按 owner 对齐广播到原生引脚节点，与设计参数一起进入性能 Encoder。OP 预测器本身不采用 LASD-MoE，不增加真实 OP 推理输入，也不增加额外物理监督。
@@ -105,6 +106,10 @@ u_i=\sum_{e\in\operatorname{Top2}(r_i)}p_{i,e}f_e(z_i),\qquad
 3. **接入引脚模型。** 最后一层 SE 的输出在首个 PE 处展开。每个性能 PE 的 self-attention、设计参数/预测 OP 的 cross-attention、FFN 分别使用一套系数。FlowNet 在子层算子之前归一化分支输入。此变体沿用引脚 PE 原有的 post-norm，在每次写回后对每条流归一化。每个 PE 结束时，完整的 R 条流送给下一层，同时对 R 条流求和并经过原有的输出 LayerNorm 和投影，供 LASD 逐头融合。[引脚 PE 实现](models/hyper_connection_pin.py)
 
 默认设置下，一个引脚在 PE 内有 **4 条 128 维残差流**。LASD MoE 仍从 3 个 PE 的真实 self-attention 输入提取 R/T 与差分，对这组分数执行 detach，再输出 **8 组 × 3 个 PE 权重**。这 8 组权重用来融合投影后的 8 组 16 维通道。3 个 PE 的 9 个残差混合模块共增加 **9,450 个可训练参数**。OP 预测器继续冻结，SE、最终 Graph Encoder 和 Metric Decoder 使用原有结构。
+
+`lasd_moe_headwise_hc_pin` 是对应的无 detach 对照。它直接将 `score_features` 送入同一个 MoE，不执行 `score_features.detach()`。两个 HC 模型的结构、参数数量、初始化顺序、前向结果和 dropout 随机数消耗相同；架构契约仅 `mode` 与 `score_detach` 不同。无 detach 版恢复“性能损失 → 层权重 → MoE → R/T 与差分 → Attention Q/K 和 HC 读出”的梯度路径。两者的 PE 隐藏表示、层间主干、HC 参数、Router、Expert 和性能 Decoder 都保留正常训练，器件级 OP 预测器仍被冻结。
+
+此配对不采用 `_v1` 的最后 PE 额外相加，也不 detach 任何 PE 融合输入。原有 detached HC 的契约保持不变，旧 checkpoint 可继续重建和续训。新模型使用独立名称及结果目录，不能将旧模型已完成的 stage 改名当作新模型的训练结果。
 
 ## 5. Detach 的准确边界
 
@@ -211,7 +216,7 @@ bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1 --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1
 ```
 
-也可以在脚本顶部直接写 `MODELS=(lasd_moe_headwise_pin_v1 lasd_moe_headwise_detach_pin_v1)` 后无参数启动。若希望把上一版放在同一轮实验比较，可把四个逐头模型都写入 `MODELS` 后无参数启动。每次提交选择一个模型预设，脚本会拒绝同时传入 `--headwise`、`--headwise-v1`、`--hyper-connection` 中的多个选项。
+也可以在脚本顶部直接写 `MODELS=(lasd_moe_headwise_pin_v1 lasd_moe_headwise_detach_pin_v1)` 后无参数启动。若希望把上一版放在同一轮实验比较，可把四个逐头模型都写入 `MODELS` 后无参数启动。每次提交选择一个模型预设，脚本会拒绝同时传入 `--headwise`、`--headwise-v1`、`--hyper-connection`、`--hyper-connection-grad` 中的多个选项。
 
 比较普通残差与 Hyper-Connection 时使用同一脚本的 `--hyper-connection` 预设。它选择 `lasd_moe_headwise_detach_pin` 和 `lasd_moe_headwise_detach_hc_pin`，使用脚本顶部的电路和 seed。两组复用同一电路、同一 seed 的冻结 OP 预测器。如只训练 HC 模型，可把脚本顶部设为 `MODELS=(lasd_moe_headwise_detach_hc_pin)`，然后无参数运行。
 
@@ -219,6 +224,17 @@ bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --headwise-v1
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection --dry-run
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection
 ```
+
+只比较 HC 内的分数梯度开关，使用新增预设：
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection-grad --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --hyper-connection-grad
+```
+
+它选择 `lasd_moe_headwise_hc_pin` 与 `lasd_moe_headwise_detach_hc_pin`，继续使用脚本顶部的 `CIRCUITS`、`SEEDS` 和 `CONFIG`。无参数启动仍使用顶部 `MODELS`。只训练新模型时填写 `MODELS=(lasd_moe_headwise_hc_pin)` 并无参数运行。旧的 `--hyper-connection` 预设含义不变。
+
+两者共用配置 `lasd_moe_pin.hyper_connection_streams`（默认 4），分别使用 `op_transfer.epochs.op_predictor` 和 `op_transfer.epochs.readout` 控制 OP 预训练和性能训练上限。默认 30 和 60，实际轮数由原有验证早停决定。结果、实验日志和 HPC 日志仍位于 `single_circuit_pin/results_pin`、`logs_pin` 和 `hpc_logs_pin` 的同一个 run ID 下。checkpoint、结构契约、诊断 CSV、配置快照和 Excel 汇总均保留完整模型名及分数梯度设置。
 
 ```bash
 bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --dry-run

@@ -13,7 +13,7 @@ from experiments.op_transfer import engine
 from final_exam.data_pin import PinDataContext
 from final_exam.run_pin import MODEL_NAMES_PIN, load_checkpoint_pin
 from final_exam.lasd_moe_registry_pin import (
-    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin,
+    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, HYPER_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN, lasd_moe_spec_pin,
     RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
 )
 from final_exam.summarize_pin import export_results_pin, summary_rows_pin
@@ -29,11 +29,12 @@ def configure(cfg, path):
 
 
 @pytest.mark.parametrize('pair', [MODES, HEADWISE_LASD_MOE_MODELS_PIN, RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
+                                  HYPER_LASD_MOE_MODELS_PIN,
                                   ('lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN)])
 def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup, pair):
     root, cfg, data_path, config, run = setup
     configure(cfg, config)
-    has_hyper = HYPER_LASD_MOE_MODEL_PIN in pair
+    has_hyper = any(mode in HYPER_LASD_MOE_MODELS_PIN for mode in pair)
     if has_hyper:
         cfg['lasd_moe_pin']['hyper_connection_streams'] = 3
         config.write_text(json.dumps(cfg))
@@ -81,6 +82,7 @@ def test_paired_models_end_to_end_replay_diagnostics_and_completed_resume(setup,
         assert history and all('encoder_gradients' in row for row in history)
     if has_hyper:
         assert audits[1]['architecture']['hyper_connection']['streams'] == 3
+    if has_hyper and pair != HYPER_LASD_MOE_MODELS_PIN:
         assert costs[1]['trainable_parameters'] > costs[0]['trainable_parameters']
     else:
         assert len({a['initial_encoder_digest'] for a in audits}) == 1

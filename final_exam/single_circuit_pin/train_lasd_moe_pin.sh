@@ -40,17 +40,18 @@ for argument in "$@"; do
     case "$argument" in
         --dry-run) DRY_RUN=1 ;;
         --smoke) SMOKE=1 ;;
-        --headwise|--headwise-v1|--hyper-connection)
+        --headwise|--headwise-v1|--hyper-connection|--hyper-connection-grad)
             if [[ -n "$model_preset" && "$model_preset" != "$argument" ]]; then
                 echo 'Select one model preset per submission.' >&2; exit 2
             fi
             model_preset="$argument" ;;
         -h|--help)
-            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection] [--dry-run] [--smoke]'
+            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection | --hyper-connection-grad] [--dry-run] [--smoke]'
             echo 'Edit CIRCUITS, MODELS, SEEDS, CONFIG and cluster settings at the top.'
             echo '--headwise selects lasd_moe_headwise_pin and lasd_moe_headwise_detach_pin for the configured circuits and seeds.'
             echo '--headwise-v1 compares lasd_moe_headwise_pin_v1 and lasd_moe_headwise_detach_pin_v1, with a last-PE residual.'
             echo '--hyper-connection compares lasd_moe_headwise_detach_pin and lasd_moe_headwise_detach_hc_pin.'
+            echo '--hyper-connection-grad compares lasd_moe_headwise_hc_pin and lasd_moe_headwise_detach_hc_pin; only score gradients differ.'
             echo 'Each circuit submits an independent job. --dry-run creates no output directories.'
             echo '--smoke shortens training; dataset.max_samples_per_circuit controls sample count.'
             exit 0 ;;
@@ -61,6 +62,7 @@ case "$model_preset" in
     --headwise) MODELS=(lasd_moe_headwise_pin lasd_moe_headwise_detach_pin) ;;
     --headwise-v1) MODELS=(lasd_moe_headwise_pin_v1 lasd_moe_headwise_detach_pin_v1) ;;
     --hyper-connection) MODELS=(lasd_moe_headwise_detach_pin lasd_moe_headwise_detach_hc_pin) ;;
+    --hyper-connection-grad) MODELS=(lasd_moe_headwise_hc_pin lasd_moe_headwise_detach_hc_pin) ;;
 esac
 (( ${#CIRCUITS[@]} && ${#MODELS[@]} && ${#SEEDS[@]} )) || {
     echo 'CIRCUITS, MODELS and SEEDS must be nonempty.' >&2; exit 2;

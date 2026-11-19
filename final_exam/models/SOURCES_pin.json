@@ -973,6 +973,18 @@
       "gradient_contract": "Detach score features before the MoE and detach every PE memory only as an input to weighted fusion. The last PE residual and encoder layer chain stay live, and the router and experts receive fusion gradients.",
       "op_readout": "Frozen device_op_predictor_pin"
     },
+    "lasd_moe_headwise_hc_pin": {
+      "model_id": "lasd_moe_headwise_hc_pin",
+      "implementation": "Full-score-gradient counterpart of lasd_moe_headwise_detach_hc_pin",
+      "reference_repository": "https://github.com/Yutong-Feng/FlowNet",
+      "reference_commit": "57ad6128c2a1980d0aa73325a844659262271797",
+      "reference_paths": ["src/layers/hyper_connect.py", "src/blocks/hyper_flow.py", "conf/model/flownet.yaml"],
+      "source_files_pin": ["hyper_connection_pin.py", "lasd_moe_pin.py", "../lasd_moe_registry_pin.py"],
+      "performance_readout": "Identical HC residual streams, headwise Top-2 PE fusion, final graph encoder and metric decoder to the detached HC variant.",
+      "gradient_contract": "Score dynamics stay attached before the MoE. Both the score route and all PE hidden-state fusion routes backpropagate to attention and HC parameters. No last-PE additive residual is introduced.",
+      "adaptation": "Native pin post-norm per stream and independent HC mixers around PE self-attention, parameter/OP cross-attention and FFN. Observe the actual mixed PE self-attention inputs.",
+      "op_readout": "Frozen device_op_predictor_pin"
+    },
     "lasd_moe_headwise_detach_hc_pin": {
       "model_id": "lasd_moe_headwise_detach_hc_pin",
       "implementation": "Independent PyTorch implementation of FlowNet dynamic residual-stream mixing in the PE stack of lasd_moe_headwise_detach_pin",

@@ -6,7 +6,7 @@ import torch
 
 from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
-    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, LASD_MOE_MODELS_PIN,
+    HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, HYPER_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN,
     RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
     lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
@@ -158,7 +158,7 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0
     count = int(diag['valid'].sum())
-    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN,
+    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, *HYPER_LASD_MOE_MODELS_PIN,
                         *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN)
     expected_axes = (count, cfg['heads']) if headwise else (count,)
     node_weights = diag['layer_weights'][diag['valid']]

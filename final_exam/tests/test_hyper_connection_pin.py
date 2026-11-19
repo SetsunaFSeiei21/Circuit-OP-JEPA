@@ -4,7 +4,8 @@ import copy
 import pytest
 import torch
 
-from final_exam.lasd_moe_registry_pin import HYPER_LASD_MOE_MODEL_PIN, validate_lasd_moe_contract_pin
+from final_exam.lasd_moe_registry_pin import HYPER_LASD_MOE_MODELS_PIN, validate_lasd_moe_contract_pin
+from device_jepa.training import state_digest
 from final_exam.models.hyper_connection_pin import HyperConnectionPin
 from final_exam.models.lasd_moe_pin import LASDMoEModelPin
 from final_exam.models.op_gate_pin import DeviceOPPredictorPin
@@ -41,16 +42,17 @@ def test_stream_read_carry_and_write_with_token_dependent_coefficients():
         assert parameter.grad is not None and parameter.grad.isfinite().all() and parameter.grad.abs().sum() > 0
 
 
-def test_one_stream_initialization_matches_native_detached_model_even_with_dropout(inputs):
+@pytest.mark.parametrize('mode', HYPER_LASD_MOE_MODELS_PIN)
+def test_one_stream_initialization_matches_native_model_even_with_dropout(inputs, mode):
     cfg, prep, support, batch = inputs
     cfg = {**cfg, 'dropout': .2}
     torch.manual_seed(17)
     predictor = DeviceOPPredictorPin(cfg, prep, support)
     options = dict(hyper_connection_streams=1, dropout=.2)
     torch.manual_seed(29)
-    base = LASDMoEModelPin('lasd_moe_headwise_detach_pin', cfg, prep, predictor, options)
+    base = LASDMoEModelPin(mode.replace('_hc_pin', '_pin'), cfg, prep, predictor, options)
     torch.manual_seed(29)
-    hyper = LASDMoEModelPin(HYPER_LASD_MOE_MODEL_PIN, cfg, prep, predictor, options)
+    hyper = LASDMoEModelPin(mode, cfg, prep, predictor, options)
     for training in [False, True]:
         base.train(training)
         hyper.train(training)
@@ -65,18 +67,19 @@ def test_one_stream_initialization_matches_native_detached_model_even_with_dropo
             torch.testing.assert_close(info[key], baseline_info[key])
 
 
-def test_four_streams_continue_between_pes_score_actual_queries_and_use_headwise_readouts(inputs):
+@pytest.mark.parametrize('mode', HYPER_LASD_MOE_MODELS_PIN)
+def test_four_streams_continue_between_pes_score_actual_queries_and_use_headwise_readouts(inputs, mode):
     cfg, prep, support, batch = inputs
     cfg = {**cfg, 'dim': 128, 'heads': 8, 'encoder_layers': 6, 'cross_layers': 3}
     predictor = DeviceOPPredictorPin(cfg, prep, support)
-    model = LASDMoEModelPin(HYPER_LASD_MOE_MODEL_PIN, cfg, prep, predictor).eval()
+    model = LASDMoEModelPin(mode, cfg, prep, predictor).eval()
     spec = model.architecture_contract
     assert spec['hyper_connection']['streams'] == 4
-    validate_lasd_moe_contract_pin(HYPER_LASD_MOE_MODEL_PIN, spec)
+    validate_lasd_moe_contract_pin(mode, spec)
     changed = copy.deepcopy(spec)
     changed['hyper_connection']['streams'] = 2
     with pytest.raises(ValueError, match='contract'):
-        validate_lasd_moe_contract_pin(HYPER_LASD_MOE_MODEL_PIN, changed, cfg, model.lasd_moe_config)
+        validate_lasd_moe_contract_pin(mode, changed, cfg, model.lasd_moe_config)
 
     mixers = [module for module in model.modules() if isinstance(module, HyperConnectionPin)]
     assert len(mixers) == 9
@@ -109,7 +112,62 @@ def test_four_streams_continue_between_pes_score_actual_queries_and_use_headwise
 
     diag['score_features'].retain_grad()
     output.square().mean().backward()
-    assert diag['score_features'].grad is None
+    if spec['score_detach']:
+        assert diag['score_features'].grad is None
+    else:
+        assert diag['score_features'].grad.abs().sum() > 0
     for mixer in mixers:
         grad = mixer.static_beta.grad
         assert grad is not None and grad.isfinite().all() and grad.abs().sum() > 0
+
+
+def test_hyper_score_detach_pair_preserves_parameters_forward_and_dropout_rng(inputs):
+    cfg, prep, support, batch = inputs
+    cfg = {**cfg, 'dropout': .2}
+    predictor = DeviceOPPredictorPin(cfg, prep, support)
+    models = []
+    for mode in HYPER_LASD_MOE_MODELS_PIN:
+        torch.manual_seed(31)
+        models.append(LASDMoEModelPin(mode, cfg, prep, predictor,
+            dict(dropout=.15, hyper_connection_streams=3)))
+    live, detached = models
+    assert state_digest(live) == state_digest(detached)
+    assert sum(p.numel() for p in live.parameters()) == sum(p.numel() for p in detached.parameters())
+    left, right = live.architecture_contract, detached.architecture_contract
+    assert {key for key in left if left[key] != right[key]} == {'mode', 'score_detach'}
+    assert left['score_detach'] is False and right['score_detach'] is True
+    assert left['hidden_state_detach'] is right['hidden_state_detach'] is False
+    for training in (False, True):
+        live.train(training)
+        detached.train(training)
+        torch.manual_seed(43)
+        expected, expected_diag = live(batch, return_scores=True)
+        rng = torch.get_rng_state()
+        torch.manual_seed(43)
+        actual, actual_diag = detached(batch, return_scores=True)
+        assert torch.equal(rng, torch.get_rng_state())
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        for key in ('scores', 'differences', 'layer_weights', 'selected_weights'):
+            torch.testing.assert_close(actual_diag[key], expected_diag[key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('mode', HYPER_LASD_MOE_MODELS_PIN)
+@pytest.mark.parametrize('checkpoint_scores', [False, True])
+def test_score_only_loss_reaches_attention_and_hyper_read_coefficients_only_when_live(
+        inputs, mode, checkpoint_scores):
+    cfg, prep, support, batch = inputs
+    torch.manual_seed(37)
+    model = LASDMoEModelPin(mode, cfg, prep, DeviceOPPredictorPin(cfg, prep, support),
+        dict(hidden_dim=12, score_chunk_size=3, checkpoint_scores=checkpoint_scores)).eval()
+    _, diag = model(batch, return_scores=True)
+    # A loss on layer weights isolates the score route from the hidden-state route.
+    score_loss = diag['layer_weights'][..., 0].square().sum()
+    pe = model.encoder.fusion_blocks[0]
+    variables = (diag['score_features'], pe.self_attn.in_proj_weight,
+                 pe.self_connection.static_alpha, model.layer_fusion.router.weight)
+    gradients = torch.autograd.grad(score_loss, variables, allow_unused=True)
+    if model.architecture_contract['score_detach']:
+        assert gradients[:3] == (None, None, None)
+    else:
+        assert all(g is not None and torch.isfinite(g).all() and g.abs().sum() > 0 for g in gradients[:3])
+    assert gradients[3] is not None and gradients[3].abs().sum() > 0
