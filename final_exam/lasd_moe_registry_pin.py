@@ -8,9 +8,10 @@ RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_pin_v1', 'lasd_moe_h
 HYPER_LASD_MOE_MODEL_PIN = 'lasd_moe_headwise_detach_hc_pin'
 # Keep the singular name as the original detached model for existing callers.
 HYPER_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_hc_pin', HYPER_LASD_MOE_MODEL_PIN)
+GRAPH_LAYER_LASD_MODEL_PIN = 'lasd_graph_layer_headwise_pin'
 LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
                        *HYPER_LASD_MOE_MODELS_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
-                       *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN)
+                       *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, GRAPH_LAYER_LASD_MODEL_PIN)
 
 
 def lasd_moe_settings_pin(value=None):
@@ -77,7 +78,8 @@ def lasd_moe_spec_pin(mode, value, model_config):
         op_predictor='ordinary_frozen_device_op_predictor', requires_measured_op=False,
         score_chunk_size=options['score_chunk_size'], checkpoint_scores=options['checkpoint_scores'])
     if mode in (*HEADWISE_LASD_MOE_MODELS_PIN, *HYPER_LASD_MOE_MODELS_PIN,
-                *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN):
+                *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
+                GRAPH_LAYER_LASD_MODEL_PIN):
         if model_config['dim'] % heads:
             raise ValueError('Headwise PE fusion requires feature width divisible by head count')
         spec.update(version=2, layer_fusion='node_wise_headwise_softmax_weighted_sum',
@@ -98,7 +100,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
         spec.update(version=4, residual_connection='last_pe_memory_add',
                     score_detach=detached, hidden_state_detach=detached,
                     hidden_state_detach_scope='fusion_inputs_only', final_pe_residual_detach=False)
-    if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+    if mode in (*GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, GRAPH_LAYER_LASD_MODEL_PIN):
         spec.update(version=5, input_dim=10*layers*heads,
                     score_detach=mode == 'lasd_moe_headwise_detach_global_pin',
                     feature_order='node_R_T_deltas_flat_then_global_statistics_deltas_flat',
@@ -113,6 +115,35 @@ def lasd_moe_spec_pin(mode, value, model_config):
                         feature_order='layer_then_head_then_meanR_stdR_stdT_deltaMeanR_deltaStdR_deltaStdT',
                         input_dim=6*layers*heads, broadcast='same_graph_valid_nodes_only',
                         distribution_assumption='none', running_statistics=False))
+    if mode == GRAPH_LAYER_LASD_MODEL_PIN:
+        # This routing branch uses two encoder axes and a shared MLP, not experts.
+        # Keep all older contracts byte-for-byte unchanged for checkpoint replay.
+        ffn_dim, block_dropout = model_config.get('ffn_dim', 512), model_config.get('dropout', .1)
+        if type(ffn_dim) is not int or ffn_dim < 1:
+            raise ValueError('LASD graph/layer context requires a positive integer model.ffn_dim')
+        if (type(block_dropout) not in (int, float) or not math.isfinite(block_dropout)
+                or not 0 <= block_dropout < 1):
+            raise ValueError('LASD graph/layer context requires model.dropout in [0, 1)')
+        spec.pop('expert_output_dim')
+        spec.pop('expert_selection_scope')
+        spec.update(version=6, experts=0, top_k=0, expert=None,
+                    routing='graph_then_nodewise_layer_encoder', routing_output_dim=layers*heads,
+                    score_detach_scope='none',
+                    graph_layer_context=dict(
+                        input='entire_node_and_global_score_trajectory',
+                        input_projection='shared_linear_gelu_dropout_linear_to_model_dim',
+                        graph_encoder_layers=layers, graph_encoder_parameters='independent_per_block',
+                        graph_attention_mask='original_local_topology_self_graph_and_terminal_role_bias',
+                        retained_outputs='all_graph_context_blocks_in_depth_order',
+                        layer_encoder_layers=1, layer_tokens=layers,
+                        layer_attention_axes='B*N,H,L,L', layer_attention_mask='full_bidirectional',
+                        layer_encoder_shared='across_nodes_and_samples',
+                        layer_position_embedding='none',
+                        block='native_encoder_block_without_cross_attention',
+                        ffn_dim=ffn_dim, block_dropout=block_dropout,
+                        output_projection='shared_linear_gelu_dropout_linear_D_to_H_per_token',
+                        logits_axes='B,N,L,H_then_B,N,H,L', softmax_axis='PE_depth_L',
+                        memory_source='original_PE_outputs_in_unchanged_order'))
     return spec
 
 
@@ -131,7 +162,9 @@ def validate_lasd_moe_contract_pin(mode, spec, model_config=None, value=None):
                 or model_config['dim'] % model_config['heads']):
             raise ValueError('Invalid LASD-MoE encoder layout')
         if value is None:
-            value = dict(n_experts=spec.get('experts'), top_k=spec.get('top_k'),
+            graph_layer = mode == GRAPH_LAYER_LASD_MODEL_PIN
+            value = dict(n_experts=4 if graph_layer else spec.get('experts'),
+                top_k=2 if graph_layer else spec.get('top_k'),
                 hidden_dim=spec.get('hidden_dim'), dropout=spec.get('dropout'),
                 score_chunk_size=spec.get('score_chunk_size'),
                 checkpoint_scores=spec.get('checkpoint_scores'))
@@ -140,10 +173,15 @@ def validate_lasd_moe_contract_pin(mode, spec, model_config=None, value=None):
                 if not isinstance(hyper, dict):
                     raise ValueError('Missing LASD-MoE hyper-connection architecture')
                 value['hyper_connection_streams'] = hyper.get('streams')
-            if mode in GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN:
+            if mode in (*GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, GRAPH_LAYER_LASD_MODEL_PIN):
                 context = spec.get('global_context')
                 if not isinstance(context, dict):
                     raise ValueError('Missing LASD-MoE global context architecture')
                 value['global_std_epsilon'] = context.get('epsilon')
+        if mode == GRAPH_LAYER_LASD_MODEL_PIN:
+            context = spec.get('graph_layer_context')
+            if not isinstance(context, dict):
+                raise ValueError('Missing LASD graph/layer context architecture')
+            model_config.update(ffn_dim=context.get('ffn_dim'), dropout=context.get('block_dropout'))
     if spec != lasd_moe_spec_pin(mode, value, model_config):
         raise ValueError('LASD-MoE architecture contract disagrees with saved configuration')

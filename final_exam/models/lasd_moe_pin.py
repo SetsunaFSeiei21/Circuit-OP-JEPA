@@ -1,8 +1,9 @@
-"""Per-node Top-2 expert routing of PE memories with explicit gradient boundaries.
+"""Per-node PE routing with explicit gradient boundaries and reusable readout.
 
 Score statistics are pre-dropout observations of the actual PE Q/K and masks.
 The HC variant carries multiple residual streams through the performance PEs.
 Headwise v1 adds the final PE memory to fusion and optionally detaches branch inputs.
+Graph/layer routing replaces experts with circuit-context and nodewise depth encoders.
 One final native graph block and one existing metric decoder consume the fused memory.
 """
 from copy import deepcopy
@@ -16,6 +17,7 @@ from final_exam.lasd_moe_registry_pin import (
 )
 from .attention_score_pin import AttentionScoreExtractorPin, layer_score_features_pin
 from .global_score_pin import GlobalScoreStatisticsPin
+from .graph_layer_score_pin import GraphLayerScoreRouterPin
 from .hyper_connection_pin import HyperConnectionPEBlockPin
 from .op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
@@ -109,9 +111,14 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             self.lasd_moe_config['score_chunk_size'], self.lasd_moe_config['checkpoint_scores'])
         if 'global_context' in self.lasd_moe_spec:
             self.global_scores = GlobalScoreStatisticsPin(self.lasd_moe_spec['global_context']['epsilon'])
-        self.layer_fusion = Top2LayerMoEPin(
-            self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
-            output_heads=cfg.heads if self.lasd_moe_spec.get('layer_weight_axes') == 'B,N,H,L' else None)
+        if 'graph_layer_context' in self.lasd_moe_spec:
+            self.layer_fusion = GraphLayerScoreRouterPin(
+                self.lasd_moe_spec['input_dim'], cfg,
+                hidden_dim=self.lasd_moe_config['hidden_dim'], dropout=self.lasd_moe_config['dropout'])
+        else:
+            self.layer_fusion = Top2LayerMoEPin(
+                self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
+                output_heads=cfg.heads if self.lasd_moe_spec.get('layer_weight_axes') == 'B,N,H,L' else None)
         self.final_graph_encoder = EncoderBlock(cfg, cross=False)
         if 'hyper_connection' in self.lasd_moe_spec:
             # Wrap the already initialized PE sublayers so the control starts with
@@ -157,8 +164,11 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             features = features.masked_fill(padding.unsqueeze(-1), 0.)
         # Each contract specifies the score and fusion-memory boundaries independently.
         # The encoder chain and the explicit final-PE residual always carry gradients.
-        moe_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
-        logits, routing = self.layer_fusion(moe_input, valid)
+        routing_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
+        if 'graph_layer_context' in self.lasd_moe_spec:
+            logits, routing = self.layer_fusion(routing_input, valid, masks[0], return_context=return_scores)
+        else:
+            logits, routing = self.layer_fusion(routing_input, valid)
         fusion_inputs = memories
         if self.lasd_moe_spec['hidden_state_detach']:
             fusion_inputs = tuple(memory.detach() for memory in memories)

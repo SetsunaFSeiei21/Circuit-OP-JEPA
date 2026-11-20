@@ -23,6 +23,10 @@ class EncoderGradientNormsPin:
         blocks = [('SE', i + 1, block) for i, block in
                   enumerate(model.encoder.structure_encoder.blocks)]
         blocks += [('PE', i + 1, block) for i, block in enumerate(model.encoder.fusion_blocks)]
+        router = getattr(model, 'layer_fusion', None)
+        if hasattr(router, 'graph_blocks'):
+            blocks += [('SCORE_GRAPH', i + 1, block) for i, block in enumerate(router.graph_blocks)]
+            blocks.append(('SCORE_LAYER', 1, router.layer_encoder))
         blocks.append(('FINAL', 1, model.final_graph_encoder))
         self.groups = [(kind, index, tuple(p for p in block.parameters() if p.requires_grad))
                        for kind, index, block in blocks]
@@ -110,14 +114,18 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     sample_layer_means, all_weights, all_probs, all_choices, all_mix = [], [], [], [], []
     spec = model.lasd_moe_spec
     headwise = spec.get('layer_weight_axes') == 'B,N,H,L'
+    has_experts = spec['experts'] > 0
     try:
         with torch.random.fork_rng(devices=devices), torch.no_grad():
             model.eval()
             for batch in ctx.batches('val', min(limit, options['batch_size']), seed=None, op=False):
                 _, observed = model(batch, return_scores=True)
-                data = {key: observed[key].detach().cpu() for key in (
-                    'scores', 'differences', 'valid', 'layer_weights', 'router_probs',
-                    'selected_experts', 'selected_weights')}
+                keys = ['scores', 'differences', 'valid', 'layer_weights']
+                if has_experts:
+                    keys += ['router_probs', 'selected_experts', 'selected_weights']
+                if 'graph_layer_context' in spec:
+                    keys.append('layer_logits')
+                data = {key: observed[key].detach().cpu() for key in keys}
                 if 'global_context' in spec:
                     for key in ('global_statistics', 'global_differences'):
                         data[key] = observed[key].detach().cpu()
@@ -130,11 +138,14 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                         or scores.shape[:2] != valid.shape or valid.dtype != torch.bool
                         or scores.shape[2] != len(spec['layer_masks'])
                         or scores.shape[3] != spec['heads']
-                        or data['layer_weights'].shape != weight_shape
-                        or data['router_probs'].shape != (*valid.shape, spec['experts'])
+                        or data['layer_weights'].shape != weight_shape):
+                    raise ValueError('LASD-MoE diagnostic axes disagree with the saved contract')
+                if has_experts and (data['router_probs'].shape != (*valid.shape, spec['experts'])
                         or data['selected_experts'].shape != (*valid.shape, spec['top_k'])
                         or data['selected_weights'].shape != data['selected_experts'].shape):
                     raise ValueError('LASD-MoE diagnostic axes disagree with the saved contract')
+                if 'layer_logits' in data and data['layer_logits'].shape != weight_shape:
+                    raise ValueError('LASD graph/layer logit axes disagree with the saved contract')
                 if len(batch['_sample_ids']) != valid.shape[0]:
                     raise ValueError('LASD-MoE sample IDs disagree with the diagnostic batch')
                 for b, sample_id in enumerate(batch['_sample_ids']):
@@ -146,17 +157,18 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                     sizes.append(len(positions))
                     identities.append(dict(sample_id=sample_id, circuit=circuit, topology=topology))
                     weights = data['layer_weights'][b, positions]
-                    probabilities = data['router_probs'][b, positions]
-                    choices = data['selected_experts'][b, positions]
-                    mixing = data['selected_weights'][b, positions]
-                    if ((choices < 0).any() or (choices >= spec['experts']).any()
-                            or (choices[:, 0] == choices[:, 1]).any()):
-                        raise ValueError('Valid nodes must select two distinct valid experts')
                     sample_layer_means.append(weights.double().mean(0))
                     all_weights.append(weights.double())
-                    all_probs.append(probabilities.double())
-                    all_choices.append(choices)
-                    all_mix.append(mixing.double())
+                    if has_experts:
+                        probabilities = data['router_probs'][b, positions]
+                        choices = data['selected_experts'][b, positions]
+                        mixing = data['selected_weights'][b, positions]
+                        if ((choices < 0).any() or (choices >= spec['experts']).any()
+                                or (choices[:, 0] == choices[:, 1]).any()):
+                            raise ValueError('Valid nodes must select two distinct valid experts')
+                        all_probs.append(probabilities.double())
+                        all_choices.append(choices)
+                        all_mix.append(mixing.double())
                     for layer, mask in enumerate(spec['layer_masks']):
                         selected = scores[b, positions, layer]
                         total = selected.double().sum(0)
@@ -185,21 +197,25 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                                                         layer_weight=float(weights[row, layer])))
                             for head in range(scores.shape[3]):
                                 if headwise:
-                                    weight_rows.append(dict(**identity, pe_layer=layer+1, head=head,
-                                                            layer_weight=float(weights[row, head, layer])))
+                                    weight_row = dict(**identity, pe_layer=layer+1, head=head,
+                                                      layer_weight=float(weights[row, head, layer]))
+                                    if 'layer_logits' in data:
+                                        weight_row['layer_logit'] = float(data['layer_logits'][b, position, head, layer])
+                                    weight_rows.append(weight_row)
                                 r, t = scores[b, position, layer, head].tolist()
                                 dr, dt = differences[b, position, layer, head].tolist()
                                 score_rows.append(dict(**identity, pe_layer=layer+1, mask=mask,
                                     head=head, receive=r, transmit=t, delta_receive=dr,
                                     delta_transmit=dt, delta_is_boundary_fill=layer == 0))
-                        selected = choices[row].tolist()
-                        selected_mix = mixing[row].tolist()
-                        for expert in range(spec['experts']):
-                            slot = selected.index(expert) if expert in selected else None
-                            expert_rows.append(dict(**identity, expert=expert,
-                                router_probability=float(probabilities[row, expert]),
-                                selected=slot is not None,
-                                selected_weight=selected_mix[slot] if slot is not None else 0.))
+                        if has_experts:
+                            selected = choices[row].tolist()
+                            selected_mix = mixing[row].tolist()
+                            for expert in range(spec['experts']):
+                                slot = selected.index(expert) if expert in selected else None
+                                expert_rows.append(dict(**identity, expert=expert,
+                                    router_probability=float(probabilities[row, expert]),
+                                    selected=slot is not None,
+                                    selected_weight=selected_mix[slot] if slot is not None else 0.))
                 if len(sample_ids) >= limit:
                     break
     finally:
@@ -207,17 +223,26 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
             module.training = training
     if not sample_ids:
         raise ValueError('LASD-MoE diagnostics require at least one validation sample')
-    all_weights, all_probs = torch.cat(all_weights), torch.cat(all_probs)
-    all_choices, all_mix = torch.cat(all_choices), torch.cat(all_mix)
+    all_weights = torch.cat(all_weights)
     node_count = sum(sizes)
-    counts = torch.bincount(all_choices.flatten(), minlength=spec['experts'])
-    expert_mass = torch.zeros(spec['experts'], dtype=torch.float64)
-    expert_mass.scatter_add_(0, all_choices.flatten(), all_mix.flatten())
     files = dict(scores='lasd_moe_scores_pin.csv', weights='lasd_moe_weights_pin.csv',
-                 experts='lasd_moe_experts_pin.csv', metadata='lasd_moe_diagnostics_pin.json')
+                 metadata='lasd_moe_diagnostics_pin.json')
     _write_csv(directory / files['scores'], score_rows)
     _write_csv(directory / files['weights'], weight_rows)
-    _write_csv(directory / files['experts'], expert_rows)
+    expert_summary = None
+    if has_experts:
+        all_probs, all_choices, all_mix = torch.cat(all_probs), torch.cat(all_choices), torch.cat(all_mix)
+        counts = torch.bincount(all_choices.flatten(), minlength=spec['experts'])
+        expert_mass = torch.zeros(spec['experts'], dtype=torch.float64)
+        expert_mass.scatter_add_(0, all_choices.flatten(), all_mix.flatten())
+        files['experts'] = 'lasd_moe_experts_pin.csv'
+        _write_csv(directory / files['experts'], expert_rows)
+        expert_summary = dict(
+            selection_counts=counts.tolist(), valid_nodes=node_count,
+            selection_fraction_of_nodes=(counts.double()/node_count).tolist(),
+            selection_fraction_of_routes=(counts.double()/(node_count*spec['top_k'])).tolist(),
+            mean_selected_mixing_weight=(expert_mass/node_count).tolist(),
+            mean_router_probability=all_probs.mean(0).tolist())
     if 'global_context' in spec:
         files['global_scores'] = 'lasd_moe_global_scores_pin.csv'
         _write_csv(directory / files['global_scores'], global_rows)
@@ -239,12 +264,7 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
             sample_weighted_mean=sample_mean.tolist(),
             node_weighted_std=all_weights.std(0, unbiased=False).tolist(),
             valid_nodes=node_count, includes_graph_token=True, **head_summary),
-        expert_summary=dict(
-            selection_counts=counts.tolist(), valid_nodes=node_count,
-            selection_fraction_of_nodes=(counts.double()/node_count).tolist(),
-            selection_fraction_of_routes=(counts.double()/(node_count*spec['top_k'])).tolist(),
-            mean_selected_mixing_weight=(expert_mass/node_count).tolist(),
-            mean_router_probability=all_probs.mean(0).tolist()),
+        expert_summary=expert_summary,
         notes=[
             'ID validation diagnostics only; no checkpoint selection or training loss uses these exports.',
             'PE layers only; SE and final graph block do not enter the score sequence.',
@@ -256,10 +276,16 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
             'Pre-clip gradient norms in stage history measure full block gradients, not score-path attribution.'])
     if 'global_context' in spec:
         report['notes'].append(
-            'global_scores CSV contains the actual MoE graph inputs: mean R, sqrt(population variance R + '
+            'global_scores CSV contains the actual routing graph inputs: mean R, sqrt(population variance R + '
             'epsilon), sqrt(population variance T + epsilon), and adjacent-PE differences. '
             'Existing statistics std fields remain unstabilized descriptive values. No mean T input, '
             'Gaussian fit, running statistics or batch-level pooling is used.')
+    if 'graph_layer_context' in spec:
+        report['notes'].append(
+            'Graph/layer routing uses no experts. Weights CSV also records pre-softmax layer logits. '
+            'Graph-context block slots map to original PE memory slots by depth; their states encode '
+            'the entire score trajectory, not individual PE hidden states. SCORE_GRAPH/SCORE_LAYER '
+            'gradient groups describe the two additional encoders.')
     (directory / files['metadata']).write_text(
         json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + '\n', encoding='utf-8')
     return dict(samples=len(sample_ids), split='val', **files)

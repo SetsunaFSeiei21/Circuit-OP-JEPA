@@ -8,6 +8,7 @@ from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
     HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, HYPER_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN,
     RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
+    GRAPH_LAYER_LASD_MODEL_PIN,
     lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
 from final_exam.models.attention_score_pin import AttentionScoreExtractorPin
@@ -158,8 +159,7 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0
     count = int(diag['valid'].sum())
-    headwise = mode in (*HEADWISE_LASD_MOE_MODELS_PIN, *HYPER_LASD_MOE_MODELS_PIN,
-                        *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN)
+    headwise = model.architecture_contract.get('layer_weight_axes') == 'B,N,H,L'
     expected_axes = (count, cfg['heads']) if headwise else (count,)
     node_weights = diag['layer_weights'][diag['valid']]
     assert node_weights.shape == (*expected_axes, cfg['cross_layers'])
@@ -176,8 +176,14 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         assert retained_memories[-1].grad.abs().sum() > 0
     else:
         assert all(memory.grad is not None and memory.grad.abs().sum() > 0 for memory in retained_memories)
-    assert model.layer_fusion.router.weight.grad.abs().sum() > 0
-    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.layer_fusion.experts.parameters())
+    if mode == GRAPH_LAYER_LASD_MODEL_PIN:
+        assert model.layer_fusion.input_projection[0].weight.grad.abs().sum() > 0
+        assert model.layer_fusion.head_projection[-1].weight.grad.abs().sum() > 0
+        for block in [*model.layer_fusion.graph_blocks, model.layer_fusion.layer_encoder]:
+            assert block.self_attn.in_proj_weight.grad.abs().sum() > 0
+    else:
+        assert model.layer_fusion.router.weight.grad.abs().sum() > 0
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.layer_fusion.experts.parameters())
     for block in list(model.encoder.structure_encoder.blocks) + list(model.encoder.fusion_blocks):
         assert block.self_attn.in_proj_weight.grad.abs().sum() > 0
     assert model.final_graph_encoder.self_attn.in_proj_weight.grad.abs().sum() > 0

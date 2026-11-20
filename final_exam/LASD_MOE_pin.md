@@ -1,5 +1,105 @@
 # LASD-MoE：逐节点的 Encoder 层融合
 
+## 新增：图上下文 → 逐节点层上下文（2026-11-20）
+
+新增模型 **`lasd_graph_layer_headwise_pin`**。此前逐节点 MoE 只能读取节点统计与全图摘要，路由分支不能按电路连接交换节点统计；此次增加两段上下文编码。是否提高预测精度须由实验判断，本次不宣称已有精度收益。
+
+新路由是普通 MLP + 两种轴向 Encoder，**没有 Top-2 MoE**。它复用 LASD 训练家族、配置、checkpoint 格式和统计页。旧模型继续独立训练和重建，旧实验的架构契约不变。
+
+### 1. 输入、两段编码与输出
+
+记 `L=model.cross_layers`、`H=model.heads`、`D=model.dim`，N 包含 GRAPH token 和有效 pin/外部端口 token。默认 L=3、H=8、D=128。
+
+| 步骤 | 计算 | 默认张量形状 |
+|---|---|---|
+| 原始性能编码器 | 保留全部 PE 隐藏表示和 Self-Attention 分数 | memories: B×N×3×128；scores: B×N×3×8×2 |
+| 分数输入 | 拼接该节点所有 PE/head 的 R、T、ΔR、ΔT 与全图统计轨迹 | B×N×240 |
+| 输入 MLP | 所有节点共享 `240→hidden_dim→128` | B×N×128 |
+| 图上下文 Encoder | 3 个独立参数的原生 EncoderBlock，全部使用电路 local mask；保留每个 block 输出 | B×N×3×128 |
+| 层上下文 Encoder | 每节点的 3 个输出作为 3 个 token；所有节点共用 1 个原生 EncoderBlock | reshape 为 (B·N)×3×128，再还原 |
+| 输出 MLP | 所有层 token 共用 `128→hidden_dim→8` | B×N×3×8 |
+| 层权重 | 转为 B×N×8×3，沿最后的 3 层做 softmax | 每节点、每通道组各有一组和为 1 的权重 |
+| 原 PE 融合 | 加权融合原始 PE1/PE2/PE3 的对应 16 维通道组 | B×N×128 |
+| 最终预测 | 原有一层 Final Graph Encoder + 单个 Metric Decoder | B×性能指标数 |
+
+`3×3` 是**第二段 Encoder 每个注意力头在单节点的三个层 token 上计算的注意力矩阵**；最后 `3×8` 是每节点 24 个融合 logits。第二段编码时 N 并入 batch 轴，不把不同节点或不同样本当作同一序列；不额外生成 9 个 PE 或 3 个性能 Decoder。
+
+第一段图 Encoder 的输入是**完整统计轨迹**，其第 l 个 block 输出表示该轨迹经过 l 次图上下文处理后的结果，不是原始 PE_l 的隐藏状态。其槽位按深度对应最终 PE 融合的 L 个槽位。用于加权求和的值始终是原性能编码器的 PE 输出，新增表示只负责生成权重。两处 MLP 均为 Linear→GELU→Dropout→Linear，保留每个节点/层 token。
+
+新 EncoderBlock 复用 `device_jepa.model.EncoderBlock(cross=False)`，包含原生 Self-Attention、残差、LayerNorm 和 FFN。第一段有 L 个 block，第二段固定 1 个 block；D/H/FFN/dropout 来自 model 配置。第二段是全双向层注意力，无因果掩码、无新位置嵌入。L=1 或其他 PE 数也可运行；L=1 时层权重恒为 1，不能从层选择本身获得收益。
+
+逐头融合沿用旧约定：原 PE memory 经过共享 norm/projection 后，按连续 D/H 个通道划为 H 组。这不保证等于原始 Self-Attention 在输出投影前的原生 head 子空间。新路由内部 attention heads 与最终 MLP 的 H 个通道组也不强制语义对应。
+
+### 2. 分数、掩码与梯度边界
+
+节点分数来自原 mask 后、attention dropout 前的 softmax；排除对角得到 R/T，保留全部 head 后按索引计算跨 PE 差分。第一 PE 差分填 0，不使用 SE 分数。row-softmax 造成的 Receive 退化仍保留，不能据此修改归一化。
+
+全图输入与 `lasd_moe_headwise_global_pin` 同口径：每样本/PE/head 的 μR、σR、σT 及三者相邻 PE 差分。σ=`sqrt(population_variance + epsilon)`，默认 epsilon=1e-8；不输入冗余 μT、不做高斯拟合、不跨 batch 统计。本地 `4LH` 与广播的全图 `6LH` 拼接后投影，默认共240维。
+
+新图分支每个 block 都使用原编码器的 **local additive mask**，包含 self、GRAPH、有效 key 限制和 terminal-role bias。原 SE/PE 的 local/global 交替不变。GRAPH 在原 local mask 中与全图相连，因此不能把这个掩码描述成严格仅物理相邻引脚能交换信息；全图统计本身也提供全图上下文。第二段 Encoder 的序列轴是层，不能套用 N×N 电路掩码。
+
+所有有效节点保持原 token 编号；padding 输入先清零，输出及融合权重清零。图统计逐样本计算，层编码按 B×N 展开。本次不加 gate、HC 或 `_v1` 的最后 PE 加法残差。
+
+**本版不 detach 分数，也不 detach PE 隐藏表示**：
+
+- 性能损失 → 原 PE 融合值 → 原 Encoder 隐藏状态，正常反传。
+- 性能损失 → 权重 → 输出 MLP → 层上下文 Encoder → 图上下文 Encoder → 输入 MLP → 节点/全图分数 → 原 PE Q/K，正常反传。
+- 新图分支使用的原 terminal-role bias 也可收到梯度。
+- OP 预测器仍先训练后冻结，性能阶段不更新它；部署不需要真实 OP。
+
+仅诊断导出时 detach。原 attention 公式和消息传递实现未替换，新增损失路径会影响训练后学到的参数。
+
+### 3. 启动与配置
+
+继续使用 **同一个** `final_exam/single_circuit_pin/train_lasd_moe_pin.sh`，不新增任务目录或 bash。先修改顶部 CIRCUITS、SEEDS、CONFIG 和集群设置：
+
+```bash
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer
+```
+
+`--graph-layer` 只将 MODELS 设为以下三组，保留其他设置，与其他模型 preset 互斥：
+
+```bash
+MODELS=(
+    device_op_cascade_pin
+    lasd_moe_headwise_global_pin
+    lasd_graph_layer_headwise_pin
+)
+```
+
+只跑新模型时，在脚本内设 `MODELS=(lasd_graph_layer_headwise_pin)`，无模型 preset 参数运行。配置仍使用 `final_exam/configs/lasd_moe_pin.json`：
+
+- `model.cross_layers`：原 PE 数，同时决定图上下文 block 数、层上下文 token 数。
+- `model.dim/heads/ffn_dim/dropout`：新两段 Encoder 的宽度、头数、FFN 和 dropout，默认128/8/512/0.1。
+- `lasd_moe_pin.hidden_dim/dropout`：两处 MLP 的中间宽度、dropout，默认128/0，不控制 Encoder dropout。
+- `lasd_moe_pin.global_std_epsilon`：可选，默认1e-8。
+- `lasd_moe_pin.n_experts/top_k/hyper_connection_streams`：新模型不使用，可保留原默认配置用于 MoE 对照；报告明确记录 experts=0/top_k=0。
+- `lasd_moe_pin.score_chunk_size/checkpoint_scores/diagnostic_samples`：沿用分数提取和验证诊断控制，默认128/true/8。
+- `op_transfer.epochs.op_predictor/readout`：默认最多30轮 OP + 60轮性能训练，沿用验证早停。两段新 Encoder 与性能模型一起训练，没有新的独立训练阶段。
+
+### 4. 输出、续训与比较口径
+
+结果在 `final_exam/single_circuit_pin/results_pin/<run_id>/training_pin/seed_<seed>_pin/<model>/`；实验日志、Slurm 日志仍在同任务的 `logs_pin/<run_id>/`、`hpc_logs_pin/<run_id>/`。每模型保存 checkpoint、配置、预处理、完整架构契约及 test 指标。summary_pin.xlsx 包含 MAE、RMSE、R²、参数和时间；LASD_MoE 页增加 Routing mechanism、两段上下文 Encoder 数、输出宽度。
+
+保留 scores/global_scores/weights CSV 与诊断 JSON。新模型的 `lasd_moe_weights_pin.csv` 增加 `layer_logit`，按样本/引脚/head 检查 softmax 及各 PE 权重。不生成虚构的 expert 记录，JSON expert_summary=null。梯度 history 增加 `SCORE_GRAPH1..L`、`SCORE_LAYER1`，与原 SE/PE/FINAL 分开。这些是 block 梯度范数，不是对分数路径贡献的因果分解。诊断只用验证样本，不参与 checkpoint 选择。
+
+使用已有恢复入口：
+
+```bash
+bash final_exam/single_circuit_pin/resume_width_decoder_pin.sh /绝对路径/原结果目录
+```
+
+可从新模型自己的 checkpoint 恢复，不能把旧 MoE 权重当作新结构续训。恢复时检查配置/架构；完成阶段跳过，未完成阶段恢复已保存 epoch、optimizer、RNG 和最佳验证权重。
+
+实验应保持相同 split、sampling_seed、训练 seeds 和预算。新上下文 Encoder 增加容量，精度差异不能直接归因于拓扑上下文；参数量匹配控制可作为后续消融。实际集群精度、速度和显存占用仍需测量。
+
+### 5. 实现与验证位置
+
+`models/graph_layer_score_pin.py` 独立实现两段路由；`models/lasd_moe_pin.py` 复用 OP、PE 和最终预测路径；注册表明确记录无 MoE 架构；诊断和 XLSX 反映真实结构。原始数据与 attention 实现不改动。
+
+`tests/test_graph_layer_score_pin.py` 覆盖维度、层 softmax、图掩码、样本/节点隔离、节点重排、padding、全部层 token 保留、Score→Q/K 梯度、保存重建、验证诊断和 XLSX。既有测试覆盖旧模型回归以及新模型中断后的精确续训。验证为小数据 CPU 测试，未在本地运行 CUDA 训练。
+
 ## 新增：逐头全图统计对照（2026-11-19）
 
 这次在普通逐头模型上扩展 MoE 输入。新增两个模型，原有模型的名称、配置默认值与 checkpoint 契约保持不变。

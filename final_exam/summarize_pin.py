@@ -577,13 +577,17 @@ def _lasd_moe_sheet(results, stages):
               'Diagnostic split', 'Diagnostic files (JSON)', 'Full architecture (JSON)',
               'Layer weight axes', 'Expert output width', 'Channels per fusion head',
               'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope',
-              'Global score statistics', 'Global score input width', 'Global std epsilon')
+              'Global score statistics', 'Global score input width', 'Global std epsilon',
+              'Routing mechanism', 'Graph context blocks', 'Per-node layer context blocks',
+              'Routing output width')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
-                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32, 36, 28, 24],
+                              24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32, 36, 28, 24,
+                              50, 26, 32, 24],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
-               'Each node keeps all heads, uses Top-2 of four experts, and fuses PE hidden states before one '
+               'Each node keeps all heads. Routing uses Top-2 of four experts, or graph/layer context encoders '
+               'and an MLP (no experts). PE hidden states are fused before one '
                'final encoder and the original metric decoder. Headwise v1 adds the final PE memory as a live '
                'residual. Its detached variant stops gradients at both score and memory inputs to fusion.', height=72)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
@@ -619,14 +623,17 @@ def _lasd_moe_sheet(results, stages):
                    diagnostic.get('split'), json.dumps(diagnostic_files, sort_keys=True),
                    json.dumps(spec, sort_keys=True),
                    spec.get('layer_weight_axes', 'B,N,L') if spec else None,
-                   spec.get('expert_output_dim', spec.get('base_layers')),
+                   spec.get('expert_output_dim', spec.get('base_layers')) if spec.get('experts', 0) else None,
                    spec.get('channels_per_head'), spec.get('hyper_connection', {}).get('streams', 1),
                    spec.get('residual_connection', 'none'),
                    spec.get('hidden_state_detach_scope') if spec.get('hidden_state_detach') else 'none',
                    ', '.join(spec.get('global_context', {}).get('statistics', [])),
                    spec.get('global_context', {}).get('input_dim', 0),
-                   spec.get('global_context', {}).get('epsilon')], 42)
-    sheet.filter_range = f'A4:AE{len(sheet.rows)}'
+                   spec.get('global_context', {}).get('epsilon'), spec.get('routing'),
+                   spec.get('graph_layer_context', {}).get('graph_encoder_layers', 0),
+                   spec.get('graph_layer_context', {}).get('layer_encoder_layers', 0),
+                   spec.get('routing_output_dim', spec.get('expert_output_dim', spec.get('base_layers')))], 42)
+    sheet.filter_range = f'A4:AI{len(sheet.rows)}'
     return sheet
 
 
