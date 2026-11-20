@@ -9,6 +9,7 @@ import torch
 
 from device_jepa.model import ModelConfig
 from device_jepa.training import state_digest
+from experiments.op_transfer import engine
 from final_exam.lasd_moe_registry_pin import (
     GRAPH_LAYER_LASD_MODEL_PIN as MODE, lasd_moe_spec_pin, validate_lasd_moe_contract_pin,
 )
@@ -192,3 +193,36 @@ def test_training_diagnostics_xlsx_standalone_replay_and_completed_resume(setup)
         resumed, _ = run('graph_layer_completed_resume', [MODE], out)
     replay, _ = load_checkpoint_pin(resumed / f'seed_17_pin/{MODE}/checkpoint_pin.pt')
     assert state_digest(model) == state_digest(replay)
+
+
+def test_interrupted_device_op_pretraining_resumes_before_graph_layer_training(setup):
+    root, cfg, data, config, run = setup
+    cfg['lasd_moe_pin'] = dict(hidden_dim=12, score_chunk_size=3, diagnostic_samples=0)
+    config.write_text(json.dumps(cfg))
+    reference, _ = run('op_loss_reference', [MODE])
+    original = engine.fit_stage
+
+    def interrupt(ctx, model, name, *args, **kwargs):
+        if name == 'device_op_predictor_pin':
+            calls = 0
+
+            def before(_):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise RuntimeError('simulated OP predictor interruption')
+
+            kwargs['before_epoch'] = before
+        return original(ctx, model, name, *args, **kwargs)
+
+    with patch.object(engine, 'fit_stage', side_effect=interrupt):
+        with pytest.raises(RuntimeError, match='simulated OP predictor interruption'):
+            run('op_loss_interrupted', [MODE])
+    resumed, result = run('op_loss_resumed', [MODE], root / 'op_loss_interrupted_pin')
+    stage = next(s for s in result['stages'] if s['stage_id'].endswith('/device_op_predictor_pin'))
+    assert stage['resume']['restored_epoch'] == 1
+    assert stage['resume']['optimizer_state_restored']
+    assert stage['resume']['new_epochs'] == 1
+    expected, _ = load_checkpoint_pin(reference / f'seed_17_pin/{MODE}/checkpoint_pin.pt')
+    actual, _ = load_checkpoint_pin(resumed / f'seed_17_pin/{MODE}/checkpoint_pin.pt')
+    assert state_digest(actual) == state_digest(expected)

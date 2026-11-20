@@ -77,6 +77,43 @@ class OPAttentionModelsPinTests(unittest.TestCase):
         self.assertEqual(count,int(expected.sum()))
         torch.testing.assert_close(counts,expected.sum((0,1)))
 
+    def test_device_predictor_objective_keeps_gradients_and_validation_field_statistics(self):
+        predictor = self.predictor().train()
+        batch = copy.deepcopy(self.batch)
+        # Deliberately uneven missingness, including an entirely absent field.
+        batch['owner_op_mask'][0] = False
+        batch['owner_op_mask'][..., -1] = False
+        batch['owner_op'][~batch['owner_op_mask']] = float('nan')
+        prediction, support = predictor.predict_devices(batch)
+        mask = (batch['owner_op_mask'] & support
+                & (batch['owner_op_target_mask'] & batch['owner_mask']).unsqueeze(-1))
+        expected_fields = []
+        for field in range(prediction.shape[-1]):
+            selected = mask[..., field]
+            if selected.any():
+                expected_fields.append((prediction[..., field][selected]
+                                        - batch['owner_op'][..., field][selected]).square().mean())
+        expected = torch.stack(expected_fields).mean()
+        loss, count, (sse, counts) = op_objective_pin(predictor, batch)
+        torch.testing.assert_close(loss, expected)
+        self.assertEqual(count, int(mask.sum()))
+        torch.testing.assert_close(counts, mask.sum((0, 1)))
+        observed = counts > 0
+        torch.testing.assert_close(loss.double(), (sse[observed] / counts[observed]).mean(),
+                                   rtol=1e-6, atol=1e-8)
+        loss.backward()
+        grads = [p.grad for p in predictor.encoder.parameters() if p.grad is not None]
+        self.assertTrue(grads and any(bool(g.abs().sum() > 0) for g in grads))
+        self.assertTrue(all(bool(torch.isfinite(g).all()) for g in grads))
+        with torch.no_grad():
+            evaluated, val_count, (val_sse, val_counts) = op_objective_pin(predictor.eval(), batch)
+        torch.testing.assert_close(evaluated, loss.detach(), rtol=1e-6, atol=1e-8)
+        torch.testing.assert_close(val_sse, sse.detach(), rtol=1e-6, atol=1e-8)
+        torch.testing.assert_close(val_counts, counts)
+        self.assertEqual(val_count, count)
+        batch['owner_op_mask'].zero_()
+        self.assertIsNone(op_objective_pin(predictor, batch))
+
     def test_shared_model_width_embedding_and_individual_directed_heads(self):
         predictor = self.predictor().eval()
         values,support = predictor.predict_devices(self.batch)

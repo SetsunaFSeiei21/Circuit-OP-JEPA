@@ -297,21 +297,32 @@ def residual_alignment_loss(predicted, target, padding, keys, scaler, *, valid=N
 def masked_field_mse(prediction, target, mask):
     """Average observed MSE per OP field, then equally over supported fields.
 
-    Missing values are selected out BEFORE arithmetic, so NaNs/infinite
-    placeholders cannot poison otherwise finite supervised fields.
+    Missing values are replaced BEFORE arithmetic, so NaNs/infinite
+    placeholders cannot poison otherwise finite supervised fields. Reduce all
+    leading axes at once: no per-field mask/prediction views are needed.
     """
     if prediction.shape != target.shape or mask.shape != target.shape or prediction.ndim < 2:
         raise ValueError("OP prediction, target and mask shapes must match")
     if mask.dtype != torch.bool:
         raise ValueError("OP supervision mask must be boolean")
-    terms = []
-    for field in range(prediction.shape[-1]):
-        selected = mask[..., field]
-        if bool(selected.any()):
-            p, y = prediction[..., field][selected], target[..., field][selected]
-            if not bool(torch.isfinite(p).all() & torch.isfinite(y).all()):
-                raise ValueError("Nonfinite observed OP prediction or target")
-            terms.append((p - y).square().mean())
-    if not terms:
+    axes = tuple(range(prediction.ndim - 1))
+    counts = mask.sum(dim=axes)
+    supported = counts > 0
+    if not bool(supported.any()):
         raise ValueError("No observed supported OP fields in batch")
-    return torch.stack(terms).mean()
+    if bool((mask & (~torch.isfinite(prediction) | ~torch.isfinite(target))).any()):
+        raise ValueError("Nonfinite observed OP prediction or target")
+    # Mask each operand, not the squared error: a missing NaN/Inf must also
+    # have a finite zero derivative. Predictions stay attached to autograd.
+    safe_prediction = torch.where(mask, prediction, 0.)
+    safe_target = torch.where(mask, target, 0.)
+    squared = (safe_prediction - safe_target).square()
+    # Like mean(), use FP32 accumulation for low-precision inputs; a large
+    # field must not overflow just because sum() precedes division here.
+    accumulator_dtype = (torch.float32 if squared.dtype in (torch.float16, torch.bfloat16)
+                         else squared.dtype)
+    field_sse = squared.sum(dim=axes, dtype=accumulator_dtype)
+    field_mse = field_sse / counts.clamp_min(1)
+    # Unsupported fields have SSE=0 and are excluded from the denominator.
+    # This is an equal-field mean, NOT a mean over all observed elements.
+    return (field_mse.sum() / supported.sum()).to(squared.dtype)
