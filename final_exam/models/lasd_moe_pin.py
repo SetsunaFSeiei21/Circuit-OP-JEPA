@@ -164,6 +164,8 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             features = features.masked_fill(padding.unsqueeze(-1), 0.)
         # Each contract specifies the score and fusion-memory boundaries independently.
         # The encoder chain and the explicit final-PE residual always carry gradients.
+        # Graph/layer detach stops the entire local + global score trajectory before
+        # its input projection; both routing encoders and the PE fusion values stay live.
         routing_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
         if 'graph_layer_context' in self.lasd_moe_spec:
             logits, routing = self.layer_fusion(routing_input, valid, masks[0], return_context=return_scores)

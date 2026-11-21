@@ -12,6 +12,7 @@ from device_jepa.training import state_digest
 from experiments.op_transfer import engine
 from final_exam.lasd_moe_registry_pin import (
     GRAPH_LAYER_LASD_MODEL_PIN as MODE, lasd_moe_spec_pin, validate_lasd_moe_contract_pin,
+    GRAPH_LAYER_LASD_DETACH_MODEL_PIN as DETACH_MODE, GRAPH_LAYER_LASD_MODELS_PIN,
 )
 from final_exam.models.graph_layer_score_pin import GraphLayerScoreRouterPin
 from final_exam.models.lasd_moe_pin import LASDMoEModelPin
@@ -100,6 +101,57 @@ def test_layer_encoder_attends_only_across_depth_for_same_node():
             torch.testing.assert_close(separate, output[b:b+1, node:node+1])
 
 
+@pytest.mark.parametrize('checkpoint_scores', [False, True])
+@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+def test_complete_score_detach_boundary_keeps_routing_and_hidden_paths_live(inputs, mode, checkpoint_scores):
+    cfg, prep, support, batch = inputs
+    torch.manual_seed(17)
+    model = LASDMoEModelPin(mode, cfg, prep, DeviceOPPredictorPin(cfg, prep, support),
+        {'hidden_dim': 12, 'score_chunk_size': 3, 'checkpoint_scores': checkpoint_scores}).train()
+    memories, routing_inputs = [], []
+    original = model.encoder.forward_fusion_memories
+
+    def retain_memories(*args, **kwargs):
+        result = original(*args, **kwargs)
+        for memory in result[0]:
+            memory.retain_grad()
+            memories.append(memory)
+        return result
+
+    handle = model.layer_fusion.register_forward_pre_hook(lambda _, args: routing_inputs.append(args[0]))
+    try:
+        with patch.object(model.encoder, 'forward_fusion_memories', side_effect=retain_memories):
+            output, observed = model(batch, return_scores=True)
+    finally:
+        handle.remove()
+    detached = mode == DETACH_MODE
+    assert len(routing_inputs) == 1 and routing_inputs[0].requires_grad == (not detached)
+    torch.testing.assert_close(routing_inputs[0], observed['score_features'], atol=0, rtol=0)
+    assert observed['score_features'].requires_grad  # Raw diagnostic tensors stay connected.
+    targets = [observed[key] for key in ('score_features', 'node_score_features',
+        'global_score_features', 'global_statistics', 'scores')]
+    targets += [block.self_attn.in_proj_weight for block in model.encoder.fusion_blocks]
+    # This objective uses only layer weights, so hidden-state gradients cannot mask
+    # an accidental gradient leak through local/global scores or their differences.
+    score_gradients = torch.autograd.grad(observed['layer_weights'][..., 0].square().sum(),
+        targets, allow_unused=True, retain_graph=True)
+    if detached:
+        assert all(g is None for g in score_gradients)
+    else:
+        assert all(g is not None and torch.isfinite(g).all() and g.abs().sum() > 0 for g in score_gradients)
+    output.square().sum().backward()
+    assert len(memories) == cfg['cross_layers']
+    assert all(m.grad is not None and torch.isfinite(m.grad).all() and m.grad.abs().sum() > 0 for m in memories)
+    trainable_weights = [model.layer_fusion.input_projection[0].weight,
+        model.layer_fusion.head_projection[-1].weight]
+    trainable_weights += [block.self_attn.in_proj_weight for block in (
+        *model.layer_fusion.graph_blocks, model.layer_fusion.layer_encoder,
+        *model.encoder.fusion_blocks, model.final_graph_encoder)]
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+               for p in trainable_weights)
+    assert all(p.grad is None for p in model.predictor.parameters())
+
+
 def test_native_mask_used_for_all_graph_blocks_and_score_path_reaches_pe_qk(inputs):
     cfg, prep, support, batch = inputs
     torch.manual_seed(17)
@@ -126,41 +178,54 @@ def test_native_mask_used_for_all_graph_blocks_and_score_path_reaches_pe_qk(inpu
     assert all(p.grad is None for p in model.predictor.parameters())
 
 
-def test_contract_records_two_encoder_axes_and_rejects_changed_architecture():
+@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+def test_contract_records_two_encoder_axes_and_rejects_changed_architecture(mode):
     cfg = dict(dim=128, heads=8, encoder_layers=6, cross_layers=3, decoder_layers=2,
                ffn_dim=256, dropout=.17)
-    spec = lasd_moe_spec_pin(MODE, {'hidden_dim': 32, 'global_std_epsilon': 3e-7}, cfg)
+    spec = lasd_moe_spec_pin(mode, {'hidden_dim': 32, 'global_std_epsilon': 3e-7}, cfg)
     assert spec['input_dim'] == 240 and spec['routing_output_dim'] == 24
     assert spec['experts'] == spec['top_k'] == 0 and spec['expert'] is None
     assert spec['graph_layer_context']['graph_encoder_layers'] == 3
     assert spec['graph_layer_context']['layer_encoder_layers'] == 1
     assert spec['graph_layer_context']['layer_attention_axes'] == 'B*N,H,L,L'
-    validate_lasd_moe_contract_pin(MODE, spec)
-    validate_lasd_moe_contract_pin(MODE, spec, cfg, {'hidden_dim': 32, 'global_std_epsilon': 3e-7})
+    validate_lasd_moe_contract_pin(mode, spec)
+    validate_lasd_moe_contract_pin(mode, spec, cfg, {'hidden_dim': 32, 'global_std_epsilon': 3e-7})
+    # Forward architecture and parameterization match; only the score boundary differs.
+    reference = lasd_moe_spec_pin(MODE, {'hidden_dim': 32, 'global_std_epsilon': 3e-7}, cfg)
+    expected = {**reference, 'mode': mode, 'score_detach': mode == DETACH_MODE,
+                'score_detach_scope': ('node_and_global_features_before_graph_layer_router'
+                                       if mode == DETACH_MODE else 'none')}
+    assert spec == expected and not spec['hidden_state_detach']
+    for key, value in [('score_detach', not spec['score_detach']), ('hidden_state_detach', True),
+                       ('score_detach_scope', 'after_graph_encoder')]:
+        with pytest.raises(ValueError, match='architecture'):
+            validate_lasd_moe_contract_pin(mode, {**spec, key: value})
     for key, value in [('layer_encoder_layers', 3), ('layer_attention_mask', 'causal'),
                        ('graph_encoder_layers', 9), ('softmax_axis', 'heads_H')]:
         bad = copy.deepcopy(spec)
         bad['graph_layer_context'][key] = value
         with pytest.raises(ValueError, match='architecture'):
-            validate_lasd_moe_contract_pin(MODE, bad)
+            validate_lasd_moe_contract_pin(mode, bad)
     for key, value in [('ffn_dim', None), ('ffn_dim', 0), ('block_dropout', float('nan')),
                        ('block_dropout', -1), ('block_dropout', True)]:
         bad = copy.deepcopy(spec)
         bad['graph_layer_context'][key] = value
         with pytest.raises(ValueError):
-            validate_lasd_moe_contract_pin(MODE, bad)
+            validate_lasd_moe_contract_pin(mode, bad)
 
 
-def test_training_diagnostics_xlsx_standalone_replay_and_completed_resume(setup):
+@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+def test_training_diagnostics_xlsx_standalone_replay_and_completed_resume(setup, mode):
     root, cfg, data, config, run = setup
     cfg['lasd_moe_pin'] = dict(hidden_dim=12, score_chunk_size=3, diagnostic_samples=2)
     config.write_text(json.dumps(cfg))
-    modes = ['device_op_cascade_pin', 'lasd_moe_headwise_global_pin', MODE]
+    modes = ['device_op_cascade_pin', 'lasd_moe_headwise_global_pin', mode]
     out, result = run('graph_layer_complete', modes)
     assert len(result['results']) == 3
-    directory = out / f'seed_17_pin/{MODE}'
+    directory = out / f'seed_17_pin/{mode}'
     model, saved = load_checkpoint_pin(directory / 'checkpoint_pin.pt')
     assert saved['recipe']['architecture'] == model.architecture_contract
+    assert model.architecture_contract['score_detach'] == (mode == DETACH_MODE)
     report = json.loads((directory / 'test_pin.json').read_text())
     diagnostic = report['lasd_moe_diagnostics_pin']
     assert diagnostic['split'] == 'val' and 'experts' not in diagnostic
@@ -179,19 +244,19 @@ def test_training_diagnostics_xlsx_standalone_replay_and_completed_resume(setup)
         logits = torch.tensor([float(r['layer_logit']) for r in values], dtype=torch.float64)
         expected = torch.tensor([float(r['layer_weight']) for r in values], dtype=torch.float64)
         torch.testing.assert_close(logits.softmax(-1), expected)
-    history = json.loads((out / f'seed_17_pin/stages_pin/{MODE}/history_pin.json').read_text())
+    history = json.loads((out / f'seed_17_pin/stages_pin/{mode}/history_pin.json').read_text())
     for record in history:
         layers = {v['layer']: v for v in record['encoder_gradients']['layers']}
         for name in ['SCORE_GRAPH1', 'SCORE_GRAPH2', 'SCORE_LAYER1', 'FINAL1']:
             assert layers[name]['mean_l2'] > 0
     sheets = workbook(out / 'summary_pin.xlsx')
     texts = text_values(sheets['LASD_MoE'])
-    assert MODE in texts and 'graph_then_nodewise_layer_encoder' in texts
+    assert mode in texts and 'graph_then_nodewise_layer_encoder' in texts
     assert {'Routing mechanism', 'Graph context blocks', 'Per-node layer context blocks'} <= set(texts)
     assert {'MAE', 'RMSE', 'R2', 'TrainingCost', 'Configuration'} <= set(sheets)
     with patch.object(torch.optim.AdamW, 'step', side_effect=AssertionError('retrained complete stage')):
-        resumed, _ = run('graph_layer_completed_resume', [MODE], out)
-    replay, _ = load_checkpoint_pin(resumed / f'seed_17_pin/{MODE}/checkpoint_pin.pt')
+        resumed, _ = run('graph_layer_completed_resume', [mode], out)
+    replay, _ = load_checkpoint_pin(resumed / f'seed_17_pin/{mode}/checkpoint_pin.pt')
     assert state_digest(model) == state_digest(replay)
 
 

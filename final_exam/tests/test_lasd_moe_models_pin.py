@@ -8,7 +8,7 @@ from device_jepa.training import state_digest
 from final_exam.lasd_moe_registry_pin import (
     HEADWISE_LASD_MOE_MODELS_PIN, HYPER_LASD_MOE_MODEL_PIN, HYPER_LASD_MOE_MODELS_PIN, LASD_MOE_MODELS_PIN,
     RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
-    GRAPH_LAYER_LASD_MODEL_PIN,
+    GRAPH_LAYER_LASD_MODELS_PIN, GRAPH_LAYER_LASD_DETACH_MODEL_PIN,
     lasd_moe_settings_pin, validate_lasd_moe_contract_pin,
 )
 from final_exam.models.attention_score_pin import AttentionScoreExtractorPin
@@ -167,7 +167,8 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     assert torch.count_nonzero(diag['layer_weights'][~diag['valid']]) == 0
     output.square().sum().backward()
     if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN,
-                'lasd_moe_headwise_detach_pin_v1', 'lasd_moe_headwise_detach_global_pin'):
+                'lasd_moe_headwise_detach_pin_v1', 'lasd_moe_headwise_detach_global_pin',
+                GRAPH_LAYER_LASD_DETACH_MODEL_PIN):
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
@@ -176,7 +177,7 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         assert retained_memories[-1].grad.abs().sum() > 0
     else:
         assert all(memory.grad is not None and memory.grad.abs().sum() > 0 for memory in retained_memories)
-    if mode == GRAPH_LAYER_LASD_MODEL_PIN:
+    if mode in GRAPH_LAYER_LASD_MODELS_PIN:
         assert model.layer_fusion.input_projection[0].weight.grad.abs().sum() > 0
         assert model.layer_fusion.head_projection[-1].weight.grad.abs().sum() > 0
         for block in [*model.layer_fusion.graph_blocks, model.layer_fusion.layer_encoder]:
@@ -207,7 +208,8 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
 
 
 @pytest.mark.parametrize('modes', [('lasd_moe_pin', 'lasd_moe_detach_pin'), HEADWISE_LASD_MOE_MODELS_PIN,
-                                  RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN])
+                                  RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN, GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN,
+                                  GRAPH_LAYER_LASD_MODELS_PIN])
 def test_detach_pair_same_parameters_forward_rng_and_native_initialization(inputs, modes):
     cfg, prep, support, batch = inputs
     cfg = {**cfg, 'dropout': .2}

@@ -1,5 +1,61 @@
 # LASD-MoE：逐节点的 Encoder 层融合
 
+## 新增：图与层上下文路由的分数 detach 对照（2026-11-21）
+
+模型名为 **`lasd_graph_layer_headwise_detach_pin`**，与 `lasd_graph_layer_headwise_pin` 共用全部前向模块，只改变分数输入的反向传播边界。相同 seed 初始化时，两者参数量、参数初值相同；使用相同权重、输入及 dropout 随机状态时，预测值和融合权重相同。训练后的结果需分别实验比较。
+
+### detach 的位置
+
+先计算各 PE/head 的节点 R、T、ΔR、ΔT，以及每张图的 μR、σR、σT 和它们的跨 PE 差分。全图统计广播到本图节点，与节点分数拼接；padding 清零后，对这个完整的 `10LH` 维输入做一次 `detach()`。默认 L=3、H=8，为每节点240维。
+
+```python
+# features 已包含本地分数、全图统计及二者的差分。
+routing_input = features.detach()
+logits, routing = layer_fusion(routing_input, valid, original_local_mask)
+# 原始 PE 隐藏表示继续参与可微融合。
+fused, weights = _fuse_pe_memories_pin(memories, logits, padding)
+prediction = decoder(final_graph_encoder(fused, original_local_mask, ...), padding)
+```
+
+上面为边界示意，实际调用复用 `models/lasd_moe_pin.py`。`GraphLayerScoreRouterPin` 内部没有 detach，也没有 `no_grad()`。
+
+| 路径/模块 | 新模型的梯度 |
+|---|---|
+| 融合权重 → 分数输入 → 原 PE Attention | 在完整分数输入处阻断；节点分数和全图统计都不能通过这条路径回传 |
+| 输入 MLP → 图上下文 Encoder → 逐节点层上下文 Encoder → 输出 MLP | 全部正常训练；detach 在输入 MLP **之前** |
+| 融合后的隐藏表示 → 原 PE1/PE2/PE3 输出 | 全部正常反传，没有浅层或最后一层 hidden-state detach |
+| 原 SE→PE 编码链、Final Graph Encoder、Metric Decoder | 正常训练 |
+| 原 local mask 中共享的可学习 terminal-role bias | 仍可收到图上下文分支的梯度；分数 detach 不等于冻结所有共享 Encoder 参数 |
+| 器件级 OP 预测器 | 沿用先预训练后冻结的流程 |
+
+因此这是**分数路径 stop-gradient**，不是冻结原 Encoder，也不是 `_v1` 的 hidden-state detach + 最后 PE 加法残差。原 Encoder 仍通过隐藏表示路径训练，分数会随参数更新而变化。没有加入 gate、HC、新 MoE、额外损失或额外性能 Decoder。诊断导出的原始分数依旧可用，detach 不改变其数值。
+
+### 启动、输出与恢复
+
+沿用 `final_exam/single_circuit_pin/train_lasd_moe_pin.sh`，不新增 bash、任务目录或配置文件。修改该脚本顶部的 CIRCUITS、SEEDS、CONFIG 和集群参数后：
+
+```bash
+# 只选择新增的 detach 模型；先打印命令检查，再提交。
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach --dry-run
+bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach
+```
+
+`--graph-layer-detach` 仅覆盖 MODELS，保留电路、seed、资源和配置设置；与其他模型 preset 互斥。旧 `--graph-layer` 的三模型列表保持原样。也可以在原脚本设置以下内容后无 preset 运行，以比较两个版本：
+
+```bash
+MODELS=(lasd_graph_layer_headwise_pin lasd_graph_layer_headwise_detach_pin)
+```
+
+使用 `final_exam/configs/lasd_moe_pin.json`，OP 预测器轮数仍由 `op_transfer.epochs.op_predictor` 控制，性能训练轮数由 `op_transfer.epochs.readout` 控制，早停机制相同。同 seed 的两模型可以复用本次运行中的冻结 OP 预测器。
+
+结果位于原任务 `results_pin/<run_id>/training_pin/seed_<seed>_pin/lasd_graph_layer_headwise_detach_pin/`；实验日志和 HPC 日志继续分别放在 `logs_pin/<run_id>/`、`hpc_logs_pin/<run_id>/`。沿用 `test_pin.json`、checkpoint、逐节点分数/权重 CSV、全图统计 CSV、梯度历史和 `summary_pin.xlsx`。架构元数据明确保存 `score_detach=true`、`hidden_state_detach=false`、`score_detach_scope=node_and_global_features_before_graph_layer_router`，用于独立加载和续训校验。
+
+已有的 `resume_width_decoder_pin.sh <SOURCE_RUN>` 可恢复包含新模型的运行。旧模型的 checkpoint 架构描述保持不变；新增模型必须以自己的名字建立实验，不能把旧模型的一半训练记录改名当作新实验的续训。
+
+### 回归检查范围
+
+测试覆盖完整节点/全图分数路径的梯度阻断、PE 隐藏表示与新路由模块梯度保留、分数 checkpoint 开关、同 seed 初始化与前向/RNG 一致性、checkpoint 重建、已完成阶段恢复、训练诊断和 Excel 汇总，以及启动脚本模型选择。完整电路数据上的精度、GPU 显存和速度仍需在集群实验测量。
+
 ## 新增：图上下文 → 逐节点层上下文（2026-11-20）
 
 新增模型 **`lasd_graph_layer_headwise_pin`**。此前逐节点 MoE 只能读取节点统计与全图摘要，路由分支不能按电路连接交换节点统计；此次增加两段上下文编码。是否提高预测精度须由实验判断，本次不宣称已有精度收益。
