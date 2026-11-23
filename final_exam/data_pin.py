@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 
 from device_jepa.baselines import _pin_tokens
-from device_jepa.data import canonical_model_name, fit_preprocessor, samples_for_split
+from device_jepa.data import canonical_model_name, fit_preprocessor, samples_for_split, verify_manifest
 from device_jepa.resident import ResidentDataset, _graph, require_device
 from experiments.op_transfer.engine import write_json
 
@@ -158,8 +158,10 @@ class PinDataContext:
         self.device, self.config, self.output = require_device(device), config, Path(output)
         self.full_manifest = manifest
         self.rows, selected = {}, copy.deepcopy(manifest)
+        verify_manifest(dataset, manifest)
+        lookup = {row['sample_id']: row for row in dataset['samples']}
         for split in ('train', 'val', 'test', 'ood'):
-            rows = samples_for_split(dataset, manifest, split)
+            rows = [lookup[sid] for sid in manifest[split]]
             limit = limits.get('test' if split == 'ood' else split)
             ranked = sorted(rows, key=lambda r: hashlib.sha256(
                 f"{manifest['split_seed']}:{r['sample_id']}".encode()).hexdigest())
@@ -172,7 +174,7 @@ class PinDataContext:
         if preprocessing is None:
             print('Fitting device statistics on ID train only; expanding to pins after normalization', flush=True)
             device_prep = fit_preprocessor(dataset, selected, include_performance=True,
-                config=config.get('normalization'), statistics_device=self.device)
+                config=config.get('normalization'), statistics_device=getattr(self, 'storage_device', self.device))
             device_prep['op_state_features'] = []
             self.prep = make_preprocessing_pin(device_prep, self.rows['train'])
         else:
@@ -223,7 +225,7 @@ class PinDataContext:
                     rows = [{**row, 'devices': [{**dev, 'op': {name: value for name, value in
                         dev.get('op', {}).items() if name in supported}} for dev in row['devices']]}
                         for row in rows]
-            self.caches[key] = PinResidentDataset(rows, self.prep, self.device, include_op=op,
+            self.caches[key] = PinResidentDataset(rows, self.prep, getattr(self, 'storage_device', self.device), include_op=op,
                 include_performance=True, performance_metric_mask=self.metric_mask,
                 performance_dtype=torch.float64, max_tokens=self.config['model']['max_devices'],
                 label=f'final_exam {split}_pin ({"OP supervision" if op else "design only"})')
@@ -250,6 +252,8 @@ class PinDataContext:
             batch['_group_keys'] = [self.keys[split][i] for i in indices]
             batch['_indices'] = batch_indices
             batch['_sample_ids'] = [row['sample_id'] for row in rows]
+            batch = {name: value.to(self.device) if torch.is_tensor(value) else value
+                     for name, value in batch.items()}
             if split in self.device_predictions_pin:
                 predicted, supported = self.device_predictions_pin[split]
                 batch['_predicted_device_op'] = predicted.index_select(0, batch_indices)

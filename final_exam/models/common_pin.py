@@ -57,7 +57,8 @@ class MLPPin(nn.Module):
         super().__init__()
         self.cfg = model_config(config)
         self.features = PinFeatures(prep)
-        layers = [nn.Linear(self.features.out_dim*self.cfg.max_devices, self.cfg.ffn_dim),
+        self.explicit_validity_pin = bool(prep.get('multi_circuit_flat_pin'))
+        layers = [nn.Linear((self.features.out_dim + int(self.explicit_validity_pin))*self.cfg.max_devices, self.cfg.ffn_dim),
                   nn.ReLU(), nn.Dropout(self.cfg.dropout)]
         for _ in range(self.cfg.encoder_layers-1):
             layers.extend((nn.Linear(self.cfg.ffn_dim,self.cfg.ffn_dim),nn.ReLU(),nn.Dropout(self.cfg.dropout)))
@@ -66,6 +67,8 @@ class MLPPin(nn.Module):
 
     def forward(self, batch):
         values = self.features(design_input_pin(batch))
+        if self.explicit_validity_pin:
+            values = torch.cat((values, batch['device_mask'].unsqueeze(-1).to(values.dtype)), -1)
         remaining = self.cfg.max_devices-values.shape[1]
         if remaining < 0:
             raise ValueError('Pin/port count exceeds max_devices token capacity; no truncation')

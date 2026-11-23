@@ -1,0 +1,36 @@
+{
+  "dataset": {
+    "train_circuits": [
+      "two_stage_folded_opamp",
+      "Opamp1"
+    ],
+    "ood_circuits": [],
+    "split_ratios": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "split_seed": 17,
+    "max_samples_per_circuit": null,
+    "sampling_seed": 17,
+    "finetune_label_fraction": 1.0
+  },
+  "normalization": {
+    "weighting": "equal_circuit",
+    "op_fields": null,
+    "parameters": {},
+    "op": {},
+    "performance": {}
+  },
+  "search_seed": 11,
+  "seeds": [
+    17,
+    29,
+    43,
+    59,
+    71
+  ],
+  "selection": "circuit_macro_val_r2",
+  "baseline": "device_op_cascade_pin",
+  "max_trials_per_model": 64
+}

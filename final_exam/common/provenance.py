@@ -1,10 +1,14 @@
 """Best-effort source metadata; training does not require a Git installation."""
 import subprocess
 import sys
+import os
 
 
 def code_revision(root):
     """Return the checkout revision, or an explicit sentinel if Git is unavailable."""
+    submitted = os.environ.get('JEPA_CODE_COMMIT')
+    if submitted:
+        return submitted
     try:
         result = subprocess.run(
             ['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True,

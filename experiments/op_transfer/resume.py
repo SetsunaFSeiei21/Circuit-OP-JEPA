@@ -160,6 +160,10 @@ def _validate_history(history, count):
             value = record.get(phase, {}).get('loss')
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError('Recovery history contains a non-finite/missing objective')
+        if 'selection_value' in record['val']:
+            value = record['val']['selection_value']
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError('Recovery history contains an invalid selection objective')
 
 
 def _validate_counters(value):

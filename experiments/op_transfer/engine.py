@@ -213,7 +213,8 @@ def _cpu_state(model):
 
 def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=False,
               repeated=False, after_step=None, before_epoch=None, checkpoint_extra=None,
-              artifact_suffix="", resume_from=None, resume_identity=None, gradient_observer=None):
+              artifact_suffix="", resume_from=None, resume_identity=None, gradient_observer=None,
+              selection_callback=None):
     """Val-best fitting, optionally recovering into a fresh stage directory.
 
     Passing ``resume_identity`` enables atomic epoch-boundary snapshots even on
@@ -278,7 +279,7 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
         # Reconstruct and verify patience/best selection from completed epochs,
         # rather than trusting unchecked counters from a checkpoint.
         for record in history:
-            stopping.update(record['val']['loss'], record['epoch'])
+            stopping.update(record['val'].get('selection_value', record['val']['loss']), record['epoch'])
         if not recovery.same_value(vars(stopping), saved['early_stopping']):
             raise ValueError('Recovery early-stopping state contradicts its history/configuration')
         optimizer.load_state_dict(saved['optimizer_state_dict'])
@@ -310,7 +311,7 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
     cache_cascade_teacher = isinstance(model, PredictedOPDistillation)
     encoder_only = isinstance(model, PredictedOPEncoderDistillation)
     cache_teacher = isinstance(model, DistillationPair) or cache_cascade_teacher
-    if (cache_readout or cache_teacher) and restored_epoch < epochs and not stopping.should_stop:
+    if (cache_readout or cache_teacher) and getattr(ctx, 'cache_frozen_features', True) and restored_epoch < epochs and not stopping.should_stop:
         # Encode each frozen branch once per stage, not once per epoch.
         model.eval()
         with torch.no_grad():
@@ -420,16 +421,24 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
                 record[phase]['loss_components'] = {name:float(value/count) for name,value in detail_totals.items()}
         if gradient_observer is not None:
             record['encoder_gradients'] = gradient_observer.epoch_record(epoch)
+        selection_value = record['val']['loss']
+        if selection_callback is not None:
+            # Callback returns a loss-like value (smaller is better); never test data.
+            selection_value = float(selection_callback(model))
+            if not math.isfinite(selection_value):
+                raise FloatingPointError('Non-finite validation selection objective')
+            record['val']['selection_value'] = selection_value
+            record['val']['selection_objective'] = 'negative_circuit_macro_r2'
         history.append(record)
         print(f"{stage_id}: epoch {epoch} train={record['train']['loss']:.6g} val={record['val']['loss']:.6g}", flush=True)
-        if stopping.update(record['val']['loss'], epoch):
+        if stopping.update(selection_value, epoch):
             best_state = _cpu_state(model)
             best_extra = copy.deepcopy(checkpoint_extra(model) if checkpoint_extra else {})
             # Preserve useful progress if a long HPC stage is interrupted.
             # This is a selected-weight snapshot, not optimizer-resume support.
             snapshot = {'state_dict':best_state,'config':ctx.config,'preprocessing':ctx.prep,
                 'stage_metadata':best_extra,'complete':False,
-                'selection':{'epoch':epoch,'value':record['val']['loss'],'split':'val'}}
+                'selection':{'epoch':epoch,'value':selection_value,'split':'val'}}
             if recoverable:
                 snapshot['resume_identity'] = identity
                 recovery.atomic_torch_save(directory/f'best{artifact_suffix}.pt', snapshot)
@@ -467,6 +476,8 @@ def fit_stage(ctx, model, stage_id, epochs, options, seed, objective, *, op=Fals
         parameters=sum(p.numel() for p in model.parameters()),
         trainable_parameters=sum(p.numel() for p in parameters), device=str(ctx.device),
         selection=stopping.summary(), selected_state_digest=state_digest(model))
+    if selection_callback is not None:
+        cost['selection_objective'] = 'negative_circuit_macro_r2'
     payload = {'state_dict': best_state, 'cost': cost, 'config': ctx.config,
                'preprocessing': ctx.prep, 'stage_metadata': best_extra, 'complete':True}
     if recoverable:

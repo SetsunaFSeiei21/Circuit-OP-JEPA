@@ -1,0 +1,12 @@
+{
+  "grid": {
+    "final_exam_pin.xgboost.eta": [
+      0.03,
+      0.1
+    ],
+    "final_exam_pin.xgboost.max_depth": [
+      4,
+      6
+    ]
+  }
+}

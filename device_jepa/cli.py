@@ -11,7 +11,9 @@ from .sampling import apply_dataset_sampling, sampling_options
 
 def _write(path, value):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    with Path(path).open('w') as stream:
+        json.dump(value, stream, indent=2, allow_nan=False)
+        stream.write('\n')
 
 
 def _read(path):

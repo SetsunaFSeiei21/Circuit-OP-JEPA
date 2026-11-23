@@ -275,13 +275,25 @@ def dataset_fingerprint(dataset: dict[str, Any]) -> str:
     This integrity digest is not a model feature and does not fit statistics or
     select splits using labels. Feature-list order remains significant.
     """
-    ordered = dict(dataset)
-    ordered["samples"] = []
-    for sample in sorted(dataset["samples"], key=lambda item: item["sample_id"]):
-        row = dict(sample)
-        row["devices"] = sorted(sample["devices"], key=lambda item: item["device_id"])
-        ordered["samples"].append(row)
-    return hashlib.sha256(_canonical(ordered).encode("utf-8")).hexdigest()
+    # Identical canonical bytes/digest without allocating a dataset-sized JSON
+    # string AND a second UTF-8 buffer (multi-circuit sources can be tens of GB).
+    digest = hashlib.sha256()
+    def emit(value):
+        digest.update(value.encode('utf-8'))
+    emit('{')
+    for i, key in enumerate(sorted(dataset)):
+        emit((',' if i else '') + _canonical(key) + ':')
+        if key != 'samples':
+            emit(_canonical(dataset[key]))
+            continue
+        emit('[')
+        for j, sample in enumerate(sorted(dataset['samples'], key=lambda row: row['sample_id'])):
+            row = dict(sample)
+            row['devices'] = sorted(row['devices'], key=lambda dev: dev['device_id'])
+            emit((',' if j else '') + _canonical(row))
+        emit(']')
+    emit('}')
+    return digest.hexdigest()
 
 
 def input_op_fingerprint(dataset: dict[str, Any]) -> str:
