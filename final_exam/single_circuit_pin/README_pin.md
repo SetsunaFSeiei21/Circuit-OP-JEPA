@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**图路由融合 detach 的三个版本**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-variants` 运行 `lasd_graph_layer_headwise_detach_pin_v1`、`_v2`、`_v3`。v1 detach 全部融合 PE 副本并保留 Final Graph Encoder；v2 移除 Final Graph Encoder；v3 再加未 detach 的最后 PE 残差。电路、seed、配置和日志目录仍沿用本脚本。[结构、梯度含义和使用说明](../GRAPH_FUSION_DETACH_pin.md)
+
 **图与层上下文路由**：运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer`，比较 `device_op_cascade_pin`、`lasd_moe_headwise_global_pin` 与 `lasd_graph_layer_headwise_pin`。图路由先按电路 mask 编码节点统计，再逐节点编码 L 个上下文输出，生成 H×L 融合权重，无 MoE。新增 `--graph-layer-detach` 只运行 `lasd_graph_layer_headwise_detach_pin`：完整节点/全图分数在输入 MLP 前 detach，PE 隐藏表示及新路由模块保留梯度。CIRCUITS、SEEDS、CONFIG 仍在原脚本顶部设置。配置、结果、日志和恢复入口保持原位置。[详细结构与运行说明](../LASD_MOE_pin.md)
 
 **逐头全图统计对照**：新增 `lasd_moe_headwise_global_pin` 和 `lasd_moe_headwise_detach_global_pin`，在节点分数后拼接每图/PE/head 的 μR、σR、σT 及其跨层差分。默认输入 96→240 维，输出仍为每节点 8×3 个层权重；detach 只作用于全部分数输入，PE 隐藏表示正常反传。运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --global-stats`，可比较普通逐头模型和全图扩展，各有正常梯度/detach 两种，共四个模型。电路、seed 和配置仍在原脚本设置。[计算口径、配置、诊断和续训说明](../LASD_MOE_pin.md)

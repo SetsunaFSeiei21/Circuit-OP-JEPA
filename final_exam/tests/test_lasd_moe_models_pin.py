@@ -166,15 +166,16 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
     torch.testing.assert_close(node_weights.sum(-1), torch.ones(expected_axes))
     assert torch.count_nonzero(diag['layer_weights'][~diag['valid']]) == 0
     output.square().sum().backward()
-    if mode in ('lasd_moe_detach_pin', 'lasd_moe_headwise_detach_pin', HYPER_LASD_MOE_MODEL_PIN,
-                'lasd_moe_headwise_detach_pin_v1', 'lasd_moe_headwise_detach_global_pin',
-                GRAPH_LAYER_LASD_DETACH_MODEL_PIN):
+    contract = model.architecture_contract
+    if contract['score_detach']:
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
-    if mode == 'lasd_moe_headwise_detach_pin_v1':
+    if contract['hidden_state_detach'] and contract.get('residual_connection') == 'last_pe_memory_add':
         assert all(memory.grad is None for memory in retained_memories[:-1])
         assert retained_memories[-1].grad.abs().sum() > 0
+    elif contract['hidden_state_detach']:
+        assert all(memory.grad is None for memory in retained_memories)
     else:
         assert all(memory.grad is not None and memory.grad.abs().sum() > 0 for memory in retained_memories)
     if mode in GRAPH_LAYER_LASD_MODELS_PIN:
@@ -186,8 +187,12 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         assert model.layer_fusion.router.weight.grad.abs().sum() > 0
         assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.layer_fusion.experts.parameters())
     for block in list(model.encoder.structure_encoder.blocks) + list(model.encoder.fusion_blocks):
-        assert block.self_attn.in_proj_weight.grad.abs().sum() > 0
-    assert model.final_graph_encoder.self_attn.in_proj_weight.grad.abs().sum() > 0
+        if contract['hidden_state_detach'] and contract.get('residual_connection') == 'none':
+            assert block.self_attn.in_proj_weight.grad is None
+        else:
+            assert block.self_attn.in_proj_weight.grad.abs().sum() > 0
+    if model.final_graph_encoder is not None:
+        assert model.final_graph_encoder.self_attn.in_proj_weight.grad.abs().sum() > 0
     assert all(p.grad is None for p in predictor.parameters()) and state_digest(predictor) == before
     model.encoder.forward_fusion_memories = real_forward
     model.eval()

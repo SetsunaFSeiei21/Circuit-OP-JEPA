@@ -27,7 +27,8 @@ class EncoderGradientNormsPin:
         if hasattr(router, 'graph_blocks'):
             blocks += [('SCORE_GRAPH', i + 1, block) for i, block in enumerate(router.graph_blocks)]
             blocks.append(('SCORE_LAYER', 1, router.layer_encoder))
-        blocks.append(('FINAL', 1, model.final_graph_encoder))
+        if model.final_graph_encoder is not None:
+            blocks.append(('FINAL', 1, model.final_graph_encoder))
         self.groups = [(kind, index, tuple(p for p in block.parameters() if p.requires_grad))
                        for kind, index, block in blocks]
         self._epoch = None

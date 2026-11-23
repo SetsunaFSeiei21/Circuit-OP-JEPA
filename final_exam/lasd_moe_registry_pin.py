@@ -10,7 +10,14 @@ HYPER_LASD_MOE_MODEL_PIN = 'lasd_moe_headwise_detach_hc_pin'
 HYPER_LASD_MOE_MODELS_PIN = ('lasd_moe_headwise_hc_pin', HYPER_LASD_MOE_MODEL_PIN)
 GRAPH_LAYER_LASD_MODEL_PIN = 'lasd_graph_layer_headwise_pin'
 GRAPH_LAYER_LASD_DETACH_MODEL_PIN = 'lasd_graph_layer_headwise_detach_pin'
-GRAPH_LAYER_LASD_MODELS_PIN = (GRAPH_LAYER_LASD_MODEL_PIN, GRAPH_LAYER_LASD_DETACH_MODEL_PIN)
+GRAPH_LAYER_FUSION_DETACH_MODELS_PIN = (
+    'lasd_graph_layer_headwise_detach_pin_v1',
+    'lasd_graph_layer_headwise_detach_pin_v2',
+    'lasd_graph_layer_headwise_detach_pin_v3',
+)
+GRAPH_LAYER_SCORE_DETACH_MODELS_PIN = (
+    GRAPH_LAYER_LASD_DETACH_MODEL_PIN, *GRAPH_LAYER_FUSION_DETACH_MODELS_PIN)
+GRAPH_LAYER_LASD_MODELS_PIN = (GRAPH_LAYER_LASD_MODEL_PIN, *GRAPH_LAYER_SCORE_DETACH_MODELS_PIN)
 LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
                        *HYPER_LASD_MOE_MODELS_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
                        *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, *GRAPH_LAYER_LASD_MODELS_PIN)
@@ -104,7 +111,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
                     hidden_state_detach_scope='fusion_inputs_only', final_pe_residual_detach=False)
     if mode in (*GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, *GRAPH_LAYER_LASD_MODELS_PIN):
         spec.update(version=5, input_dim=10*layers*heads,
-                    score_detach=mode in ('lasd_moe_headwise_detach_global_pin', GRAPH_LAYER_LASD_DETACH_MODEL_PIN),
+                    score_detach=mode in ('lasd_moe_headwise_detach_global_pin', *GRAPH_LAYER_SCORE_DETACH_MODELS_PIN),
                     feature_order='node_R_T_deltas_flat_then_global_statistics_deltas_flat',
                     score_detach_scope='node_and_global_features_before_moe',
                     global_context=dict(
@@ -131,7 +138,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
         spec.update(version=6, experts=0, top_k=0, expert=None,
                     routing='graph_then_nodewise_layer_encoder', routing_output_dim=layers*heads,
                     score_detach_scope=('node_and_global_features_before_graph_layer_router'
-                                        if mode == GRAPH_LAYER_LASD_DETACH_MODEL_PIN else 'none'),
+                                        if mode in GRAPH_LAYER_SCORE_DETACH_MODELS_PIN else 'none'),
                     graph_layer_context=dict(
                         input='entire_node_and_global_score_trajectory',
                         input_projection='shared_linear_gelu_dropout_linear_to_model_dim',
@@ -147,6 +154,20 @@ def lasd_moe_spec_pin(mode, value, model_config):
                         output_projection='shared_linear_gelu_dropout_linear_D_to_H_per_token',
                         logits_axes='B,N,L,H_then_B,N,H,L', softmax_axis='PE_depth_L',
                         memory_source='original_PE_outputs_in_unchanged_order'))
+    if mode in GRAPH_LAYER_FUSION_DETACH_MODELS_PIN:
+        # Only these new contracts change the fusion taps and optional post-fusion
+        # block. Existing checkpoint contracts and PE chains remain unchanged.
+        has_final_encoder = mode == 'lasd_graph_layer_headwise_detach_pin_v1'
+        has_residual = mode == 'lasd_graph_layer_headwise_detach_pin_v3'
+        spec.update(version=7, hidden_state_detach=True,
+                    hidden_state_detach_scope='fusion_inputs_only', encoder_chain_detach=False,
+                    final_encoder_layers=int(has_final_encoder),
+                    final_encoder=('native_encoder_block_without_cross_attention'
+                                   if has_final_encoder else 'none'),
+                    final_attention_mask=(spec['final_attention_mask'] if has_final_encoder else 'none'),
+                    residual_connection='last_pe_memory_add' if has_residual else 'none',
+                    residual_position='metric_decoder_input' if has_residual else 'none',
+                    final_pe_residual_detach=False if has_residual else None)
     return spec
 
 

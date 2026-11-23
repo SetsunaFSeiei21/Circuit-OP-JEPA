@@ -587,9 +587,10 @@ def _lasd_moe_sheet(results, stages):
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
                'Each node keeps all heads. Routing uses Top-2 of four experts, or graph/layer context encoders '
-               'and an MLP (no experts). PE hidden states are fused before one '
-               'final encoder and the original metric decoder. Headwise v1 adds the final PE memory as a live '
-               'residual. Its detached variant stops gradients at both score and memory inputs to fusion.', height=72)
+               'and an MLP (no experts). The table records whether fusion memories are detached, whether an '
+               'extra final encoder is present, and whether the live last PE memory is added as a residual. '
+               'Graph detach v1/v2/v3 stop both score and fusion-memory gradients; v2/v3 omit the final '
+               'encoder, and v3 adds the live last PE memory before the original metric decoder.', height=72)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
                'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '
                'Prerequisites are shared OP prediction/cache dependencies; do not sum these columns across models. '

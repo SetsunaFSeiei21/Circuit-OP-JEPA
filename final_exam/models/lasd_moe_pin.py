@@ -4,7 +4,8 @@ Score statistics are pre-dropout observations of the actual PE Q/K and masks.
 The HC variant carries multiple residual streams through the performance PEs.
 Headwise v1 adds the final PE memory to fusion and optionally detaches branch inputs.
 Graph/layer routing replaces experts with circuit-context and nodewise depth encoders.
-One final native graph block and one existing metric decoder consume the fused memory.
+Graph detach v1 stops fusion-memory gradients; v2/v3 omit the final graph block.
+Graph detach v3 adds the live last PE memory immediately before the metric decoder.
 """
 from copy import deepcopy
 
@@ -119,7 +120,9 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             self.layer_fusion = Top2LayerMoEPin(
                 self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
                 output_heads=cfg.heads if self.lasd_moe_spec.get('layer_weight_axes') == 'B,N,H,L' else None)
-        self.final_graph_encoder = EncoderBlock(cfg, cross=False)
+        # Do not register unused parameters for variants that omit this block.
+        self.final_graph_encoder = (EncoderBlock(cfg, cross=False)
+                                    if self.lasd_moe_spec['final_encoder_layers'] else None)
         if 'hyper_connection' in self.lasd_moe_spec:
             # Wrap the already initialized PE sublayers so the control starts with
             # the same attention, FFN, router and decoder weights at a given seed.
@@ -163,9 +166,10 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             features = torch.cat((features, context[:, None].expand(-1, scores.size(1), -1)), dim=-1)
             features = features.masked_fill(padding.unsqueeze(-1), 0.)
         # Each contract specifies the score and fusion-memory boundaries independently.
-        # The encoder chain and the explicit final-PE residual always carry gradients.
+        # Never detach between PE blocks; a residual uses the original last memory.
         # Graph/layer detach stops the entire local + global score trajectory before
-        # its input projection; both routing encoders and the PE fusion values stay live.
+        # its input projection; both routing encoders remain trainable. The fusion
+        # copies may be detached below without detaching the sequential PE chain.
         routing_input = features.detach() if self.lasd_moe_spec['score_detach'] else features
         if 'graph_layer_context' in self.lasd_moe_spec:
             logits, routing = self.layer_fusion(routing_input, valid, masks[0], return_context=return_scores)
@@ -177,7 +181,8 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         fused, weights = _fuse_pe_memories_pin(fusion_inputs, logits, padding)
         if self.lasd_moe_spec.get('residual_connection') == 'last_pe_memory_add':
             fused = memories[-1] + fused
-        memory = self.final_graph_encoder(fused, masks[0], None, None, valid)
+        memory = (self.final_graph_encoder(fused, masks[0], None, None, valid)
+                  if self.final_graph_encoder is not None else fused)
         if return_scores:
             return memory, padding, dict(scores=scores, differences=differences,
                 score_features=features, layer_weights=weights, valid=valid,

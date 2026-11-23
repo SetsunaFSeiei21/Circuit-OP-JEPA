@@ -12,7 +12,7 @@ from device_jepa.training import state_digest
 from experiments.op_transfer import engine
 from final_exam.lasd_moe_registry_pin import (
     GRAPH_LAYER_LASD_MODEL_PIN as MODE, lasd_moe_spec_pin, validate_lasd_moe_contract_pin,
-    GRAPH_LAYER_LASD_DETACH_MODEL_PIN as DETACH_MODE, GRAPH_LAYER_LASD_MODELS_PIN,
+    GRAPH_LAYER_LASD_DETACH_MODEL_PIN as DETACH_MODE,
 )
 from final_exam.models.graph_layer_score_pin import GraphLayerScoreRouterPin
 from final_exam.models.lasd_moe_pin import LASDMoEModelPin
@@ -102,7 +102,7 @@ def test_layer_encoder_attends_only_across_depth_for_same_node():
 
 
 @pytest.mark.parametrize('checkpoint_scores', [False, True])
-@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+@pytest.mark.parametrize('mode', (MODE, DETACH_MODE))
 def test_complete_score_detach_boundary_keeps_routing_and_hidden_paths_live(inputs, mode, checkpoint_scores):
     cfg, prep, support, batch = inputs
     torch.manual_seed(17)
@@ -178,7 +178,7 @@ def test_native_mask_used_for_all_graph_blocks_and_score_path_reaches_pe_qk(inpu
     assert all(p.grad is None for p in model.predictor.parameters())
 
 
-@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+@pytest.mark.parametrize('mode', (MODE, DETACH_MODE))
 def test_contract_records_two_encoder_axes_and_rejects_changed_architecture(mode):
     cfg = dict(dim=128, heads=8, encoder_layers=6, cross_layers=3, decoder_layers=2,
                ffn_dim=256, dropout=.17)
@@ -214,7 +214,7 @@ def test_contract_records_two_encoder_axes_and_rejects_changed_architecture(mode
             validate_lasd_moe_contract_pin(mode, bad)
 
 
-@pytest.mark.parametrize('mode', GRAPH_LAYER_LASD_MODELS_PIN)
+@pytest.mark.parametrize('mode', (MODE, DETACH_MODE))
 def test_training_diagnostics_xlsx_standalone_replay_and_completed_resume(setup, mode):
     root, cfg, data, config, run = setup
     cfg['lasd_moe_pin'] = dict(hidden_dim=12, score_chunk_size=3, diagnostic_samples=2)

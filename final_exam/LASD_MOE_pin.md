@@ -1,5 +1,11 @@
 # LASD-MoE：逐节点的 Encoder 层融合
 
+## 新增：图路由融合表示 detach 的 v1/v2/v3（2026-11-23）
+
+在 `lasd_graph_layer_headwise_detach_pin` 后追加 `_v1`、`_v2`、`_v3`：v1 保留 Final Graph Encoder，只 detach 全部融合 PE 副本；v2 再移除 Final Graph Encoder；v3 再在 Decoder 前加未 detach 的最后 PE 残差。三个版本都保留原分数 detach。v1/v2 没有性能损失通往原 SE/PE block 的梯度，v3 通过残差恢复主干梯度；原 local mask 的可学习 role bias 仍沿用。
+
+运行原脚本 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-variants` 即选择新增三组；电路、seed、配置和目录沿用。详见 [完整模型表、公式、梯度边界、启动和恢复说明](GRAPH_FUSION_DETACH_pin.md)。下面的原模型说明保持对应各自明确的模型名，不套用新版本策略。
+
 ## 新增：图与层上下文路由的分数 detach 对照（2026-11-21）
 
 模型名为 **`lasd_graph_layer_headwise_detach_pin`**，与 `lasd_graph_layer_headwise_pin` 共用全部前向模块，只改变分数输入的反向传播边界。相同 seed 初始化时，两者参数量、参数初值相同；使用相同权重、输入及 dropout 随机状态时，预测值和融合权重相同。训练后的结果需分别实验比较。
