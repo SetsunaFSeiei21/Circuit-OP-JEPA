@@ -171,7 +171,13 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         assert diag['score_features'].grad is None
     else:
         assert diag['score_features'].grad.abs().sum() > 0
-    if contract['hidden_state_detach'] and contract.get('residual_connection') == 'last_pe_memory_add':
+    if 'fusion_memory_detach' in contract:
+        for memory, stop in zip(retained_memories, contract['fusion_memory_detach']):
+            if stop:
+                assert memory.grad is None
+            else:
+                assert memory.grad.abs().sum() > 0
+    elif contract['hidden_state_detach'] and contract.get('residual_connection') == 'last_pe_memory_add':
         assert all(memory.grad is None for memory in retained_memories[:-1])
         assert retained_memories[-1].grad.abs().sum() > 0
     elif contract['hidden_state_detach']:
@@ -187,7 +193,9 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         assert model.layer_fusion.router.weight.grad.abs().sum() > 0
         assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.layer_fusion.experts.parameters())
     for block in list(model.encoder.structure_encoder.blocks) + list(model.encoder.fusion_blocks):
-        if contract['hidden_state_detach'] and contract.get('residual_connection') == 'none':
+        if (contract['hidden_state_detach'] and contract['score_detach']
+                and 'fusion_memory_detach' not in contract
+                and contract.get('residual_connection') == 'none'):
             assert block.self_attn.in_proj_weight.grad is None
         else:
             assert block.self_attn.in_proj_weight.grad.abs().sum() > 0

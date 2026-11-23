@@ -1,5 +1,7 @@
 # 图/层上下文逐头融合：融合表示 detach 的三个对照版本
 
+后续版本 **v4** 的分数不 detach，仅 detach 浅层 PE 融合副本，保留最后 PE 梯度及 Final Graph Encoder、无额外残差。下文保留 v1/v2/v3 原始定义；v4 见 [独立说明](GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)。
+
 2026-11-23。新增模型基于 `lasd_graph_layer_headwise_detach_pin`，复用器件级 OP 预测器、端口级 SE/PE、节点/全图分数、图/层上下文路由和原性能 Decoder。没有引入新数据输入、性能标签、门控、MoE 专家或额外训练阶段。
 
 ## 1. 模型名称和区别

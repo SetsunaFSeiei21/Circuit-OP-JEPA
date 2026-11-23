@@ -17,7 +17,11 @@ GRAPH_LAYER_FUSION_DETACH_MODELS_PIN = (
 )
 GRAPH_LAYER_SCORE_DETACH_MODELS_PIN = (
     GRAPH_LAYER_LASD_DETACH_MODEL_PIN, *GRAPH_LAYER_FUSION_DETACH_MODELS_PIN)
-GRAPH_LAYER_LASD_MODELS_PIN = (GRAPH_LAYER_LASD_MODEL_PIN, *GRAPH_LAYER_SCORE_DETACH_MODELS_PIN)
+# v4 retains the historical model-name prefix, but its score path is live.
+# Keep the score-detach and all-fusion-detach groups unchanged for older callers.
+GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN = 'lasd_graph_layer_headwise_detach_pin_v4'
+GRAPH_LAYER_LASD_MODELS_PIN = (GRAPH_LAYER_LASD_MODEL_PIN, *GRAPH_LAYER_SCORE_DETACH_MODELS_PIN,
+                             GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN)
 LASD_MOE_MODELS_PIN = ('lasd_moe_pin', 'lasd_moe_detach_pin', *HEADWISE_LASD_MOE_MODELS_PIN,
                        *HYPER_LASD_MOE_MODELS_PIN, *RESIDUAL_HEADWISE_LASD_MOE_MODELS_PIN,
                        *GLOBAL_HEADWISE_LASD_MOE_MODELS_PIN, *GRAPH_LAYER_LASD_MODELS_PIN)
@@ -168,6 +172,15 @@ def lasd_moe_spec_pin(mode, value, model_config):
                     residual_connection='last_pe_memory_add' if has_residual else 'none',
                     residual_position='metric_decoder_input' if has_residual else 'none',
                     final_pe_residual_detach=False if has_residual else None)
+    if mode == GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN:
+        # Stop only direct shallow-memory fusion gradients. Score/global features,
+        # the final fusion memory and the sequential PE chain all remain live.
+        spec.update(version=8, score_detach=False, score_detach_scope='none',
+                    hidden_state_detach=True, hidden_state_detach_scope='shallow_fusion_inputs_only',
+                    fusion_memory_detach=[True] * (layers - 1) + [False],
+                    last_fusion_memory_detach=False, encoder_chain_detach=False,
+                    final_encoder_layers=1,
+                    residual_connection='none', residual_position='none', final_pe_residual_detach=None)
     return spec
 
 

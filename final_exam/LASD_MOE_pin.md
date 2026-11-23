@@ -1,5 +1,7 @@
 # LASD-MoE：逐节点的 Encoder 层融合
 
+**Graph-layer v4** 已加入：分数不 detach，融合时仅浅层 PE 副本 detach，最后 PE 保留梯度；保留 Final Graph Encoder，无额外残差。`train_lasd_moe_pin.sh --graph-layer-detach-v4` 仅运行此版本。[详细说明](GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
+
 ## 新增：图路由融合表示 detach 的 v1/v2/v3（2026-11-23）
 
 在 `lasd_graph_layer_headwise_detach_pin` 后追加 `_v1`、`_v2`、`_v3`：v1 保留 Final Graph Encoder，只 detach 全部融合 PE 副本；v2 再移除 Final Graph Encoder；v3 再在 Decoder 前加未 detach 的最后 PE 残差。三个版本都保留原分数 detach。v1/v2 没有性能损失通往原 SE/PE block 的梯度，v3 通过残差恢复主干梯度；原 local mask 的可学习 role bias 仍沿用。

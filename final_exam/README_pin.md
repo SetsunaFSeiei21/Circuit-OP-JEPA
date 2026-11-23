@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**图路由 v4**：`lasd_graph_layer_headwise_detach_pin_v4` 保留分数梯度，仅 detach 前 L−1 个 PE 的融合副本；最后 PE、Final Graph Encoder 正常反传，不加额外残差。使用原脚本 `train_lasd_moe_pin.sh --graph-layer-detach-v4`。[完整结构、梯度边界与单/多电路配置](GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
+
 **图路由融合 detach v1/v2/v3**：新增 `lasd_graph_layer_headwise_detach_pin_v1`、`_v2`、`_v3`。三组均 detach 分数及融合的 PE 副本；v1 保留 Final Graph Encoder，v2 移除它，v3 在 v2 上添加可反传的最后 PE 残差。原脚本 `train_lasd_moe_pin.sh --graph-layer-detach-variants` 运行这三组。[梯度边界、训练含义、配置和恢复](GRAPH_FUSION_DETACH_pin.md)
 
 **图与层上下文路由**：`lasd_graph_layer_headwise_pin` 将完整节点/全图分数投影后送入电路掩码 Encoder，保留 L 个输出，再逐节点做 L×L 层注意力，以共享 MLP 输出 H×L 权重，融合原始 PE 隐藏表示。新增 `lasd_graph_layer_headwise_detach_pin` 只在节点/全图分数进入输入 MLP 前 detach，原 PE 隐藏表示和后续分数编码器继续训练。两者均无 MoE。运行现有 `train_lasd_moe_pin.sh --graph-layer` 比较原三组，或 `--graph-layer-detach` 只跑新增版本；原目录、配置和续训入口沿用。[详细结构、梯度和运行说明](LASD_MOE_pin.md)

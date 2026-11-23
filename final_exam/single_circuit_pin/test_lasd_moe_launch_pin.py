@@ -218,6 +218,55 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
                                                capture_output=True).returncode, 2)
 
 
+    def test_graph_layer_v4_multi_config_and_grid_keep_reference_budgets(self):
+        from final_exam.multi_circuit.config_pin import model_config_pin, expand_grid_pin
+        from final_exam.lasd_moe_registry_pin import lasd_moe_spec_pin
+        root = Path(__file__).resolve().parents[1] / 'multi_circuit/configs_pin'
+        model = 'lasd_graph_layer_headwise_detach_pin_v4'
+        protocol = json.loads((root / 'protocol_pin.json').read_text())
+        config = model_config_pin(model, root, protocol)
+        reference = model_config_pin('lasd_graph_layer_headwise_detach_pin', root, protocol)
+        for section in ('model', 'op_transfer', 'dataset', 'normalization', 'lasd_moe_pin'):
+            self.assertEqual(config[section], reference[section])
+        space = json.loads((root / 'search_spaces' / f'{model}.json').read_text())
+        trials, skipped = expand_grid_pin(model, config, space)
+        self.assertEqual(len(trials), 4)
+        self.assertFalse(skipped)
+        for trial in trials:
+            cfg = trial['config']
+            spec = lasd_moe_spec_pin(model, cfg['lasd_moe_pin'], cfg['model'])
+            self.assertFalse(spec['score_detach'])
+            self.assertEqual(spec['fusion_memory_detach'], [True, True, False])
+            self.assertEqual(spec['final_encoder_layers'], 1)
+            self.assertEqual(spec.get('residual_connection'), 'none')
+
+    def test_graph_layer_v4_preserves_settings_and_selects_only_v4(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        script.write_text(script.read_text().replace(
+            'CIRCUITS=(two_stage_folded_opamp)', 'CIRCUITS=(Opamp1 two_stage_folded_opamp)').replace(
+            'SEEDS=(17 29 43)', 'SEEDS=(29)'))
+        before = sorted(str(p) for p in self.root.rglob('*'))
+        args = ['bash', str(script), '--graph-layer-detach-v4', '--dry-run']
+        commands = [shlex.split(line) for line in subprocess.check_output(
+            args, env=environment, text=True).splitlines()]
+        self.assertEqual([cmd[cmd.index('--circuit') + 1] for cmd in commands],
+                         ['Opamp1', 'two_stage_folded_opamp'])
+        for cmd in commands:
+            self.assertEqual(cmd[cmd.index('--models') + 1:cmd.index('--seeds')],
+                             ['lasd_graph_layer_headwise_detach_pin_v4'])
+            self.assertEqual(cmd[cmd.index('--seeds') + 1:cmd.index('--device')], ['29'])
+        self.assertEqual(before, sorted(str(p) for p in self.root.rglob('*')))
+        for other in ('--headwise', '--headwise-v1', '--hyper-connection', '--hyper-connection-grad',
+                      '--global-stats', '--graph-layer', '--graph-layer-detach', '--graph-layer-detach-variants'):
+            with self.subTest(preset=other):
+                self.assertEqual(subprocess.run([*args, other], env=environment,
+                                               capture_output=True).returncode, 2)
+        smoke = shlex.split(subprocess.check_output([*args, '--smoke'], env=environment,
+                                                    text=True).splitlines()[0])
+        self.assertIn('--time=00:30:00', smoke)
+        self.assertIn('--smoke', smoke)
+
+
 class LASDMoEResumeLaunchPinTests(unittest.TestCase):
     setUp = resume_tests.ResumeStagedGateLauncherTests.setUp
     source_fixture = resume_tests.ResumeStagedGateLauncherTests.source_fixture
@@ -235,7 +284,7 @@ class LASDMoEResumeLaunchPinTests(unittest.TestCase):
                   'lasd_moe_headwise_global_pin', 'lasd_moe_headwise_detach_global_pin',
                   'lasd_graph_layer_headwise_pin', 'lasd_graph_layer_headwise_detach_pin',
                   'lasd_graph_layer_headwise_detach_pin_v1', 'lasd_graph_layer_headwise_detach_pin_v2',
-                  'lasd_graph_layer_headwise_detach_pin_v3']
+                  'lasd_graph_layer_headwise_detach_pin_v3', 'lasd_graph_layer_headwise_detach_pin_v4']
         record = json.loads((training / 'run_pin.json').read_text())
         record['models'] = models
         for path in (source / 'run_pin.json', training / 'run_pin.json'):

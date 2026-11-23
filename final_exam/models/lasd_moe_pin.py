@@ -176,7 +176,15 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         else:
             logits, routing = self.layer_fusion(routing_input, valid)
         fusion_inputs = memories
-        if self.lasd_moe_spec['hidden_state_detach']:
+        if 'fusion_memory_detach' in self.lasd_moe_spec:
+            # v4: detach shallow fusion copies only; retain the last PE and all
+            # score gradients. The encoder's sequential computations are untouched.
+            policy = self.lasd_moe_spec['fusion_memory_detach']
+            if len(policy) != len(memories):
+                raise ValueError('Fusion detach policy must align with PE memories')
+            fusion_inputs = tuple(memory.detach() if stop else memory
+                                  for memory, stop in zip(memories, policy))
+        elif self.lasd_moe_spec['hidden_state_detach']:
             fusion_inputs = tuple(memory.detach() for memory in memories)
         fused, weights = _fuse_pe_memories_pin(fusion_inputs, logits, padding)
         if self.lasd_moe_spec.get('residual_connection') == 'last_pe_memory_add':

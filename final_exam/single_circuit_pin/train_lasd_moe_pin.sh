@@ -40,13 +40,13 @@ for argument in "$@"; do
     case "$argument" in
         --dry-run) DRY_RUN=1 ;;
         --smoke) SMOKE=1 ;;
-        --headwise|--headwise-v1|--hyper-connection|--hyper-connection-grad|--global-stats|--graph-layer|--graph-layer-detach|--graph-layer-detach-variants)
+        --headwise|--headwise-v1|--hyper-connection|--hyper-connection-grad|--global-stats|--graph-layer|--graph-layer-detach|--graph-layer-detach-variants|--graph-layer-detach-v4)
             if [[ -n "$model_preset" && "$model_preset" != "$argument" ]]; then
                 echo 'Select one model preset per submission.' >&2; exit 2
             fi
             model_preset="$argument" ;;
         -h|--help)
-            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection | --hyper-connection-grad | --global-stats | --graph-layer | --graph-layer-detach | --graph-layer-detach-variants] [--dry-run] [--smoke]'
+            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection | --hyper-connection-grad | --global-stats | --graph-layer | --graph-layer-detach | --graph-layer-detach-variants | --graph-layer-detach-v4] [--dry-run] [--smoke]'
             echo 'Edit CIRCUITS, MODELS, SEEDS, CONFIG and cluster settings at the top.'
             echo '--headwise selects lasd_moe_headwise_pin and lasd_moe_headwise_detach_pin for the configured circuits and seeds.'
             echo '--headwise-v1 compares lasd_moe_headwise_pin_v1 and lasd_moe_headwise_detach_pin_v1, with a last-PE residual.'
@@ -56,6 +56,7 @@ for argument in "$@"; do
             echo '--graph-layer compares the cascade, global-score MoE and lasd_graph_layer_headwise_pin (full gradients).'
             echo '--graph-layer-detach runs only lasd_graph_layer_headwise_detach_pin; PE fusion values keep gradients.'
             echo '--graph-layer-detach-variants runs exactly graph detach v1/v2/v3: detached PE fusion taps; v2/v3 omit the final encoder; v3 adds the live last PE residual.'
+            echo '--graph-layer-detach-v4 runs only v4: live score features; detach shallow PE fusion taps only; keep the final encoder, without an extra residual.'
             echo 'Graph/layer routing uses circuit-masked graph blocks, then per-node depth attention and an H-logit MLP.'
             echo 'Global context uses per-graph/per-PE/per-head mean R, std R, std T and their differences.'
             echo 'Each circuit submits an independent job. --dry-run creates no output directories.'
@@ -73,6 +74,7 @@ case "$model_preset" in
                            lasd_moe_headwise_detach_pin lasd_moe_headwise_detach_global_pin) ;;
     --graph-layer) MODELS=(device_op_cascade_pin lasd_moe_headwise_global_pin lasd_graph_layer_headwise_pin) ;;
     --graph-layer-detach) MODELS=(lasd_graph_layer_headwise_detach_pin) ;;
+    --graph-layer-detach-v4) MODELS=(lasd_graph_layer_headwise_detach_pin_v4) ;;
     --graph-layer-detach-variants) MODELS=(lasd_graph_layer_headwise_detach_pin_v1
                                          lasd_graph_layer_headwise_detach_pin_v2
                                          lasd_graph_layer_headwise_detach_pin_v3) ;;

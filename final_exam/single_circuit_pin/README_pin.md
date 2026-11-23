@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**图路由 v4**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-v4`。分数不 detach，仅浅层 PE 融合副本 detach；保留最后 PE 梯度及 Final Graph Encoder，无额外残差。仍修改 `final_exam/configs/lasd_moe_pin.json`。[配置与梯度说明](../GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
+
 **图路由融合 detach 的三个版本**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-variants` 运行 `lasd_graph_layer_headwise_detach_pin_v1`、`_v2`、`_v3`。v1 detach 全部融合 PE 副本并保留 Final Graph Encoder；v2 移除 Final Graph Encoder；v3 再加未 detach 的最后 PE 残差。电路、seed、配置和日志目录仍沿用本脚本。[结构、梯度含义和使用说明](../GRAPH_FUSION_DETACH_pin.md)
 
 **图与层上下文路由**：运行 `bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer`，比较 `device_op_cascade_pin`、`lasd_moe_headwise_global_pin` 与 `lasd_graph_layer_headwise_pin`。图路由先按电路 mask 编码节点统计，再逐节点编码 L 个上下文输出，生成 H×L 融合权重，无 MoE。新增 `--graph-layer-detach` 只运行 `lasd_graph_layer_headwise_detach_pin`：完整节点/全图分数在输入 MLP 前 detach，PE 隐藏表示及新路由模块保留梯度。CIRCUITS、SEEDS、CONFIG 仍在原脚本顶部设置。配置、结果、日志和恢复入口保持原位置。[详细结构与运行说明](../LASD_MOE_pin.md)

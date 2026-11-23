@@ -579,10 +579,10 @@ def _lasd_moe_sheet(results, stages):
               'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope',
               'Global score statistics', 'Global score input width', 'Global std epsilon',
               'Routing mechanism', 'Graph context blocks', 'Per-node layer context blocks',
-              'Routing output width')
+              'Routing output width', 'Fusion detach by PE (JSON)')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
                               24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32, 36, 28, 24,
-                              50, 26, 32, 24],
+                              50, 26, 32, 24, 36],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
@@ -590,7 +590,10 @@ def _lasd_moe_sheet(results, stages):
                'and an MLP (no experts). The table records whether fusion memories are detached, whether an '
                'extra final encoder is present, and whether the live last PE memory is added as a residual. '
                'Graph detach v1/v2/v3 stop both score and fusion-memory gradients; v2/v3 omit the final '
-               'encoder, and v3 adds the live last PE memory before the original metric decoder.', height=72)
+               'encoder, and v3 adds the live last PE memory before the original metric decoder. '
+               'v4 keeps scores and the last fusion memory live, detaches shallow fusion copies only, '
+               'retains the final encoder and adds no extra residual. Fusion memories detached means '
+               'at least one fusion tap is detached; the per-PE JSON specifies which ones.', height=96)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
                'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '
                'Prerequisites are shared OP prediction/cache dependencies; do not sum these columns across models. '
@@ -616,7 +619,8 @@ def _lasd_moe_sheet(results, stages):
         sheet.add([mode, seed, spec.get('attention_scope', 'none; original cascade'),
                    spec.get('base_layers', 0), spec.get('heads'), spec.get('input_dim', 0),
                    spec.get('experts', 0), spec.get('top_k', 0), spec.get('score_detach'),
-                   spec.get('hidden_state_detach'), spec.get('final_encoder_layers', 0),
+                   (any(spec['fusion_memory_detach']) if 'fusion_memory_detach' in spec
+                    else spec.get('hidden_state_detach')), spec.get('final_encoder_layers', 0),
                    spec.get('final_attention_mask'), stage.get('parameters'), stage.get('trainable_parameters'),
                    stage.get('epochs'), stage.get('seconds'),
                    sum(s.get('epochs', 0) for s in prerequisites),
@@ -633,8 +637,10 @@ def _lasd_moe_sheet(results, stages):
                    spec.get('global_context', {}).get('epsilon'), spec.get('routing'),
                    spec.get('graph_layer_context', {}).get('graph_encoder_layers', 0),
                    spec.get('graph_layer_context', {}).get('layer_encoder_layers', 0),
-                   spec.get('routing_output_dim', spec.get('expert_output_dim', spec.get('base_layers')))], 42)
-    sheet.filter_range = f'A4:AI{len(sheet.rows)}'
+                   spec.get('routing_output_dim', spec.get('expert_output_dim', spec.get('base_layers'))),
+                   json.dumps(spec.get('fusion_memory_detach',
+                       [bool(spec.get('hidden_state_detach'))] * spec.get('base_layers', 0)))], 42)
+    sheet.filter_range = f'A4:AJ{len(sheet.rows)}'
     return sheet
 
 
