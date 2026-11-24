@@ -15,10 +15,16 @@ GRAPH_LAYER_FUSION_DETACH_MODELS_PIN = (
     'lasd_graph_layer_headwise_detach_pin_v2',
     'lasd_graph_layer_headwise_detach_pin_v3',
 )
+GRAPH_LAYER_V3_EXTENSION_MODELS_PIN = (
+    'lasd_graph_layer_headwise_detach_pin_v5',
+    'lasd_graph_layer_headwise_detach_pin_v6',
+)
+PE_HYPER_LASD_MODELS_PIN = (*HYPER_LASD_MOE_MODELS_PIN, GRAPH_LAYER_V3_EXTENSION_MODELS_PIN[0])
 GRAPH_LAYER_SCORE_DETACH_MODELS_PIN = (
-    GRAPH_LAYER_LASD_DETACH_MODEL_PIN, *GRAPH_LAYER_FUSION_DETACH_MODELS_PIN)
+    GRAPH_LAYER_LASD_DETACH_MODEL_PIN, *GRAPH_LAYER_FUSION_DETACH_MODELS_PIN,
+    *GRAPH_LAYER_V3_EXTENSION_MODELS_PIN)
 # v4 retains the historical model-name prefix, but its score path is live.
-# Keep the score-detach and all-fusion-detach groups unchanged for older callers.
+# Keep older model contracts and the original v1/v2/v3 tuple unchanged.
 GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN = 'lasd_graph_layer_headwise_detach_pin_v4'
 GRAPH_LAYER_LASD_MODELS_PIN = (GRAPH_LAYER_LASD_MODEL_PIN, *GRAPH_LAYER_SCORE_DETACH_MODELS_PIN,
                              GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN)
@@ -100,7 +106,7 @@ def lasd_moe_spec_pin(mode, value, model_config):
                     channels_per_head=model_config['dim'] // heads,
                     fusion_channels='contiguous_groups_of_projected_pe_memory',
                     expert_selection_scope='one_top2_pair_per_node')
-    if mode in HYPER_LASD_MOE_MODELS_PIN:
+    if mode in PE_HYPER_LASD_MODELS_PIN:
         spec.update(version=3, layer_memory='sum_residual_streams_then_shared_output_norm_and_projection',
                     hyper_connection=dict(streams=options.get('hyper_connection_streams', 4),
                         scope='performance_pe_only', sublayers=['self_attention', 'parameter_op_cross_attention', 'ffn'],
@@ -158,11 +164,12 @@ def lasd_moe_spec_pin(mode, value, model_config):
                         output_projection='shared_linear_gelu_dropout_linear_D_to_H_per_token',
                         logits_axes='B,N,L,H_then_B,N,H,L', softmax_axis='PE_depth_L',
                         memory_source='original_PE_outputs_in_unchanged_order'))
-    if mode in GRAPH_LAYER_FUSION_DETACH_MODELS_PIN:
+    if mode in (*GRAPH_LAYER_FUSION_DETACH_MODELS_PIN, *GRAPH_LAYER_V3_EXTENSION_MODELS_PIN):
         # Only these new contracts change the fusion taps and optional post-fusion
         # block. Existing checkpoint contracts and PE chains remain unchanged.
         has_final_encoder = mode == 'lasd_graph_layer_headwise_detach_pin_v1'
-        has_residual = mode == 'lasd_graph_layer_headwise_detach_pin_v3'
+        has_residual = mode in ('lasd_graph_layer_headwise_detach_pin_v3',
+                               *GRAPH_LAYER_V3_EXTENSION_MODELS_PIN)
         spec.update(version=7, hidden_state_detach=True,
                     hidden_state_detach_scope='fusion_inputs_only', encoder_chain_detach=False,
                     final_encoder_layers=int(has_final_encoder),
@@ -172,6 +179,13 @@ def lasd_moe_spec_pin(mode, value, model_config):
                     residual_connection='last_pe_memory_add' if has_residual else 'none',
                     residual_position='metric_decoder_input' if has_residual else 'none',
                     final_pe_residual_detach=False if has_residual else None)
+    if mode in GRAPH_LAYER_V3_EXTENSION_MODELS_PIN:
+        spec.update(version=9, decoder_merge_inputs=['live_last_pe_memory', 'score_weighted_fusion'],
+                    decoder_input_normalization='none')
+        if mode == GRAPH_LAYER_V3_EXTENSION_MODELS_PIN[1]:
+            spec.update(decoder_input_normalization='layer_norm_after_residual_sum',
+                        decoder_input_norm=dict(normalized_shape=[model_config['dim']],
+                                                epsilon=1e-5, elementwise_affine=True))
     if mode == GRAPH_LAYER_SHALLOW_DETACH_MODEL_PIN:
         # Stop only direct shallow-memory fusion gradients. Score/global features,
         # the final fusion memory and the sequential PE chain all remain live.
@@ -205,7 +219,7 @@ def validate_lasd_moe_contract_pin(mode, spec, model_config=None, value=None):
                 hidden_dim=spec.get('hidden_dim'), dropout=spec.get('dropout'),
                 score_chunk_size=spec.get('score_chunk_size'),
                 checkpoint_scores=spec.get('checkpoint_scores'))
-            if mode in HYPER_LASD_MOE_MODELS_PIN:
+            if mode in PE_HYPER_LASD_MODELS_PIN:
                 hyper = spec.get('hyper_connection')
                 if not isinstance(hyper, dict):
                     raise ValueError('Missing LASD-MoE hyper-connection architecture')

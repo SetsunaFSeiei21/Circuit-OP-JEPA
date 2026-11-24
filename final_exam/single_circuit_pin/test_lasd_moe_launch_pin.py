@@ -218,6 +218,52 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
                                                capture_output=True).returncode, 2)
 
 
+    def test_graph_layer_v5_v6_presets_preserve_circuits_seeds_and_do_not_submit(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        script.write_text(script.read_text().replace(
+            'CIRCUITS=(two_stage_folded_opamp)', 'CIRCUITS=(Opamp1 two_stage_folded_opamp)').replace(
+            'SEEDS=(17 29 43)', 'SEEDS=(29)'))
+        before = sorted(str(p) for p in self.root.rglob('*'))
+        for suffix, versions in [('v5', [5]), ('v6', [6]), ('v5-v6', [5, 6])]:
+            with self.subTest(preset=suffix):
+                args = ['bash', str(script), f'--graph-layer-detach-{suffix}', '--dry-run']
+                commands = [shlex.split(line) for line in subprocess.check_output(
+                    args, env=environment, text=True).splitlines()]
+                self.assertEqual([cmd[cmd.index('--circuit') + 1] for cmd in commands],
+                                 ['Opamp1', 'two_stage_folded_opamp'])
+                for cmd in commands:
+                    self.assertEqual(cmd[cmd.index('--models') + 1:cmd.index('--seeds')],
+                                     [f'lasd_graph_layer_headwise_detach_pin_v{v}' for v in versions])
+                    self.assertEqual(cmd[cmd.index('--seeds') + 1:cmd.index('--device')], ['29'])
+                for other in ('--graph-layer-detach-v4', '--graph-layer-detach-variants', '--hyper-connection'):
+                    self.assertEqual(subprocess.run([*args, other], env=environment,
+                                                   capture_output=True).returncode, 2)
+        self.assertEqual(before, sorted(str(p) for p in self.root.rglob('*')))
+
+    def test_graph_layer_v5_v6_multi_grid_matches_v3_training_budgets(self):
+        from final_exam.multi_circuit.config_pin import model_config_pin, expand_grid_pin
+        from final_exam.lasd_moe_registry_pin import lasd_moe_spec_pin
+        root = Path(__file__).resolve().parents[1] / 'multi_circuit/configs_pin'
+        protocol = json.loads((root / 'protocol_pin.json').read_text())
+        reference = model_config_pin('lasd_graph_layer_headwise_detach_pin_v3', root, protocol)
+        for version in (5, 6):
+            mode = f'lasd_graph_layer_headwise_detach_pin_v{version}'
+            config = model_config_pin(mode, root, protocol)
+            for section in ('model', 'op_transfer', 'dataset', 'normalization', 'lasd_moe_pin'):
+                self.assertEqual(config[section], reference[section])
+            space = json.loads((root / 'search_spaces' / f'{mode}.json').read_text())
+            trials, skipped = expand_grid_pin(mode, config, space)
+            self.assertEqual(len(trials), 4)
+            self.assertFalse(skipped)
+            for trial in trials:
+                cfg = trial['config']
+                spec = lasd_moe_spec_pin(mode, cfg['lasd_moe_pin'], cfg['model'])
+                self.assertTrue(spec['score_detach'] and spec['hidden_state_detach'])
+                self.assertEqual(spec['final_encoder_layers'], 0)
+                self.assertEqual(spec['residual_connection'], 'last_pe_memory_add')
+                self.assertEqual('hyper_connection' in spec, version == 5)
+                self.assertEqual('decoder_input_norm' in spec, version == 6)
+
     def test_graph_layer_v4_multi_config_and_grid_keep_reference_budgets(self):
         from final_exam.multi_circuit.config_pin import model_config_pin, expand_grid_pin
         from final_exam.lasd_moe_registry_pin import lasd_moe_spec_pin
@@ -284,7 +330,8 @@ class LASDMoEResumeLaunchPinTests(unittest.TestCase):
                   'lasd_moe_headwise_global_pin', 'lasd_moe_headwise_detach_global_pin',
                   'lasd_graph_layer_headwise_pin', 'lasd_graph_layer_headwise_detach_pin',
                   'lasd_graph_layer_headwise_detach_pin_v1', 'lasd_graph_layer_headwise_detach_pin_v2',
-                  'lasd_graph_layer_headwise_detach_pin_v3', 'lasd_graph_layer_headwise_detach_pin_v4']
+                  'lasd_graph_layer_headwise_detach_pin_v3', 'lasd_graph_layer_headwise_detach_pin_v4',
+                  'lasd_graph_layer_headwise_detach_pin_v5', 'lasd_graph_layer_headwise_detach_pin_v6']
         record = json.loads((training / 'run_pin.json').read_text())
         record['models'] = models
         for path in (source / 'run_pin.json', training / 'run_pin.json'):

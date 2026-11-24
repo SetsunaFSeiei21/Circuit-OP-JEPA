@@ -29,6 +29,9 @@ class EncoderGradientNormsPin:
             blocks.append(('SCORE_LAYER', 1, router.layer_encoder))
         if model.final_graph_encoder is not None:
             blocks.append(('FINAL', 1, model.final_graph_encoder))
+        decoder_norm = getattr(model, 'decoder_input_norm', None)
+        if decoder_norm is not None:
+            blocks.append(('DECODER_INPUT_NORM', 1, decoder_norm))
         self.groups = [(kind, index, tuple(p for p in block.parameters() if p.requires_grad))
                        for kind, index, block in blocks]
         self._epoch = None

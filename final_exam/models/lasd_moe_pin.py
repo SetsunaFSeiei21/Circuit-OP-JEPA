@@ -6,6 +6,7 @@ Headwise v1 adds the final PE memory to fusion and optionally detaches branch in
 Graph/layer routing replaces experts with circuit-context and nodewise depth encoders.
 Graph detach v1 stops fusion-memory gradients; v2/v3 omit the final graph block.
 Graph detach v3 adds the live last PE memory immediately before the metric decoder.
+Graph v5 adds HC inside the performance PE blocks; v6 normalizes the terminal sum.
 """
 from copy import deepcopy
 
@@ -130,6 +131,10 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             self.encoder.fusion_blocks = nn.ModuleList(
                 HyperConnectionPEBlockPin(block, streams, index)
                 for index, block in enumerate(self.encoder.fusion_blocks))
+        # v6 normalizes only the final residual sum. This initializer consumes no
+        # RNG and leaves all common encoder/router/decoder weights intact.
+        self.decoder_input_norm = (nn.LayerNorm(cfg.dim, eps=1e-5)
+            if 'decoder_input_norm' in self.lasd_moe_spec else None)
 
     @property
     def architecture_contract(self):
@@ -189,6 +194,9 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         fused, weights = _fuse_pe_memories_pin(fusion_inputs, logits, padding)
         if self.lasd_moe_spec.get('residual_connection') == 'last_pe_memory_add':
             fused = memories[-1] + fused
+        if self.decoder_input_norm is not None:
+            # Affine LayerNorm bias may become nonzero during training.
+            fused = self.decoder_input_norm(fused).masked_fill(padding.unsqueeze(-1), 0.)
         memory = (self.final_graph_encoder(fused, masks[0], None, None, valid)
                   if self.final_graph_encoder is not None else fused)
         if return_scores:

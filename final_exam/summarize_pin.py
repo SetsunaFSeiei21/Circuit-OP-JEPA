@@ -579,10 +579,11 @@ def _lasd_moe_sheet(results, stages):
               'Residual streams per PE', 'Final PE residual', 'Hidden-state detach scope',
               'Global score statistics', 'Global score input width', 'Global std epsilon',
               'Routing mechanism', 'Graph context blocks', 'Per-node layer context blocks',
-              'Routing output width', 'Fusion detach by PE (JSON)')
+              'Routing output width', 'Fusion detach by PE (JSON)',
+              'Hyper-Connection scope', 'Decoder input normalization')
     sheet = Sheet('LASD_MoE', [42, 12, 40, 18, 12, 22, 14, 26, 26, 26, 24, 54,
                               24, 26, 22, 26, 24, 26, 75, 20, 85, 90, 22, 23, 30, 28, 32, 32, 36, 28, 24,
-                              50, 26, 32, 24, 36],
+                              50, 26, 32, 24, 36, 80, 48],
                   freeze_rows=4, freeze_columns=2)
     sheet.note('LASD-MoE node-wise and headwise PE layer fusion', 1, 34)
     sheet.note('Only PE outputs and PE self-attention scores enter fusion; the SE prefix remains in the encoder. '
@@ -592,7 +593,9 @@ def _lasd_moe_sheet(results, stages):
                'Graph detach v1/v2/v3 stop both score and fusion-memory gradients; v2/v3 omit the final '
                'encoder, and v3 adds the live last PE memory before the original metric decoder. '
                'v4 keeps scores and the last fusion memory live, detaches shallow fusion copies only, '
-               'retains the final encoder and adds no extra residual. Fusion memories detached means '
+               'retains the final encoder and adds no extra residual. v5/v6 inherit v3 gradient boundaries: '
+               'v5 uses HC in performance PE residuals; v6 applies feature LayerNorm '
+               'after the residual sum. Neither has a final graph encoder. Fusion memories detached means '
                'at least one fusion tap is detached; the per-PE JSON specifies which ones.', height=96)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
                'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '
@@ -639,8 +642,10 @@ def _lasd_moe_sheet(results, stages):
                    spec.get('graph_layer_context', {}).get('layer_encoder_layers', 0),
                    spec.get('routing_output_dim', spec.get('expert_output_dim', spec.get('base_layers'))),
                    json.dumps(spec.get('fusion_memory_detach',
-                       [bool(spec.get('hidden_state_detach'))] * spec.get('base_layers', 0)))], 42)
-    sheet.filter_range = f'A4:AJ{len(sheet.rows)}'
+                       [bool(spec.get('hidden_state_detach'))] * spec.get('base_layers', 0))),
+                   spec.get('hyper_connection', {}).get('scope', 'none'),
+                   spec.get('decoder_input_normalization', 'none')], 42)
+    sheet.filter_range = f'A4:AL{len(sheet.rows)}'
     return sheet
 
 

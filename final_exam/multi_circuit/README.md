@@ -1,5 +1,7 @@
 # 多电路联合训练（端口级）
 
+**Graph v5 / v6** 可加入 MODELS：`lasd_graph_layer_headwise_detach_pin_v5` 和 `lasd_graph_layer_headwise_detach_pin_v6`。同名模型配置和网格已提供，预算与 v3 保持一致。v5 在性能 PE 内加入 HC，v6 在 Decoder 前对残差和做 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
+
 **Graph-layer v4** 可直接加入 MODELS：`lasd_graph_layer_headwise_detach_pin_v4`。已配套 `configs_pin/models/` 和 `configs_pin/search_spaces/` 下的同名 JSON，默认网格与原 graph-layer 模型一致。[结构、梯度及配置说明](../GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
 
 这里训练的是**一个模型同时学习所有指定电路**，再分别评估各电路及合并测试集。每个电路内部划分 train/val/test；这是已见电路的联合 ID 实验，不是留出拓扑的 OOD 实验。单电路入口和原有模型名称保持兼容。

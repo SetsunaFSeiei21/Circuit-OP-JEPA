@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**Graph v5 / v6** 基于 v3：v5 在性能 PE 内使用已有 Hyper-Connection，Decoder 前仍为 `H_L + F`；v6 使用原 PE，并在残差和之后加 LayerNorm。两者继承 v3 的 detach 边界且无 Final Graph Encoder。运行原脚本的 `--graph-layer-detach-v5-v6`，或在单/多电路 MODELS 中分别指定。[结构、配置与启动说明](GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
+
 **图路由 v4**：`lasd_graph_layer_headwise_detach_pin_v4` 保留分数梯度，仅 detach 前 L−1 个 PE 的融合副本；最后 PE、Final Graph Encoder 正常反传，不加额外残差。使用原脚本 `train_lasd_moe_pin.sh --graph-layer-detach-v4`。[完整结构、梯度边界与单/多电路配置](GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
 
 **图路由融合 detach v1/v2/v3**：新增 `lasd_graph_layer_headwise_detach_pin_v1`、`_v2`、`_v3`。三组均 detach 分数及融合的 PE 副本；v1 保留 Final Graph Encoder，v2 移除它，v3 在 v2 上添加可反传的最后 PE 残差。原脚本 `train_lasd_moe_pin.sh --graph-layer-detach-variants` 运行这三组。[梯度边界、训练含义、配置和恢复](GRAPH_FUSION_DETACH_pin.md)

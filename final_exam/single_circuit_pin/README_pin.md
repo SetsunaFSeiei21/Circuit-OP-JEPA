@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**Graph v5 / v6** 已接入原 `train_lasd_moe_pin.sh`：`--graph-layer-detach-v5-v6` 运行两者，单独运行使用 `--graph-layer-detach-v5` / `--graph-layer-detach-v6`。v5 是 v3 + 性能 PE 内部 HC；v6 是 v3 + Decoder 前残差和 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
+
 **图路由 v4**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-v4`。分数不 detach，仅浅层 PE 融合副本 detach；保留最后 PE 梯度及 Final Graph Encoder，无额外残差。仍修改 `final_exam/configs/lasd_moe_pin.json`。[配置与梯度说明](../GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
 
 **图路由融合 detach 的三个版本**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-variants` 运行 `lasd_graph_layer_headwise_detach_pin_v1`、`_v2`、`_v3`。v1 detach 全部融合 PE 副本并保留 Final Graph Encoder；v2 移除 Final Graph Encoder；v3 再加未 detach 的最后 PE 残差。电路、seed、配置和日志目录仍沿用本脚本。[结构、梯度含义和使用说明](../GRAPH_FUSION_DETACH_pin.md)
