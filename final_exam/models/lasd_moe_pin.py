@@ -8,6 +8,8 @@ Graph detach v1 stops fusion-memory gradients; v2/v3 omit the final graph block.
 Graph detach v3 adds the live last PE memory immediately before the metric decoder.
 Graph v5 adds HC inside the performance PE blocks; v6 normalizes the terminal sum.
 Graph v7 sums independent multi-order score projections before graph/depth routing.
+Graph v8 combines that multi-order routing with v5's performance-PE HC blocks.
+Graph v9 adds v6's post-sum LayerNorm to v8 before the metric decoder.
 """
 from copy import deepcopy
 
@@ -142,7 +144,7 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             self.encoder.fusion_blocks = nn.ModuleList(
                 HyperConnectionPEBlockPin(block, streams, index)
                 for index, block in enumerate(self.encoder.fusion_blocks))
-        # v6 normalizes only the final residual sum. This initializer consumes no
+        # v6/v9 normalize only the final residual sum. This initializer consumes no
         # RNG and leaves all common encoder/router/decoder weights intact.
         self.decoder_input_norm = (nn.LayerNorm(cfg.dim, eps=1e-5)
             if 'decoder_input_norm' in self.lasd_moe_spec else None)

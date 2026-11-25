@@ -16,6 +16,54 @@ class LASDMoELauncherPinTests(StagedGateLauncherPinTests):
     CONFIG_NAME = 'lasd_moe_pin.json'
     RUN_TAG = '_lasd_moe_'
 
+    def test_v8_v9_presets_preserve_settings_and_share_the_existing_launcher(self):
+        script, _, environment, _ = self.fixture('exit 99')
+        script.write_text(script.read_text().replace(
+            'CIRCUITS=(two_stage_folded_opamp)', 'CIRCUITS=(Opamp1 two_stage_folded_opamp)'
+        ).replace('SEEDS=(17 29 43)', 'SEEDS=(29)'))
+        before = sorted(str(p) for p in self.root.rglob('*'))
+        for preset, versions in [('v8', [8]), ('v9', [9]), ('v8-v9', [8, 9])]:
+            with self.subTest(preset=preset):
+                args = ['bash', str(script), '--graph-layer-detach-'+preset, '--dry-run']
+                commands = [shlex.split(line) for line in subprocess.check_output(
+                    args, env=environment, text=True).splitlines()]
+                self.assertEqual([cmd[cmd.index('--circuit')+1] for cmd in commands],
+                                 ['Opamp1', 'two_stage_folded_opamp'])
+                for cmd in commands:
+                    self.assertEqual(cmd[cmd.index('--models')+1:cmd.index('--seeds')],
+                                     [f'lasd_graph_layer_headwise_detach_pin_v{v}' for v in versions])
+                    self.assertEqual(cmd[cmd.index('--seeds')+1:cmd.index('--device')], ['29'])
+                self.assertEqual(before, sorted(str(p) for p in self.root.rglob('*')))
+                self.assertEqual(subprocess.run([*args, '--graph-layer-detach-v7'], env=environment,
+                                               capture_output=True).returncode, 2)
+
+    def test_v8_v9_joint_config_grid_and_custom_template(self):
+        from final_exam.multi_circuit.config_pin import model_config_pin, expand_grid_pin, init_model_pin
+        from final_exam.lasd_moe_registry_pin import lasd_moe_spec_pin
+        root = Path(__file__).resolve().parents[1] / 'multi_circuit/configs_pin'
+        protocol = json.loads((root / 'protocol_pin.json').read_text())
+        reference = model_config_pin('lasd_graph_layer_headwise_detach_pin_v7', root, protocol)
+        for version in (8, 9):
+            with self.subTest(version=version):
+                mode = f'lasd_graph_layer_headwise_detach_pin_v{version}'
+                config = model_config_pin(mode, root, protocol)
+                for section in ('model', 'op_transfer', 'dataset', 'normalization', 'lasd_moe_pin'):
+                    self.assertEqual(config[section], reference[section])
+                trials, skipped = expand_grid_pin(mode, config, json.loads(
+                    (root/'search_spaces'/f'{mode}.json').read_text()))
+                self.assertFalse(skipped)
+                self.assertEqual(len(trials), 12)
+                self.assertEqual({t['config']['lasd_moe_pin']['aggregation_distance'] for t in trials}, {1, 2, 3})
+                for trial in trials:
+                    cfg = trial['config']
+                    spec = lasd_moe_spec_pin(mode, cfg['lasd_moe_pin'], cfg['model'])
+                    self.assertEqual(spec['hyper_connection']['scope'], 'performance_pe_only')
+                    self.assertEqual(spec['hyper_connection']['streams'], 4)
+                    self.assertEqual(spec['final_encoder_layers'], 0)
+                    self.assertEqual('decoder_input_norm' in spec, version == 9)
+                path, _ = init_model_pin(mode, self.root/'custom_power_config')
+                self.assertEqual(json.loads(path.read_text())['lasd_moe_pin']['aggregation_distance'], 2)
+
     def test_v7_preset_preserves_settings_and_dry_run_has_no_artifacts(self):
         script, _, environment, _ = self.fixture('exit 99')
         script.write_text(script.read_text().replace(

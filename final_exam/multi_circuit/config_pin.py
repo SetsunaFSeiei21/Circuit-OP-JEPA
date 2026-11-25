@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from final_exam.run_pin import MODEL_NAMES_PIN
-from final_exam.lasd_moe_registry_pin import GRAPH_LAYER_POWER_MODEL_PIN
+from final_exam.lasd_moe_registry_pin import GRAPH_LAYER_POWER_MODELS_PIN
 
 BASELINES_PIN = tuple(MODEL_NAMES_PIN[:8])
 ROOT = Path(__file__).resolve().parent
@@ -67,7 +67,7 @@ def allowed_grid_pin(model):
         result |= {'width_decoder_pin.' + k for k in ('n_experts', 'hidden_dim', 'dropout')}
     if model.startswith('lasd_'):
         result |= {'lasd_moe_pin.' + k for k in ('hidden_dim', 'dropout')}
-    if model == GRAPH_LAYER_POWER_MODEL_PIN:
+    if model in GRAPH_LAYER_POWER_MODELS_PIN:
         result.add('lasd_moe_pin.aggregation_distance')
     return result
 
@@ -120,7 +120,7 @@ def init_model_pin(model, config_dir):
         raise ValueError('Choose a registered, non-shuffle pin model')
     cfg = read_pin(ROOT/'configs_pin'/'template_pin.json')
     cfg['final_exam_pin']['models'] = [model]
-    if model == GRAPH_LAYER_POWER_MODEL_PIN:
+    if model in GRAPH_LAYER_POWER_MODELS_PIN:
         cfg['lasd_moe_pin']['aggregation_distance'] = 2
     path = Path(config_dir)/'models'/f'{model}.json'
     gridpath = Path(config_dir)/'search_spaces'/f'{model}.json'

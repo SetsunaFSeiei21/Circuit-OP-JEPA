@@ -1,5 +1,7 @@
 # 多电路联合训练（端口级）
 
+新增 LASD graph v8/v9：v7 多阶 Attention 统计 + v5 PE Hyper-Connection；v9 再加 v6 的残差和后 LayerNorm。配置、启动及结果说明见 [v8/v9 说明](../GRAPH_V8_V9_ATTENTION_POWERS_HC_pin.md)。
+
 **Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](../GRAPH_V7_ATTENTION_POWERS_pin.md)
 
 **Graph v5 / v6** 可加入 MODELS：`lasd_graph_layer_headwise_detach_pin_v5` 和 `lasd_graph_layer_headwise_detach_pin_v6`。同名模型配置和网格已提供，预算与 v3 保持一致。v5 在性能 PE 内加入 HC，v6 在 Decoder 前对残差和做 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)

@@ -597,8 +597,10 @@ def _lasd_moe_sheet(results, stages):
                'retains the final encoder and adds no extra residual. v5/v6 inherit v3 gradient boundaries: '
                'v5 uses HC in performance PE residuals; v6 applies feature LayerNorm '
                'after the residual sum. v7 adds A..A^K statistics with independent order MLPs summed before '
-               'shared graph/layer routing, retaining v3 detach/residual rules. These variants have no final '
-               'graph encoder. For v7, score input widths are per order. Fusion memories detached means '
+               'shared graph/layer routing, retaining v3 detach/residual rules. v8 combines v7 routing '
+               'with v5 performance-PE HC; v9 adds v6 feature LayerNorm after the residual sum. '
+               'These variants have no final graph encoder. For v7/v8/v9, '
+               'score input widths are per order. Fusion memories detached means '
                'at least one fusion tap is detached; the per-PE JSON specifies which ones.', height=96)
     sheet.note('Scores exclude diagonal and padded queries/keys after the original mask and before attention dropout. '
                'First differences are boundary zeros; cross-layer head indices are not semantic alignment. '

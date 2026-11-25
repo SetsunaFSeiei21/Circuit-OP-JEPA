@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+新增 LASD graph v8/v9：v7 多阶 Attention 统计 + v5 PE Hyper-Connection；v9 再加 v6 的残差和后 LayerNorm。配置、启动及结果说明见 [v8/v9 说明](GRAPH_V8_V9_ATTENTION_POWERS_HC_pin.md)。
+
 **Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](GRAPH_V7_ATTENTION_POWERS_pin.md)
 
 **Graph v5 / v6** 基于 v3：v5 在性能 PE 内使用已有 Hyper-Connection，Decoder 前仍为 `H_L + F`；v6 使用原 PE，并在残差和之后加 LayerNorm。两者继承 v3 的 detach 边界且无 Final Graph Encoder。运行原脚本的 `--graph-layer-detach-v5-v6`，或在单/多电路 MODELS 中分别指定。[结构、配置与启动说明](GRAPH_V3_EXTENSIONS_V5_V6_pin.md)

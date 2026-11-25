@@ -520,3 +520,20 @@ K=1 对齐 v3 的初始化、前向与梯度；旧模型架构契约保持不变
 power_scores/global_scores CSV 用 attention_order 区分各阶；原诊断 CSV 保留一阶视图。
 逐图分块计算，分数 no_grad；高阶稠密矩阵乘法增加计算成本，不声称速度或精度提升。
 详见 GRAPH_V7_ATTENTION_POWERS_pin.md。
+
+十六、LASD 图路由 v8/v9：多阶统计 + PE Hyper-Connection（2026-11-25）
+
+v8：lasd_graph_layer_headwise_detach_pin_v8，在 v7 多阶分数路由基础上复用 v5 的 HC。
+v9：lasd_graph_layer_headwise_detach_pin_v9，在 v8 的 H_last+F 残差和之后加 v6 LayerNorm，
+再送 Metric Decoder；不是相加前分别归一化。LayerNorm 沿单节点 D 维、eps=1e-5、带仿射参数，
+输出 padding 清零。v9 比 v8 多 2D 个参数，公共权重初始化相同。
+HC 仅位于性能 PE 的 self/cross/FFN 子层，默认4条流；SE、OP predictor、打分 Encoder 不加 HC。
+分数观察 HC 实际读出的 self-attention 输入，按原 Q/K/mask 计算 pre-dropout A..A^K；
+每阶独立 MLP 投影求和、图/层路由、逐头融合、最后 PE live 残差都沿用 v7。
+两版所有阶分数及融合 memory 副本 detach，串行主干不 detach，无 Final Graph Encoder。
+K=1 的 v8 对齐 v5；K=1 的 v9 是 v5 加上述 LayerNorm，而不是没有 HC 的 v6。
+默认 aggregation_distance=2，hyper_connection_streams=4；两版都有独立多电路 config/grid。
+沿用 train_lasd_moe_pin.sh，新增 --graph-layer-detach-v8 / --graph-layer-detach-v9 /
+--graph-layer-detach-v8-v9。旧默认模型、模型契约、HPC/实验日志及结果目录保持原义。
+checkpoint、配置、报告和 XLSX 记录阶数、HC 和归一化；复用逐阶 CSV 与断点续训。
+详见 GRAPH_V8_V9_ATTENTION_POWERS_HC_pin.md。
