@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**预测误差诊断**：编辑 `inspect_predictions_pin.sh` 的 `SOURCE_RUNS` 列表，运行 `bash final_exam/single_circuit_pin/inspect_predictions_pin.sh`。自动读取各目录已完成的模型/seed，使用保存的采样、划分和归一化重放全部 val/test 样本；输出逐指标预测图、完整预测 CSV、Excel、训练标签分位区间和大残差贡献分析。默认以 Cascade 为基线进行同 seed/同样本配对统计。[使用说明](../PREDICTION_PROBE_pin.md)
+
 **Graph v5 / v6** 已接入原 `train_lasd_moe_pin.sh`：`--graph-layer-detach-v5-v6` 运行两者，单独运行使用 `--graph-layer-detach-v5` / `--graph-layer-detach-v6`。v5 是 v3 + 性能 PE 内部 HC；v6 是 v3 + Decoder 前残差和 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
 
 **图路由 v4**：`bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh --graph-layer-detach-v4`。分数不 detach，仅浅层 PE 融合副本 detach；保留最后 PE 梯度及 Final Graph Encoder，无额外残差。仍修改 `final_exam/configs/lasd_moe_pin.json`。[配置与梯度说明](../GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)
