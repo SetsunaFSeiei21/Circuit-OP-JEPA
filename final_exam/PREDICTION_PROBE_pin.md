@@ -1,5 +1,9 @@
 # 保存模型的逐样本预测诊断
 
+需要进一步回查指定异常样本的设计参数、真实/预测 OP 和原始波形时，使用
+[指定样本回查入口](ERROR_CASE_PROBE_pin.md)：`single_circuit_pin/inspect_error_cases_pin.sh`。
+默认检查 `two_stage_opamp_otaf` 原始 ID 41074/38711/38196、seed 29。
+
 入口：`final_exam/single_circuit_pin/inspect_predictions_pin.sh`。
 
 修改脚本顶部：
