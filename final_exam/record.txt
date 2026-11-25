@@ -503,3 +503,20 @@ V4/V5 输入宽度不同，不能改名冒充 V6/V7 恢复；V6/V7 不能互相�
 和已有结果保持原义。实现说明见 OP_GATE_V6_V7_pin.md。
 V4→V6、V5→V7 对照显式 MOS 类型输入；V6→V7 对照跨层参数共享。
 以上只描述实现，不预先声称测试提升、训练更稳定或恢复真实导通关系。
+
+十五、LASD 图路由 v7：多阶 Attention Score（2026-11-25）
+
+模型：lasd_graph_layer_headwise_detach_pin_v7。此处是 LASD v7，不是上文 OP gate v7。
+基于 LASD graph detach v3；lasd_moe_pin.aggregation_distance=K，默认2，正整数。
+对各 PE 各 head 的原 masked softmax A 计算 A..A^K。保留自环/GRAPH 参与矩阵乘法，
+读取每阶 R/T 时才排除对角线；不重新施加一阶 mask、不重新归一化，不做逐元素幂。
+每阶独立统计 R/T、跨 PE 差分、mean R/std R/std T 及全局差分。每阶输入 MLP 参数独立，
+投影到 model.dim 后直接相加，再进入原有一套图上下文/逐节点层上下文 Encoder 和打分 MLP。
+所有阶分数停止梯度，融合 PE memory 副本全部 detach，最后 PE 的 live 残差正常训练。
+不新增 Final Graph Encoder、HC 或 LayerNorm。普通冻结器件级 OP predictor 不变。
+K=1 对齐 v3 的初始化、前向与梯度；旧模型架构契约保持不变。
+沿用 train_lasd_moe_pin.sh（新增 --graph-layer-detach-v7）、配置、结果目录和续训入口。
+单/多电路每模型配置与 checkpoint 记录 K；Excel 增加阶数、MLP 数、求和方式。
+power_scores/global_scores CSV 用 attention_order 区分各阶；原诊断 CSV 保留一阶视图。
+逐图分块计算，分数 no_grad；高阶稠密矩阵乘法增加计算成本，不声称速度或精度提升。
+详见 GRAPH_V7_ATTENTION_POWERS_pin.md。

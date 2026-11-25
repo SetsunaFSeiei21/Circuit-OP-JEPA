@@ -1,5 +1,7 @@
 # final_exam 端口级第一阶段
 
+**Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](GRAPH_V7_ATTENTION_POWERS_pin.md)
+
 **Graph v5 / v6** 基于 v3：v5 在性能 PE 内使用已有 Hyper-Connection，Decoder 前仍为 `H_L + F`；v6 使用原 PE，并在残差和之后加 LayerNorm。两者继承 v3 的 detach 边界且无 Final Graph Encoder。运行原脚本的 `--graph-layer-detach-v5-v6`，或在单/多电路 MODELS 中分别指定。[结构、配置与启动说明](GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
 
 **图路由 v4**：`lasd_graph_layer_headwise_detach_pin_v4` 保留分数梯度，仅 detach 前 L−1 个 PE 的融合副本；最后 PE、Final Graph Encoder 正常反传，不加额外残差。使用原脚本 `train_lasd_moe_pin.sh --graph-layer-detach-v4`。[完整结构、梯度边界与单/多电路配置](GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)

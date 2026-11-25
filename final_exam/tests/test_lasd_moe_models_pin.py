@@ -154,7 +154,12 @@ def test_model_gradients_replay_no_measured_op_and_one_final_decoder(inputs, mod
         return result
     model.encoder.forward_fusion_memories = retain
     output, diag = model(batch, return_scores=True)
-    diag['score_features'].retain_grad()
+    if 'attention_powers' in model.architecture_contract:
+        # v7 observes detached powers under no_grad instead of building and then
+        # discarding a large score graph. The native PE main path stays live.
+        assert not diag['score_features'].requires_grad
+    else:
+        diag['score_features'].retain_grad()
     assert output.shape == batch['performance'].shape
     assert diag['scores'].shape[2:] == (cfg['cross_layers'], cfg['heads'], 2)
     assert torch.count_nonzero(diag['differences'][:, :, 0]) == 0

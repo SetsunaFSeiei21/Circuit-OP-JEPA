@@ -22,6 +22,7 @@ MODELS=(
     # lasd_graph_layer_headwise_detach_pin_v4
     # lasd_graph_layer_headwise_detach_pin_v5
     # lasd_graph_layer_headwise_detach_pin_v6
+    # lasd_graph_layer_headwise_detach_pin_v7
 )
 SEARCH_SEED=11
 SEEDS=(17 29 43 59 71)

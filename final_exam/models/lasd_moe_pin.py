@@ -7,6 +7,7 @@ Graph/layer routing replaces experts with circuit-context and nodewise depth enc
 Graph detach v1 stops fusion-memory gradients; v2/v3 omit the final graph block.
 Graph detach v3 adds the live last PE memory immediately before the metric decoder.
 Graph v5 adds HC inside the performance PE blocks; v6 normalizes the terminal sum.
+Graph v7 sums independent multi-order score projections before graph/depth routing.
 """
 from copy import deepcopy
 
@@ -18,8 +19,9 @@ from final_exam.lasd_moe_registry_pin import (
     LASD_MOE_MODELS_PIN, lasd_moe_settings_pin, lasd_moe_spec_pin,
 )
 from .attention_score_pin import AttentionScoreExtractorPin, layer_score_features_pin
+from .attention_power_score_pin import AttentionPowerScoreExtractorPin
 from .global_score_pin import GlobalScoreStatisticsPin
-from .graph_layer_score_pin import GraphLayerScoreRouterPin
+from .graph_layer_score_pin import GraphLayerScoreRouterPin, MultiOrderGraphLayerScoreRouterPin
 from .hyper_connection_pin import HyperConnectionPEBlockPin
 from .op_gate_pin import DeviceOPGateModelPin, DeviceOPPredictorPin
 from .op_transfer_pin import design_input_pin, broadcast_owner_op_pin
@@ -111,12 +113,21 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         cfg = ModelConfig(**self.model_config)
         self.score_extractor = AttentionScoreExtractorPin(
             self.lasd_moe_config['score_chunk_size'], self.lasd_moe_config['checkpoint_scores'])
+        if 'attention_powers' in self.lasd_moe_spec:
+            self.score_extractor = AttentionPowerScoreExtractorPin(
+                self.lasd_moe_spec['aggregation_distance'], self.lasd_moe_config['score_chunk_size'],
+                self.lasd_moe_config['checkpoint_scores'])
         if 'global_context' in self.lasd_moe_spec:
             self.global_scores = GlobalScoreStatisticsPin(self.lasd_moe_spec['global_context']['epsilon'])
         if 'graph_layer_context' in self.lasd_moe_spec:
-            self.layer_fusion = GraphLayerScoreRouterPin(
+            router_cls = (MultiOrderGraphLayerScoreRouterPin
+                          if 'attention_powers' in self.lasd_moe_spec else GraphLayerScoreRouterPin)
+            router_kwargs = (dict(distance=self.lasd_moe_spec['aggregation_distance'])
+                             if 'attention_powers' in self.lasd_moe_spec else {})
+            self.layer_fusion = router_cls(
                 self.lasd_moe_spec['input_dim'], cfg,
-                hidden_dim=self.lasd_moe_config['hidden_dim'], dropout=self.lasd_moe_config['dropout'])
+                hidden_dim=self.lasd_moe_config['hidden_dim'], dropout=self.lasd_moe_config['dropout'],
+                **router_kwargs)
         else:
             self.layer_fusion = Top2LayerMoEPin(
                 self.lasd_moe_spec['input_dim'], cfg.cross_layers, self.lasd_moe_config,
@@ -140,6 +151,18 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
     def architecture_contract(self):
         return deepcopy(self.lasd_moe_spec)
 
+    def _routing_features(self, scores, valid):
+        features, differences = score_dynamics_pin(scores)
+        diagnostics = {}
+        if 'global_context' in self.lasd_moe_spec:
+            context, statistics, global_differences = self.global_scores(scores, valid)
+            diagnostics = dict(node_score_features=features,
+                global_score_features=context, global_statistics=statistics,
+                global_differences=global_differences)
+            features = torch.cat((features, context[:, None].expand(-1, scores.size(1), -1)), dim=-1)
+            features = features.masked_fill(~valid.unsqueeze(-1), 0.)
+        return features, differences, diagnostics
+
     def memory(self, batch, *, return_scores=False):
         inputs = design_input_pin(batch)
         predicted, supported = self.predicted_devices(batch)
@@ -157,19 +180,25 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
             raise ValueError('LASD-MoE requires one score and memory per PE layer')
         if any(memory.shape != memories[0].shape for memory in memories):
             raise ValueError('Encoder memories must preserve the same node order and shape')
-        scores = torch.stack(observed, dim=2)
-        features, differences = score_dynamics_pin(scores)
         valid = ~padding
-        global_diagnostics = {}
-        if 'global_context' in self.lasd_moe_spec:
-            context, statistics, global_differences = self.global_scores(scores, valid)
-            global_diagnostics = dict(node_score_features=features,
-                global_score_features=context, global_statistics=statistics,
-                global_differences=global_differences)
-            # Pool within each graph first, then broadcast only to that graph's
-            # nodes. No BatchNorm, cross-sample pooling or attention changes.
-            features = torch.cat((features, context[:, None].expand(-1, scores.size(1), -1)), dim=-1)
-            features = features.masked_fill(padding.unsqueeze(-1), 0.)
+        power_diagnostics = {}
+        if 'attention_powers' in self.lasd_moe_spec:
+            power_scores = torch.stack(observed, dim=3)  # B,N,K,L,H,2
+            order_features, order_deltas, order_context = zip(*(
+                self._routing_features(order_scores, valid)
+                for order_scores in power_scores.unbind(2)))
+            features = torch.stack(order_features, dim=2)  # B,N,K,10LH
+            # Keep legacy diagnostic names as the order-1 view; export all orders separately.
+            scores, differences = power_scores[:, :, 0], order_deltas[0]
+            global_diagnostics = order_context[0]
+            if return_scores:
+                power_diagnostics = dict(power_scores=power_scores,
+                    power_differences=torch.stack(order_deltas, dim=2),
+                    power_global_statistics=torch.stack([c['global_statistics'] for c in order_context], 1),
+                    power_global_differences=torch.stack([c['global_differences'] for c in order_context], 1))
+        else:
+            scores = torch.stack(observed, dim=2)
+            features, differences, global_diagnostics = self._routing_features(scores, valid)
         # Each contract specifies the score and fusion-memory boundaries independently.
         # Never detach between PE blocks; a residual uses the original last memory.
         # Graph/layer detach stops the entire local + global score trajectory before
@@ -202,7 +231,7 @@ class LASDMoEModelPin(DeviceOPGateModelPin):
         if return_scores:
             return memory, padding, dict(scores=scores, differences=differences,
                 score_features=features, layer_weights=weights, valid=valid,
-                **global_diagnostics, **routing)
+                **global_diagnostics, **power_diagnostics, **routing)
         return memory, padding
 
     def forward(self, batch, *, return_scores=False):

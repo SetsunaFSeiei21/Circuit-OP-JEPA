@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](../GRAPH_V7_ATTENTION_POWERS_pin.md)
+
 **预测误差诊断**：编辑 `inspect_predictions_pin.sh` 的 `SOURCE_RUNS` 列表，运行 `bash final_exam/single_circuit_pin/inspect_predictions_pin.sh`。自动读取各目录已完成的模型/seed，使用保存的采样、划分和归一化重放全部 val/test 样本；输出逐指标预测图、完整预测 CSV、Excel、训练标签分位区间和大残差贡献分析。默认以 Cascade 为基线进行同 seed/同样本配对统计。[使用说明](../PREDICTION_PROBE_pin.md)
 
 **Graph v5 / v6** 已接入原 `train_lasd_moe_pin.sh`：`--graph-layer-detach-v5-v6` 运行两者，单独运行使用 `--graph-layer-detach-v5` / `--graph-layer-detach-v6`。v5 是 v3 + 性能 PE 内部 HC；v6 是 v3 + Decoder 前残差和 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)

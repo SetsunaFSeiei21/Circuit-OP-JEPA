@@ -46,7 +46,7 @@ MODELS = ['mlp_pin','xgboost_pin','gat_pin','deepgen_supervised_pin','deepgen_op
           'gtn_pin','zerosim_supervised_pin','accformer_pin','device_op_cascade_pin','width_decoder_pin',
           'width_decoder_op_pin','predicted_op_pin','student_predicted_op_pin','student_predicted_op_distill_pin',
           'op_oracle_pin','design_op_oracle_pin','lasd_graph_layer_headwise_detach_pin',
-          *[f'lasd_graph_layer_headwise_detach_pin_v{i}' for i in (1,2,3,4,5,6)]]
+          *[f'lasd_graph_layer_headwise_detach_pin_v{i}' for i in (1,2,3,4,5,6,7)]]
 
 
 @pytest.mark.parametrize('name', MODELS)

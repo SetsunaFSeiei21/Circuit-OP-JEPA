@@ -1,5 +1,7 @@
 # 多电路联合训练（端口级）
 
+**Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](../GRAPH_V7_ATTENTION_POWERS_pin.md)
+
 **Graph v5 / v6** 可加入 MODELS：`lasd_graph_layer_headwise_detach_pin_v5` 和 `lasd_graph_layer_headwise_detach_pin_v6`。同名模型配置和网格已提供，预算与 v3 保持一致。v5 在性能 PE 内加入 HC，v6 在 Decoder 前对残差和做 LayerNorm。[详细说明](../GRAPH_V3_EXTENSIONS_V5_V6_pin.md)
 
 **Graph-layer v4** 可直接加入 MODELS：`lasd_graph_layer_headwise_detach_pin_v4`。已配套 `configs_pin/models/` 和 `configs_pin/search_spaces/` 下的同名 JSON，默认网格与原 graph-layer 模型一致。[结构、梯度及配置说明](../GRAPH_FUSION_SHALLOW_DETACH_V4_pin.md)

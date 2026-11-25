@@ -27,6 +27,8 @@ class EncoderGradientNormsPin:
         if hasattr(router, 'graph_blocks'):
             blocks += [('SCORE_GRAPH', i + 1, block) for i, block in enumerate(router.graph_blocks)]
             blocks.append(('SCORE_LAYER', 1, router.layer_encoder))
+        if hasattr(router, 'order_projections'):
+            blocks += [('SCORE_ORDER', i + 1, block) for i, block in enumerate(router.order_projections)]
         if model.final_graph_encoder is not None:
             blocks.append(('FINAL', 1, model.final_graph_encoder))
         decoder_norm = getattr(model, 'decoder_input_norm', None)
@@ -96,6 +98,34 @@ def _identities(batch, b, positions):
     return names, circuit, topology
 
 
+def _power_rows_pin(data, spec, b, sample_id, positions, names, circuit, topology):
+    rows, global_rows, statistics = [], [], []
+    for order in range(spec['aggregation_distance']):
+        for layer, mask in enumerate(spec['layer_masks']):
+            selected = data['power_scores'][b, positions, order, layer]
+            total = selected.double().sum(0)
+            shared = dict(sample_id=sample_id, circuit=circuit, topology=topology,
+                          attention_order=order+1, pe_layer=layer+1, mask=mask, valid_tokens=len(names))
+            statistics.append(dict(**shared,
+                receive_std_by_head=selected.std(0, unbiased=False)[:, 0].tolist(),
+                transmit_std_by_head=selected.std(0, unbiased=False)[:, 1].tolist(),
+                max_conservation_error=float((total[:, 0] - total[:, 1]).abs().max())))
+            for head in range(spec['heads']):
+                r, sr, st = data['power_global_statistics'][b, order, layer, head].tolist()
+                dr, dsr, dst = data['power_global_differences'][b, order, layer, head].tolist()
+                global_rows.append(dict(**shared, head=head, mean_receive=r,
+                    std_receive=sr, std_transmit=st, delta_mean_receive=dr,
+                    delta_std_receive=dsr, delta_std_transmit=dst,
+                    delta_is_boundary_fill=layer == 0, std_epsilon=spec['global_context']['epsilon']))
+                for position, name in zip(positions, names):
+                    r, t = data['power_scores'][b, position, order, layer, head].tolist()
+                    dr, dt = data['power_differences'][b, position, order, layer, head].tolist()
+                    rows.append(dict(**shared, head=head, token_index=position, token_id=name,
+                        is_graph=position == 0, receive=r, transmit=t, delta_receive=dr,
+                        delta_transmit=dt, delta_is_boundary_fill=layer == 0))
+    return rows, global_rows, statistics
+
+
 def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     """Export first bounded ID-validation samples after loading the selected model.
 
@@ -114,6 +144,7 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
     flags = [(module, module.training) for module in model.modules()]
     score_rows, weight_rows, expert_rows = [], [], []
     global_rows = []
+    power_rows, power_global_rows, power_statistics = [], [], []
     sample_ids, sizes, identities, statistics = [], [], [], []
     sample_layer_means, all_weights, all_probs, all_choices, all_mix = [], [], [], [], []
     spec = model.lasd_moe_spec
@@ -130,6 +161,16 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                 if 'graph_layer_context' in spec:
                     keys.append('layer_logits')
                 data = {key: observed[key].detach().cpu() for key in keys}
+                if 'attention_powers' in spec:
+                    for key in ('power_scores', 'power_differences',
+                                'power_global_statistics', 'power_global_differences'):
+                        data[key] = observed[key].detach().cpu()
+                    ps = (*data['valid'].shape, spec['aggregation_distance'], spec['base_layers'], spec['heads'], 2)
+                    gs = (data['valid'].shape[0], spec['aggregation_distance'], spec['base_layers'], spec['heads'], 3)
+                    if any(data[k].shape != shape for k, shape in (
+                            ('power_scores', ps), ('power_differences', ps),
+                            ('power_global_statistics', gs), ('power_global_differences', gs))):
+                        raise ValueError('Multi-order score axes disagree with the saved contract')
                 if 'global_context' in spec:
                     for key in ('global_statistics', 'global_differences'):
                         data[key] = observed[key].detach().cpu()
@@ -160,6 +201,12 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
                     sample_ids.append(sample_id)
                     sizes.append(len(positions))
                     identities.append(dict(sample_id=sample_id, circuit=circuit, topology=topology))
+                    if 'attention_powers' in spec:
+                        pr, gr, stats = _power_rows_pin(
+                            data, spec, b, sample_id, positions, names, circuit, topology)
+                        power_rows.extend(pr)
+                        power_global_rows.extend(gr)
+                        power_statistics.extend(stats)
                     weights = data['layer_weights'][b, positions]
                     sample_layer_means.append(weights.double().mean(0))
                     all_weights.append(weights.double())
@@ -290,6 +337,19 @@ def export_lasd_moe_diagnostics_pin(ctx, model, options, directory):
             'Graph-context block slots map to original PE memory slots by depth; their states encode '
             'the entire score trajectory, not individual PE hidden states. SCORE_GRAPH/SCORE_LAYER '
             'gradient groups describe the two additional encoders.')
+    if 'attention_powers' in spec:
+        files.update(power_scores='lasd_moe_power_scores_pin.csv',
+                     power_global_scores='lasd_moe_power_global_scores_pin.csv')
+        _write_csv(directory / files['power_scores'], power_rows)
+        _write_csv(directory / files['power_global_scores'], power_global_rows)
+        report['power_statistics'] = power_statistics
+        report['notes'].extend([
+            'scores/global_scores/statistics retain the order-1 view. power_scores and power_global_scores '
+            'export ALL orders, identified by attention_order. Layer weights are shared across orders.',
+            'A^k is a same-PE/same-head matrix power with self connections and GRAPH paths retained. '
+            'Only R/T readout excludes the diagonal; no re-masking, normalization or cross-PE rollout.',
+            'Each order has an independent trainable input MLP; projected orders are summed before the '
+            'shared graph and depth encoders. SCORE_ORDER gradient groups track those MLPs.'])
     (directory / files['metadata']).write_text(
         json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + '\n', encoding='utf-8')
     return dict(samples=len(sample_ids), split='val', **files)

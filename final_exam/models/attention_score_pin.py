@@ -58,7 +58,7 @@ def layer_score_features_pin(scores, *, dynamics, node_ids=None, detach_previous
     return tuple(result), tuple(differences)
 
 
-def _chunk_scores(q, k, mask, valid_q, valid_k, positions):
+def _chunk_attention_weights_pin(q, k, mask, valid_q, valid_k):
     # FP32 score softmax for low-precision inputs. FP64 remains FP64 for checks.
     work_dtype = torch.float32 if q.dtype in (torch.float16, torch.bfloat16) else q.dtype
     logits = (q.to(work_dtype) * (q.shape[-1] ** -.5)) @ k.to(work_dtype).transpose(-1, -2)
@@ -67,9 +67,14 @@ def _chunk_scores(q, k, mask, valid_q, valid_k, positions):
     # Padded/all-masked query rows get a finite dummy softmax then exactly zero.
     has_keys = ~torch.isneginf(logits).all(-1, keepdim=True)
     weights = torch.softmax(torch.where(has_keys, logits, 0.), -1)
+    keep = has_keys & valid_q[:, None, :, None] & valid_k[:, None, None, :]
+    return weights.masked_fill(~keep, 0.)
+
+
+def _chunk_scores(q, k, mask, valid_q, valid_k, positions):
+    weights = _chunk_attention_weights_pin(q, k, mask, valid_q, valid_k)
     diagonal = positions[:, None] == torch.arange(k.shape[-2], device=k.device)[None]
-    keep = has_keys & valid_q[:, None, :, None] & valid_k[:, None, None, :] & ~diagonal[None, None]
-    weights = weights.masked_fill(~keep, 0.)
+    weights = weights.masked_fill(diagonal[None, None], 0.)
     return weights.sum(-1), weights.sum(-2)
 
 
@@ -82,7 +87,8 @@ class AttentionScoreExtractorPin(nn.Module):
         self.chunk_size = chunk_size
         self.checkpoint_scores = checkpoint_scores
 
-    def forward(self, attention, x, mask, valid):
+    def prepare_attention(self, attention, x, mask, valid):
+        """Reuse the native Q/K projections and masks, retaining self connections."""
         if (not isinstance(attention, nn.MultiheadAttention) or not attention.batch_first
                 or not attention._qkv_same_embed_dim or attention.bias_k is not None
                 or attention.bias_v is not None or attention.add_zero_attn):
@@ -112,6 +118,11 @@ class AttentionScoreExtractorPin(nn.Module):
         # use True=allowed, mirroring the float mask without renormalizing edges.
         if mask.dtype == torch.bool:
             mask = ~mask
+        return q, k, mask
+
+    def forward(self, attention, x, mask, valid):
+        q, k, mask = self.prepare_attention(attention, x, mask, valid)
+        n = x.shape[1]
         receives, transmit = [], None
         for start in range(0, n, self.chunk_size):
             end = min(start+self.chunk_size, n)

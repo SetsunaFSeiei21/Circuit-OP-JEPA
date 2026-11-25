@@ -1,0 +1,17 @@
+{
+  "grid": {
+    "op_transfer.lr": [
+      0.0001,
+      0.0003
+    ],
+    "model.dim": [
+      64,
+      128
+    ],
+    "lasd_moe_pin.aggregation_distance": [
+      1,
+      2,
+      3
+    ]
+  }
+}

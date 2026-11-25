@@ -15,6 +15,7 @@ SEEDS=(17 29 43)
 # lasd_moe_pin controls the node-wise layer-selection MoE, not a per-PE decoder.
 # op_transfer.epochs.op_predictor/readout control the two training stages.
 # Set dataset.max_samples_per_circuit (null/all or a positive count) and sampling_seed in CONFIG.
+# v7: lasd_moe_pin.aggregation_distance uses orders 1..K (default 2; 1 matches v3).
 CONFIG="$PROJECT_ROOT/final_exam/configs/lasd_moe_pin.json"
 RAW_ROOT="$PROJECT_ROOT/runs/raw/full_data"
 DEVICE="cuda"
@@ -40,13 +41,13 @@ for argument in "$@"; do
     case "$argument" in
         --dry-run) DRY_RUN=1 ;;
         --smoke) SMOKE=1 ;;
-        --headwise|--headwise-v1|--hyper-connection|--hyper-connection-grad|--global-stats|--graph-layer|--graph-layer-detach|--graph-layer-detach-variants|--graph-layer-detach-v4|--graph-layer-detach-v5|--graph-layer-detach-v6|--graph-layer-detach-v5-v6)
+        --headwise|--headwise-v1|--hyper-connection|--hyper-connection-grad|--global-stats|--graph-layer|--graph-layer-detach|--graph-layer-detach-variants|--graph-layer-detach-v4|--graph-layer-detach-v5|--graph-layer-detach-v6|--graph-layer-detach-v5-v6|--graph-layer-detach-v7)
             if [[ -n "$model_preset" && "$model_preset" != "$argument" ]]; then
                 echo 'Select one model preset per submission.' >&2; exit 2
             fi
             model_preset="$argument" ;;
         -h|--help)
-            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection | --hyper-connection-grad | --global-stats | --graph-layer | --graph-layer-detach | --graph-layer-detach-variants | --graph-layer-detach-v4 | --graph-layer-detach-v5 | --graph-layer-detach-v6 | --graph-layer-detach-v5-v6] [--dry-run] [--smoke]'
+            echo 'Usage: bash final_exam/single_circuit_pin/train_lasd_moe_pin.sh [--headwise | --headwise-v1 | --hyper-connection | --hyper-connection-grad | --global-stats | --graph-layer | --graph-layer-detach | --graph-layer-detach-variants | --graph-layer-detach-v4 | --graph-layer-detach-v5 | --graph-layer-detach-v6 | --graph-layer-detach-v5-v6 | --graph-layer-detach-v7] [--dry-run] [--smoke]'
             echo 'Edit CIRCUITS, MODELS, SEEDS, CONFIG and cluster settings at the top.'
             echo '--headwise selects lasd_moe_headwise_pin and lasd_moe_headwise_detach_pin for the configured circuits and seeds.'
             echo '--headwise-v1 compares lasd_moe_headwise_pin_v1 and lasd_moe_headwise_detach_pin_v1, with a last-PE residual.'
@@ -60,6 +61,8 @@ for argument in "$@"; do
             echo '--graph-layer-detach-v5 adds HC inside performance PE blocks; the decoder still receives last PE + score fusion.'
             echo '--graph-layer-detach-v6 uses LayerNorm(last PE + score fusion) before the decoder.'
             echo '--graph-layer-detach-v5-v6 runs both new variants. Both inherit v3 detach boundaries and omit the final encoder.'
+            echo '--graph-layer-detach-v7 runs v7: A..A^K statistics, independent order MLPs summed before the shared graph/layer encoders; v3 residual and detach boundaries.'
+            echo 'Set lasd_moe_pin.aggregation_distance in CONFIG for v7 (positive integer, default 2).'
             echo 'Graph/layer routing uses circuit-masked graph blocks, then per-node depth attention and an H-logit MLP.'
             echo 'Global context uses per-graph/per-PE/per-head mean R, std R, std T and their differences.'
             echo 'Each circuit submits an independent job. --dry-run creates no output directories.'
@@ -80,6 +83,7 @@ case "$model_preset" in
     --graph-layer-detach-v4) MODELS=(lasd_graph_layer_headwise_detach_pin_v4) ;;
     --graph-layer-detach-v5) MODELS=(lasd_graph_layer_headwise_detach_pin_v5) ;;
     --graph-layer-detach-v6) MODELS=(lasd_graph_layer_headwise_detach_pin_v6) ;;
+    --graph-layer-detach-v7) MODELS=(lasd_graph_layer_headwise_detach_pin_v7) ;;
     --graph-layer-detach-v5-v6) MODELS=(lasd_graph_layer_headwise_detach_pin_v5
                                       lasd_graph_layer_headwise_detach_pin_v6) ;;
     --graph-layer-detach-variants) MODELS=(lasd_graph_layer_headwise_detach_pin_v1

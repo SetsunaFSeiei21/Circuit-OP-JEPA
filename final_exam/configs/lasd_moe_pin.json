@@ -78,6 +78,7 @@
     "score_chunk_size": 128,
     "checkpoint_scores": true,
     "diagnostic_samples": 8,
-    "hyper_connection_streams": 4
+    "hyper_connection_streams": 4,
+    "aggregation_distance": 2
   }
 }
