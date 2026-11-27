@@ -262,13 +262,16 @@ def describe_model(model):
         return {"kind": "readout", "source": model.source, "frozen": model.frozen,
                 "scaler": scaling(model.scaler)}
     if isinstance(model, OPPredictor):
-        return {"kind": "op_predictor", "support": deepcopy(model.support)}
+        return {"kind": "op_predictor", "support": deepcopy(model.support),
+                "model_config": deepcopy(_config(model.encoder.cfg))}
     if isinstance(model, PredictedOPCascade):
         return {"kind": "cascade", "joint": model.joint,
                 "predictor": describe_model(model.predictor),
                 "downstream": describe_model(model.downstream)}
     if isinstance(model, DualEncoderModel):
         return {"kind": "dual", "guided_frozen": model.guided_frozen,
+                "direct_model_config": deepcopy(_config(model.direct.cfg)),
+                "guided_model_config": deepcopy(_config(model.guided.cfg)),
                 "direct_scaler": scaling(model.direct_scaler),
                 "guided_scaler": scaling(model.guided_scaler)}
     raise TypeError(f"Unsupported transfer checkpoint model: {type(model).__name__}")
@@ -290,13 +293,15 @@ def rebuild_model(recipe, config, prep):
         return ReadoutModel(encoder, decoder(config, prep), source=source,
                             scaler=scaling(recipe.get("scaler")), frozen=recipe["frozen"])
     if kind == "op_predictor":
-        return OPPredictor(design_encoder(config, prep), prep, recipe["support"])
+        return OPPredictor(design_encoder(recipe.get("model_config", config), prep),
+                           prep, recipe["support"])
     if kind == "cascade":
         return PredictedOPCascade(rebuild_model(recipe["predictor"], config, prep),
                                   rebuild_model(recipe["downstream"], config, prep),
                                   joint=recipe["joint"])
     if kind == "dual":
-        return DualEncoderModel(design_encoder(config, prep), design_encoder(config, prep),
+        return DualEncoderModel(design_encoder(recipe.get("direct_model_config", config), prep),
+                                design_encoder(recipe.get("guided_model_config", config), prep),
                                 decoder(config, prep), ModelConfig(**_config(config)).dim,
                                 guided_frozen=recipe["guided_frozen"],
                                 direct_scaler=scaling(recipe.get("direct_scaler")),

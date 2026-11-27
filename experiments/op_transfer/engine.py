@@ -101,6 +101,8 @@ def attach_identity(batch, rows):
 class DataContext:
     def __init__(self, dataset, manifest, config, device, limits, output):
         self.device, self.config, self.output = device, config, Path(output)
+        # Stage-local OP configs must not change the shared dataset's token cap.
+        self.max_tokens = config['model']['max_devices']
         self.full_manifest = manifest
         # Subset selection is independent of performance/OP and of model seed.
         self.rows, selected = {}, copy.deepcopy(manifest)
@@ -152,7 +154,7 @@ class DataContext:
                         for row in rows]
             self.caches[key] = ResidentDataset(rows, self.prep, self.device, include_op=op,
                 include_performance=True, performance_metric_mask=self.metric_mask,
-                performance_dtype=torch.float64, max_tokens=self.config['model']['max_devices'],
+                performance_dtype=torch.float64, max_tokens=self.max_tokens,
                 label=f'op-transfer {split} ({"OP supervision" if op else "design only"})')
         return self.caches[key]
 
@@ -611,10 +613,11 @@ def evaluate_op(ctx, predictor, split, options):
         inference_uses_true_op=False,truth_used_for='scoring_only',metrics=scores)
 
 
-def save_final(path, model, ctx, mode, seed, stage_ids, options):
+def save_final(path, model, ctx, mode, seed, stage_ids, options, config=None):
     path.mkdir(parents=True, exist_ok=True)
+    saved_config = ctx.config if config is None else config
     payload = dict(format='op_transfer_v1', mode=mode, seed=seed, recipe=describe_model(model),
-        state_dict=_cpu_state(model), model_config=ctx.config['model'], preprocessing=ctx.prep,
+        state_dict=_cpu_state(model), model_config=saved_config['model'], config=saved_config, preprocessing=ctx.prep,
         stage_ids=stage_ids, selected_sample_ids={k: ctx.selection[k] for k in ('train','val','test','ood','labeled_train')},
         manifest=ctx.full_manifest, options=options,
         inference_requires_op=mode in MEASURED_OP_MODELS)
@@ -676,6 +679,11 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
     config = json.loads(Path(config_path).read_text())
     options = settings(config)
     config['model'] = ModelConfig(**config['model']).to_dict()
+    from .predictor_config import predictor_config
+    op_config = predictor_config(config)
+    op_options = settings(op_config)
+    if 'dual_predicted_op' in models and op_config['model']['dim'] != config['model']['dim']:
+        raise ValueError('dual_predicted_op concatenates encoder states and requires matching OP/downstream dim')
     device = require_device(device)
     seed_everything(seeds[0], options['torch_threads'])
     print(f'Loading canonical dataset: {data_path}', flush=True)
@@ -730,9 +738,16 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
             seed_everything(seed+31, options['torch_threads'])
             return decoder(config['model'], ctx.prep).to(device)
 
-        def stage(model, name, budget, objective=performance_objective, **kwargs):
-            model, cost = fit_stage(ctx, model, name, options['epochs'][budget], options, seed,
-                                    objective, **kwargs)
+        def stage(model, name, budget, objective=performance_objective, *, model_cfg=None, **kwargs):
+            stage_config = config if model_cfg is None else model_cfg
+            stage_options = settings(stage_config)
+            original_config = ctx.config
+            ctx.config = stage_config
+            try:
+                model, cost = fit_stage(ctx, model, name, stage_options['epochs'][budget], stage_options, seed,
+                                        objective, **kwargs)
+            finally:
+                ctx.config = original_config
             cost['stage_id'] = f'seed_{seed}/{name}'
             stages.append(cost)
             return model, cost['stage_id']
@@ -748,13 +763,17 @@ def run_experiment(data_path, config_path, output, models, seeds, device, manife
 
         def op_predictor():
             if 'predictor' not in shared:
-                model = OPPredictor(new_design(),ctx.prep,fit_op_support(ctx.rows['train'],ctx.prep)).to(device)
-                shared['predictor'], dep = stage(model,'op_predictor','op_predictor',op_objective,op=True)
+                seed_everything(seed, op_options['torch_threads'])
+                encoder = design_encoder(op_config['model'], ctx.prep).to(device)
+                model = OPPredictor(encoder,ctx.prep,fit_op_support(ctx.rows['train'],ctx.prep)).to(device)
+                shared['predictor'], dep = stage(model,'op_predictor','op_predictor',op_objective,
+                                                model_cfg=op_config, op=True)
                 dependencies['predictor'] = [dep]
                 freeze(shared['predictor'])
-                save_final(ctx.output/'op_predictor',shared['predictor'],ctx,'op_predictor',seed,[dep],options)
+                save_final(ctx.output/'op_predictor',shared['predictor'],ctx,'op_predictor',seed,[dep],op_options,
+                           config=op_config)
                 for split in ('test','ood'):
-                    report=evaluate_op(ctx,shared['predictor'],split,options)
+                    report=evaluate_op(ctx,shared['predictor'],split,op_options)
                     if report is not None:
                         write_json(ctx.output/'op_predictor'/f'{split}_op.json',report)
             return shared['predictor']

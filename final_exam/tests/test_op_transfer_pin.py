@@ -192,6 +192,70 @@ class PinTransferTests(unittest.TestCase):
                 else:
                     torch.testing.assert_close(first,second,rtol=0,atol=0)
 
+    def test_cascade_recipe_preserves_independent_op_architecture(self):
+        op_config = dict(self.cfg, dim=12, heads=3, encoder_layers=4,
+                         cross_layers=2, ffn_dim=24)
+        predictor = OPPredictorPin(design_encoder_pin(op_config, self.prep),
+                                   self.prep, self.support)
+        downstream = ReadoutModelPin(op_encoder_pin(self.cfg, self.prep, use_design=True),
+                                      decoder_pin(self.cfg, self.prep), source='design_op')
+        model = PredictedOPCascadePin(predictor, downstream).eval()
+        recipe = describe_model_pin(model)
+        self.assertEqual(recipe['predictor']['model_config']['dim'], 12)
+        restored = rebuild_model_pin(recipe, self.cfg, self.prep).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        self.assertEqual(restored.predictor.encoder.cfg.encoder_layers, 4)
+        self.assertEqual(restored.downstream.encoder.cfg.dim, 8)
+        with torch.no_grad():
+            torch.testing.assert_close(model(self.batch), restored(self.batch), rtol=0, atol=0)
+
+    def test_legacy_predictor_recipe_without_architecture_still_loads(self):
+        model = self.predictor().eval()
+        recipe = describe_model_pin(model)
+        recipe.pop('model_config')
+        restored = rebuild_model_pin(recipe, self.cfg, self.prep).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        with torch.no_grad():
+            expected, mask = model(self.batch)
+            actual, restored_mask = restored(self.batch)
+            torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+            self.assertTrue(torch.equal(mask, restored_mask))
+
+    def test_saved_device_cascade_lasd_and_wide_op_keep_separate_architectures(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from final_exam.models.op_gate_pin import DeviceOPPredictorPin, DeviceOPGateModelPin
+        from final_exam.models.lasd_moe_pin import LASDMoEModelPin
+        from final_exam.models.width_decoder_pin import WidthDeviceOPPredictorPin, WidthDecoderModelPin
+        from final_exam.run_pin import load_checkpoint_pin, save_checkpoint_pin
+        op_config = dict(self.cfg, dim=12, heads=3, encoder_layers=4,
+                         cross_layers=2, ffn_dim=24)
+        predictor = DeviceOPPredictorPin(op_config, self.prep, self.support)
+        wide_predictor = WidthDeviceOPPredictorPin(op_config, self.prep, self.support,
+                                                   dict(n_experts=2, hidden_dim=12, dropout=0.))
+        models = [
+            DeviceOPGateModelPin('device_op_cascade_pin', self.cfg, self.prep, predictor),
+            LASDMoEModelPin('lasd_moe_headwise_detach_pin', self.cfg, self.prep,
+                            copy.deepcopy(predictor), dict(hidden_dim=8)),
+            WidthDecoderModelPin('width_decoder_op_pin', self.cfg, self.prep, wide_predictor,
+                                  dict(n_experts=2, hidden_dim=8, dropout=0.)),
+        ]
+        ctx = SimpleNamespace(prep=self.prep, full_manifest=self.manifest, selection={})
+        config = dict(model=self.cfg, op_predictor=dict(model=op_config))
+        with tempfile.TemporaryDirectory() as directory:
+            for model in models:
+                model.eval()
+                target = Path(directory) / model.mode
+                save_checkpoint_pin(target, model, ctx, model.mode, 17, [], {}, config)
+                restored, saved = load_checkpoint_pin(target / 'checkpoint_pin.pt')
+                self.assertEqual(saved['model_config']['dim'], 8)
+                self.assertEqual(restored.predictor.encoder.cfg.dim, 12)
+                self.assertEqual(restored.predictor.encoder.cfg.cross_layers, 2)
+                self.assertEqual(restored.encoder.cfg.dim, 8)
+                with torch.no_grad():
+                    torch.testing.assert_close(model(self.batch), restored(self.batch), rtol=0, atol=0)
+
     def test_invalid_owner_mapping_and_device_preprocessing_are_rejected(self):
         predictor=self.predictor()
         batch=copy.deepcopy(self.batch)

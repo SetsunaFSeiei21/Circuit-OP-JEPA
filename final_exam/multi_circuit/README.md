@@ -1,5 +1,7 @@
 # 多电路联合训练（端口级）
 
+**OP 预测器独立配置**：依赖 OP 的配置新增 `op_predictor.model` / `op_predictor.training`，可独立设置 OP 的 SE/PE 层数、维度、学习率、batch size、轮数和早停；性能侧仍使用 `model` / `op_transfer`。宽 OP 另有 `op_predictor.width_decoder_pin`。新默认值保持原实验设置，旧配置仍兼容。[完整字段、网格与兼容说明](../../docs/OP_PREDICTOR_CONFIG_ZH.md)
+
 新增 LASD graph v8/v9：v7 多阶 Attention 统计 + v5 PE Hyper-Connection；v9 再加 v6 的残差和后 LayerNorm。配置、启动及结果说明见 [v8/v9 说明](../GRAPH_V8_V9_ATTENTION_POWERS_HC_pin.md)。
 
 **Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](../GRAPH_V7_ATTENTION_POWERS_pin.md)
@@ -83,7 +85,7 @@ login04 默认 `/share/software/anaconda3`，环境默认 `newbase`。账户、�
 
 MLP 网格默认搜索 `ffn_dim` 和学习率；XGBoost 默认搜索 eta 和 max_depth；其余 baseline 默认搜索 dim 和学习率。它们保留各自原生 readout，没有统一替换成同一个 decoder。
 
-阶段轮数在每个模型文件的 `op_transfer.epochs` 中；仍遵守原来的 readout / student / distill budget 检查。OP 预测、teacher、latent alignment 使用原有监督目标。性能预测阶段用验证集 circuit-macro R² 选 checkpoint/早停；性能 loss 仍用于反向传播，并保留在历史中。多电路的额外验证前向时间计入阶段耗时。
+阶段轮数在每个模型文件的 `op_transfer.epochs` 中，OP 预测器优先使用 `op_predictor.training.epochs`；仍遵守原来的 readout / student / distill budget 检查。OP 预测、teacher、latent alignment 使用原有监督目标。性能预测阶段用验证集 circuit-macro R² 选 checkpoint/早停；性能 loss 仍用于反向传播，并保留在历史中。多电路的额外验证前向时间计入阶段耗时。
 
 ## 3. 可选模型与自己的模型
 

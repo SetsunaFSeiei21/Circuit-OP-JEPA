@@ -314,6 +314,7 @@ def describe_model_pin(model):
                     scaler=scaling(model.scaler))
     if isinstance(model, OPPredictorPin):
         return dict(kind='op_predictor_pin', support=deepcopy(model.support),
+                    model_config=deepcopy(_config(model.encoder.cfg)),
                     encoder_name=model.encoder_name, owner_pool='terminal_mean')
     if isinstance(model, PredictedOPCascadePin):
         return dict(kind='cascade_pin', joint=model.joint,
@@ -351,7 +352,8 @@ def rebuild_model_pin(recipe, config, prep):
             raise ValueError('Unsupported pin-to-device OP pooling recipe')
         from .models_pin import build_encoder_pin
         name = recipe['encoder_name']
-        return OPPredictorPin(build_encoder_pin(name, _config(config), prep), prep,
+        predictor_config = recipe.get('model_config', _config(config))
+        return OPPredictorPin(build_encoder_pin(name, predictor_config, prep), prep,
                               recipe['support'], encoder_name=name)
     if kind == 'cascade_pin':
         return PredictedOPCascadePin(rebuild_model_pin(recipe['predictor'], config, prep),

@@ -101,6 +101,14 @@ def validate_request_pin(config, models, seeds, device, smoke=False, *, gate_con
     for override in overrides.values():
         ModelConfig(**{**config['model'], **override})
     options = settings(config)
+    # Validate the OP architecture independently, even when downstream dims differ.
+    from experiments.op_transfer.predictor_config import predictor_config, validate_encoder_transfer
+    op_config = predictor_config(effective_config_pin(config, 'zerosim_supervised_pin', seeds[0]), smoke=smoke)
+    if 'op_predictor' in config:
+        config['op_predictor'] = op_config['op_predictor']
+    if 'deepgen_op_pretrained_pin' in selected:
+        transfer_cfg = effective_config_pin(config, 'deepgen_op_pretrained_pin', seeds[0])
+        validate_encoder_transfer(transfer_cfg, predictor_config(transfer_cfg))
     if set(selected) & set(WIDTH_MODELS_PIN) or 'width_decoder_pin' in config:
         config['width_decoder_pin'] = width_settings_pin(config.get('width_decoder_pin'), config['model'])
     if set(selected) & set(LASD_MODELS_PIN) or 'lasd_pin' in config:
@@ -148,6 +156,9 @@ def effective_config_pin(config, mode, seed):
     override = value.get('final_exam_pin', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
     value.setdefault('training', {})['seed'] = seed
+    if mode in {WIDTH_PREDICTOR_PIN, 'op_predictor', 'op_predictor_pin', 'device_op_predictor_pin'}:
+        from experiments.op_transfer.predictor_config import predictor_config
+        value = predictor_config(value)
     return value
 
 
@@ -377,6 +388,15 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
     too_small = [mode for mode, capacity in capacities.items() if capacity < pin_count]
     if too_small:
         raise ValueError(f'{pin_count} pin/port tokens exceed max_devices capacity for {too_small}; no truncation')
+    op_capacities = []
+    if set(models) & ((set(ALL_GATE_MODELS_PIN) - {'device_op_gate_only_base_pin'}) | set(WIDTH_MODELS_PIN) | set(LASD_MOE_MODELS_PIN)):
+        op_capacities.append(('device_op_predictor_pin', max(len(row['devices']) for row in representatives.values())))
+    if set(models) & CASCADE_MODELS_PIN:
+        op_capacities.append(('op_predictor_pin', pin_count))
+    for predictor_name, required in op_capacities:
+        capacity = effective_config_pin(config, predictor_name, seeds[0])['model']['max_devices']
+        if capacity < required:
+            raise ValueError(f'{required} tokens exceed op_predictor.model.max_devices={capacity} for {predictor_name}; no truncation')
     if manifest is None:
         manifest = build_manifest(dataset, config=config['dataset'])
     verify_manifest(dataset, manifest)
@@ -441,7 +461,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                     def save(model, mode, deps, model_cfg, kind='op_transfer', shared_stage=False):
                         mode = _pin_name(mode)
                         path = ctx.output / 'shared_pin' / mode if shared_stage else ctx.output / mode
-                        save_checkpoint_pin(path, model, ctx, mode, seed, deps, options, model_cfg, kind)
+                        save_checkpoint_pin(path, model, ctx, mode, seed, deps, engine.settings(model_cfg), model_cfg, kind)
 
                     def stage(model, name, epoch_key, model_cfg, objective=engine.performance_objective,
                               *, log_name=None, **kwargs):
@@ -451,10 +471,11 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                         path = logs / f'seed_{seed}_pin' / (log_name or name) / 'train_pin.log'
                         original_config = ctx.config
                         ctx.config = model_cfg
+                        stage_options = engine.settings(model_cfg) if epoch_key == 'op_predictor' else options
                         try:
                             with log_to(path):
-                                print(f'seed={seed} stage={name} budget={options["epochs"][epoch_key]}', flush=True)
-                                prepare_model_pin(model, ctx, options)
+                                print(f'seed={seed} stage={name} budget={stage_options["epochs"][epoch_key]}', flush=True)
+                                prepare_model_pin(model, ctx, stage_options)
                                 resume_args = {}
                                 if joint or (set(models) & set(RESUMABLE_MODELS_PIN) and name in RECOVERABLE_STAGES_PIN):
                                     identity = copy.deepcopy(stage_identity)
@@ -480,8 +501,8 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 if joint and epoch_key in ('readout', 'teacher', 'gate', 'student_predicted_op', 'predicted_op_distill_decoder'):
                                     kwargs['selection_callback'] = lambda m: negative_macro_r2_pin(
                                         ctx, getattr(m, 'student', m), options, measured_op=kwargs.get('op', False))
-                                model, cost = engine.fit_stage(ctx, model, name, options['epochs'][epoch_key],
-                                                              options, seed, objective, artifact_suffix='_pin',
+                                model, cost = engine.fit_stage(ctx, model, name, stage_options['epochs'][epoch_key],
+                                                              stage_options, seed, objective, artifact_suffix='_pin',
                                                               **resume_args, **kwargs)
                         finally:
                             ctx.config = original_config
@@ -499,7 +520,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                     def predictor():
                         if 'op_predictor' not in shared:
                             cfg = effective_config_pin(config, 'op_predictor', seed)
-                            seed_everything(seed, options['torch_threads'])
+                            seed_everything(seed, engine.settings(cfg)['torch_threads'])
                             model = OPPredictorPin(design_encoder_pin(cfg['model'], ctx.prep), ctx.prep,
                                                 fit_op_support_pin(ctx.rows['train'], ctx.prep)).to(device)
                             model, dep = stage(model, 'op_predictor', 'op_predictor', cfg, op_objective_pin,
@@ -527,7 +548,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                         name = WIDTH_PREDICTOR_PIN if wide else 'device_op_predictor_pin'
                         if name not in shared:
                             cfg = effective_config_pin(config, name, seed)
-                            seed_everything(seed, options['torch_threads'])
+                            seed_everything(seed, engine.settings(cfg)['torch_threads'])
                             cls = WidthDeviceOPPredictorPin if wide else DeviceOPPredictorPin
                             extra = {'width_config': cfg['width_decoder_pin']} if wide else {}
                             model = cls(cfg['model'], ctx.prep,
@@ -541,7 +562,7 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                             with log_to(logs / f'seed_{seed}_pin' / 'shared_pin' / name / 'cache_pin.log'):
                                 # No measured OP or performance labels are used in this forward-only pass.
                                 if not joint:
-                                    prepare_device_predictions_pin(ctx, model, options, splits=('train', 'val', 'test'))
+                                    prepare_device_predictions_pin(ctx, model, engine.settings(cfg), splits=('train', 'val', 'test'))
                             prediction_caches[name] = (ctx.device_prediction_digest_pin, ctx.device_predictions_pin)
                             if device.type == 'cuda':
                                 torch.cuda.synchronize(device)
@@ -884,12 +905,15 @@ def run_experiment_pin(data_path, config_path, output, models, seeds, device, *,
                                 raise AssertionError('Frozen OP predictor changed')
                         else:
                             if mode == 'deepgen_op_pretrained_pin':
-                                op_model = OPPredictorPin(build_encoder_pin('deepgen_supervised_pin', cfg['model'], ctx.prep),
+                                from experiments.op_transfer.predictor_config import predictor_config
+                                op_cfg = predictor_config(cfg)
+                                seed_everything(seed, engine.settings(op_cfg)['torch_threads'])
+                                op_model = OPPredictorPin(build_encoder_pin('deepgen_supervised_pin', op_cfg['model'], ctx.prep),
                                     ctx.prep, fit_op_support_pin(ctx.rows['train'], ctx.prep), encoder_name='deepgen_supervised_pin').to(device)
-                                op_model, dep = stage(op_model, 'deepgen_op_predictor', 'op_predictor', cfg,
+                                op_model, dep = stage(op_model, 'deepgen_op_predictor', 'op_predictor', op_cfg,
                                     op_objective_pin, op=True, log_name='shared_pin/deepgen_op_predictor')
                                 deps.append(dep)
-                                save(op_model, 'deepgen_op_predictor', deps, cfg, 'deepgen_op_predictor', True)
+                                save(op_model, 'deepgen_op_predictor', deps, op_cfg, 'deepgen_op_predictor', True)
                                 seed_everything(seed, options['torch_threads'])
                                 model = build_model_pin('deepgen_supervised_pin', cfg['model'], ctx.prep).to(device)
                                 model.encoder = copy.deepcopy(op_model.encoder)

@@ -5,11 +5,36 @@ import itertools
 import json
 import os
 from pathlib import Path
-from final_exam.run_pin import MODEL_NAMES_PIN
-from final_exam.lasd_moe_registry_pin import GRAPH_LAYER_POWER_MODELS_PIN
+from final_exam.run_pin import MODEL_NAMES_PIN, CASCADE_MODELS_PIN, ALL_GATE_MODELS_PIN, WIDTH_MODELS_PIN
+from final_exam.lasd_moe_registry_pin import GRAPH_LAYER_POWER_MODELS_PIN, LASD_MOE_MODELS_PIN
 
 BASELINES_PIN = tuple(MODEL_NAMES_PIN[:8])
 ROOT = Path(__file__).resolve().parent
+OP_MODELS_PIN = frozenset(CASCADE_MODELS_PIN) | (frozenset(ALL_GATE_MODELS_PIN) -
+    {'device_op_gate_only_base_pin'}) | frozenset(WIDTH_MODELS_PIN) | frozenset(LASD_MOE_MODELS_PIN) | {
+        'deepgen_op_pretrained_pin'}
+OP_TRAINING_DEFAULTS_PIN = dict(epochs=30, lr=1e-4, batch_size=32, weight_decay=1e-4,
+    grad_clip=1., patience=10, progress_every=100, torch_threads=1)
+
+
+def materialize_op_predictor_pin(config, model):
+    """Freeze current defaults in new templates; remain usable without torch."""
+    if model not in OP_MODELS_PIN:
+        return config
+    existing = config.setdefault('op_predictor', {})
+    existing['model'] = {**copy.deepcopy(config['model']), **existing.get('model', {})}
+    tr, transfer = config.get('training', {}), config.get('op_transfer', {})
+    training = dict(OP_TRAINING_DEFAULTS_PIN)
+    training.update({key: tr[key] for key in ('batch_size', 'weight_decay', 'grad_clip', 'torch_threads') if key in tr})
+    training['lr'] = tr.get('decoder_lr', training['lr'])
+    training.update({key: transfer[key] for key in training if key != 'epochs' and key in transfer})
+    training['epochs'] = transfer.get('epochs', {}).get('op_predictor', training['epochs'])
+    existing['training'] = {**training, **existing.get('training', {})}
+    if model == 'width_decoder_op_pin':
+        width = dict(n_experts=4, hidden_dim=config['model']['dim'], dropout=config['model']['dropout'])
+        width.update(config.get('width_decoder_pin', {}))
+        existing['width_decoder_pin'] = {**width, **existing.get('width_decoder_pin', {})}
+    return config
 
 
 def read_pin(path):
@@ -69,6 +94,17 @@ def allowed_grid_pin(model):
         result |= {'lasd_moe_pin.' + k for k in ('hidden_dim', 'dropout')}
     if model in GRAPH_LAYER_POWER_MODELS_PIN:
         result.add('lasd_moe_pin.aggregation_distance')
+    if model in OP_MODELS_PIN:
+        op_arch = {'dim', 'encoder_layers', 'dropout'}
+        if model != 'deepgen_op_pretrained_pin':
+            op_arch |= {'heads', 'cross_layers', 'ffn_dim', 'terminal_bias'}
+        if model == 'width_decoder_op_pin':
+            op_arch |= {'decoder_layers', 'decoder_ffn_dim'}
+            result |= {'op_predictor.width_decoder_pin.' + key
+                       for key in ('n_experts', 'hidden_dim', 'dropout')}
+        result |= {'op_predictor.model.' + key for key in op_arch}
+        result |= {'op_predictor.training.' + key for key in
+                   ('epochs', 'lr', 'batch_size', 'weight_decay', 'grad_clip', 'patience')}
     return result
 
 
@@ -98,6 +134,11 @@ def expand_grid_pin(model, config, space):
         if not isinstance(values, list) or not values or len({digest_pin(v) for v in values}) != len(values):
             raise ValueError(f'Grid {key} needs distinct nonempty choices')
     trials, skipped = [], []
+    # Older files can opt into the new grid namespace without being edited in
+    # place. Materialize once, before applying any downstream trial overrides.
+    config = copy.deepcopy(config)
+    if any(path.startswith('op_predictor.') for path in grid):
+        materialize_op_predictor_pin(config, model)
     for values in itertools.product(*grid.values()):
         cfg = copy.deepcopy(config)
         params = dict(zip(grid, values))
@@ -109,6 +150,20 @@ def expand_grid_pin(model, config, space):
         if m['dim'] < 2 or m['dim'] % m['heads'] or not 0 < m['cross_layers'] < m['encoder_layers']:
             skipped.append({'parameters': params, 'reason': 'head divisibility or PE/encoder depth'})
             continue
+        if model in OP_MODELS_PIN:
+            op_model = {**m, **cfg.get('op_predictor', {}).get('model', {})}
+            if any(type(op_model[k]) is not int or op_model[k] < 1
+                   for k in ('dim', 'heads', 'cross_layers', 'encoder_layers')):
+                raise ValueError('OP dimensions, heads and depths must be positive integers')
+            if (op_model['dim'] < 2 or op_model['dim'] % op_model['heads'] or
+                    not 0 < op_model['cross_layers'] < op_model['encoder_layers']):
+                skipped.append({'parameters': params, 'reason': 'OP head divisibility or PE/encoder depth'})
+                continue
+            if model == 'deepgen_op_pretrained_pin' and any(
+                    op_model[k] != m[k] for k in ('dim', 'encoder_layers', 'dropout', 'max_devices')):
+                skipped.append({'parameters': params, 'reason':
+                    'DeepGEN transfers its encoder: OP and downstream encoder settings must match'})
+                continue
         trials.append({'id': 'trial_' + digest_pin(params)[:12] + '_pin', 'parameters': params, 'config': cfg})
     if not trials:
         raise ValueError(f'No valid grid combinations for {model}')
@@ -120,6 +175,7 @@ def init_model_pin(model, config_dir):
         raise ValueError('Choose a registered, non-shuffle pin model')
     cfg = read_pin(ROOT/'configs_pin'/'template_pin.json')
     cfg['final_exam_pin']['models'] = [model]
+    materialize_op_predictor_pin(cfg, model)
     if model in GRAPH_LAYER_POWER_MODELS_PIN:
         cfg['lasd_moe_pin']['aggregation_distance'] = 2
     path = Path(config_dir)/'models'/f'{model}.json'

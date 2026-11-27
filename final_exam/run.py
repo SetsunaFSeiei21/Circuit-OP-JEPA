@@ -21,6 +21,8 @@ MODEL_NAMES = ('mlp', 'xgboost', 'gat', 'deepgen_supervised', 'deepgen_op_pretra
 CASCADE_MODELS = frozenset({'predicted_op', 'student_predicted_op', 'student_predicted_op_distill'})
 REFERENCES = frozenset({'op_oracle', 'design_op_oracle'})
 
+from experiments.op_transfer.predictor_config import predictor_config, validate_encoder_transfer
+
 
 def validate_request(config, models, seeds, device, smoke=False):
     from device_jepa.model import ModelConfig
@@ -50,6 +52,12 @@ def validate_request(config, models, seeds, device, smoke=False):
     config['model'] = ModelConfig(**config['model']).to_dict()
     for override in overrides.values():
         ModelConfig(**{**config['model'], **override})
+    op_config = predictor_config(config, smoke=smoke)
+    if 'op_predictor' in config:
+        config['op_predictor'] = op_config['op_predictor']
+    if 'deepgen_op_pretrained' in selected:
+        downstream = effective_config(config, 'deepgen_op_pretrained', seeds[0])
+        validate_encoder_transfer(downstream, predictor_config(downstream))
     options = settings(config)
     epochs = options['epochs']
     if not epochs['readout'] == epochs['student_predicted_op'] == (
@@ -71,7 +79,7 @@ def effective_config(config, mode, seed):
     override = value.get('final_exam', {}).get('model_overrides', {}).get(key, {})
     value['model'].update(override)
     value.setdefault('training', {})['seed'] = seed
-    return value
+    return predictor_config(value) if mode == 'op_predictor' else value
 
 
 def save_checkpoint(directory, model, ctx, mode, seed, dependencies, options, config, kind='op_transfer'):
@@ -200,19 +208,20 @@ def run_experiment(data_path, config_path, output, models, seeds, device, *, log
 
                     def save(model, mode, deps, model_cfg, kind='op_transfer', shared_stage=False):
                         path = ctx.output / 'shared' / mode if shared_stage else ctx.output / mode
-                        save_checkpoint(path, model, ctx, mode, seed, deps, options, model_cfg, kind)
+                        save_checkpoint(path, model, ctx, mode, seed, deps, engine.settings(model_cfg), model_cfg, kind)
 
                     def stage(model, name, epoch_key, model_cfg, objective=engine.performance_objective,
                               *, log_name=None, **kwargs):
                         path = logs / f'seed_{seed}' / (log_name or name) / 'train.log'
                         original_config = ctx.config
                         ctx.config = model_cfg
+                        stage_options = engine.settings(model_cfg)
                         try:
                             with log_to(path):
-                                print(f'seed={seed} stage={name} budget={options["epochs"][epoch_key]}', flush=True)
-                                prepare_model(model, ctx, options)
-                                model, cost = engine.fit_stage(ctx, model, name, options['epochs'][epoch_key],
-                                                              options, seed, objective, **kwargs)
+                                print(f'seed={seed} stage={name} budget={stage_options["epochs"][epoch_key]}', flush=True)
+                                prepare_model(model, ctx, stage_options)
+                                model, cost = engine.fit_stage(ctx, model, name, stage_options['epochs'][epoch_key],
+                                                              stage_options, seed, objective, **kwargs)
                         finally:
                             ctx.config = original_config
                         cost.update(stage_id=f'seed_{seed}/{name}', seed=seed)
@@ -224,7 +233,7 @@ def run_experiment(data_path, config_path, output, models, seeds, device, *, log
                     def predictor():
                         if 'op_predictor' not in shared:
                             cfg = effective_config(config, 'op_predictor', seed)
-                            seed_everything(seed, options['torch_threads'])
+                            seed_everything(seed, engine.settings(cfg)['torch_threads'])
                             model = OPPredictor(design_encoder(cfg['model'], ctx.prep), ctx.prep,
                                                 fit_op_support(ctx.rows['train'], ctx.prep)).to(device)
                             model, dep = stage(model, 'op_predictor', 'op_predictor', cfg, engine.op_objective,
@@ -335,12 +344,14 @@ def run_experiment(data_path, config_path, output, models, seeds, device, *, log
                                 raise AssertionError('Frozen OP predictor changed')
                         else:
                             if mode == 'deepgen_op_pretrained':
-                                op_model = OPPredictor(build_encoder('deepgen_supervised', cfg['model'], ctx.prep),
+                                op_cfg = predictor_config(cfg)
+                                seed_everything(seed, engine.settings(op_cfg)['torch_threads'])
+                                op_model = OPPredictor(build_encoder('deepgen_supervised', op_cfg['model'], ctx.prep),
                                     ctx.prep, fit_op_support(ctx.rows['train'], ctx.prep)).to(device)
-                                op_model, dep = stage(op_model, 'deepgen_op_predictor', 'op_predictor', cfg,
+                                op_model, dep = stage(op_model, 'deepgen_op_predictor', 'op_predictor', op_cfg,
                                     engine.op_objective, op=True, log_name='shared/deepgen_op_predictor')
                                 deps.append(dep)
-                                save(op_model, 'deepgen_op_predictor', deps, cfg, 'deepgen_op_predictor', True)
+                                save(op_model, 'deepgen_op_predictor', deps, op_cfg, 'deepgen_op_predictor', True)
                                 seed_everything(seed, options['torch_threads'])
                                 model = build_model('deepgen_supervised', cfg['model'], ctx.prep).to(device)
                                 model.encoder = copy.deepcopy(op_model.encoder)

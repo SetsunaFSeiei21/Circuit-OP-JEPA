@@ -77,5 +77,29 @@
     "norm_eps": 1e-05,
     "n_experts": 16,
     "mlp_dropout": 0.1
+  },
+  "op_predictor": {
+    "model": {
+      "dim": 128,
+      "heads": 8,
+      "encoder_layers": 6,
+      "cross_layers": 3,
+      "ffn_dim": 512,
+      "decoder_layers": 2,
+      "decoder_ffn_dim": 2048,
+      "dropout": 0.1,
+      "max_devices": 200,
+      "terminal_bias": true
+    },
+    "training": {
+      "epochs": 30,
+      "lr": 0.0001,
+      "batch_size": 32,
+      "weight_decay": 0.0001,
+      "grad_clip": 1.0,
+      "patience": 10,
+      "progress_every": 100,
+      "torch_threads": 1
+    }
   }
 }

@@ -36,6 +36,42 @@ class TransferModelTests(unittest.TestCase):
                op_encoder(self.cfg, self.prep, use_design=source == "design_op"))
         return ReadoutModel(enc, decoder(self.cfg, self.prep), source=source, frozen=frozen)
 
+    def test_independent_predictor_recipe_survives_cascade_reload(self):
+        op_config = ModelConfig(**{**self.cfg.to_dict(), 'dim': 12, 'heads': 3,
+                                   'encoder_layers': 4, 'cross_layers': 2, 'ffn_dim': 24})
+        predictor = OPPredictor(design_encoder(op_config, self.prep), self.prep, self.support)
+        model = PredictedOPCascade(predictor, self.make_readout('design_op')).eval()
+        restored = rebuild_model(describe_model(model), self.cfg, self.prep).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        self.assertEqual(restored.predictor.encoder.cfg.dim, 12)
+        self.assertEqual(restored.downstream.encoder.cfg.dim, 8)
+        with torch.no_grad():
+            torch.testing.assert_close(model(self.batch), restored(self.batch), rtol=0, atol=0)
+
+    def test_independent_guided_depth_survives_dual_reload(self):
+        op_config = ModelConfig(**{**self.cfg.to_dict(), 'encoder_layers': 4, 'cross_layers': 2})
+        model = DualEncoderModel(design_encoder(self.cfg, self.prep),
+                                 design_encoder(op_config, self.prep),
+                                 decoder(self.cfg, self.prep), self.cfg.dim).eval()
+        restored = rebuild_model(describe_model(model), self.cfg, self.prep).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        self.assertEqual(restored.guided.cfg.encoder_layers, 4)
+        self.assertEqual(restored.direct.cfg.encoder_layers, 2)
+        with torch.no_grad():
+            torch.testing.assert_close(model(self.batch), restored(self.batch), rtol=0, atol=0)
+
+    def test_legacy_predictor_recipe_without_architecture_still_loads(self):
+        model = self.make_predictor().eval()
+        recipe = describe_model(model)
+        recipe.pop('model_config')
+        restored = rebuild_model(recipe, self.cfg, self.prep).eval()
+        restored.load_state_dict(model.state_dict(), strict=True)
+        with torch.no_grad():
+            expected, mask = model(self.batch)
+            actual, restored_mask = restored(self.batch)
+            torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+            self.assertTrue(torch.equal(mask, restored_mask))
+
     def corrupted_op(self):
         result = copy.deepcopy(self.batch)
         result["op"] = torch.full_like(result["op"], float("nan"))

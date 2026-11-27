@@ -1,5 +1,7 @@
 # 端口级单电路实验
 
+**OP 预测器独立配置**：依赖 OP 的配置新增 `op_predictor.model` / `op_predictor.training`，可独立设置 OP 的 SE/PE 层数、维度、学习率、batch size、轮数和早停；性能侧仍使用 `model` / `op_transfer`。宽 OP 另有 `op_predictor.width_decoder_pin`。新默认值保持原实验设置，旧配置仍兼容。[完整字段、网格与兼容说明](../../docs/OP_PREDICTOR_CONFIG_ZH.md)
+
 新增 LASD graph v8/v9：v7 多阶 Attention 统计 + v5 PE Hyper-Connection；v9 再加 v6 的残差和后 LayerNorm。配置、启动及结果说明见 [v8/v9 说明](../GRAPH_V8_V9_ATTENTION_POWERS_HC_pin.md)。
 
 **Graph v7 多阶统计**：`lasd_graph_layer_headwise_detach_pin_v7` 在 v3 基础上统计 A…A^K，每阶独立 MLP 后求和，再送入原图/层 Encoder。`lasd_moe_pin.aggregation_distance` 默认2，1对应v3。原单电路脚本增加 `--graph-layer-detach-v7`；多电路模型配置和距离网格已提供。[完整定义、配置与启动](../GRAPH_V7_ATTENTION_POWERS_pin.md)
@@ -107,7 +109,7 @@ MODELS=(
 )
 ```
 
-配置模板为 `final_exam/configs/default_pin.json`。`op_transfer` 管理训练预算、batch size、学习率及早停；`final_exam_pin` 管理模型选择、模型覆盖及 XGBoost 设置。虽然为兼容模型接口仍使用 `model.max_devices` 这个字段名，在端口级入口中它表示**引脚节点与独立外部端口节点总数上限，不含额外 graph token**；超限时报错，不截断。不要直接把器件数量当成端口级容量。
+配置模板为 `final_exam/configs/default_pin.json`。`op_predictor` 独立管理 OP 预测器，`op_transfer` 管理其余阶段训练预算、batch size、学习率及早停；`final_exam_pin` 管理模型选择、模型覆盖及 XGBoost 设置。虽然为兼容模型接口仍使用 `model.max_devices` 这个字段名，在端口级入口中它表示**引脚节点与独立外部端口节点总数上限，不含额外 graph token**；超限时报错，不截断。不要直接把器件数量当成端口级容量。
 
 默认神经网络下游最大预算保持普通/联合模型 60 轮，顺序蒸馏 encoder 30 + decoder 30；教师 60 轮、OP predictor 30 轮作为额外依赖成本记录。每阶段验证集早停并恢复验证最佳权重。XGBoost 单独按 boosting rounds 记录，不冒充 epoch。
 

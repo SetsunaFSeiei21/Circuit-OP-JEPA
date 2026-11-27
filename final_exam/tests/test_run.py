@@ -23,6 +23,7 @@ def tiny_inputs(directory):
     for row in data['samples']:
         row['devices'] = row['devices'][:4]
     config = json.loads((ROOT / 'final_exam/configs/default.json').read_text())
+    config.pop('op_predictor', None)  # Exercise legacy inheritance with tiny architecture.
     config['dataset'].update(train_circuits=['synthetic_0'], ood_circuits=[], split_ratios=[.6,.2,.2])
     config['model'].update(dim=8, heads=2, encoder_layers=2, cross_layers=1, ffn_dim=16,
                            decoder_ffn_dim=16, decoder_layers=1, max_devices=8, dropout=0.)

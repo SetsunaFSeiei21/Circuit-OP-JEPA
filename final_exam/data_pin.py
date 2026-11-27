@@ -156,6 +156,9 @@ class PinDataContext:
     """Same training interface as op_transfer.DataContext, with pin artifacts."""
     def __init__(self, dataset, manifest, config, device, limits, output, *, preprocessing=None):
         self.device, self.config, self.output = require_device(device), config, Path(output)
+        # Stage configs may use a smaller device-token OP encoder. The resident
+        # input still contains every pin, including while OP supervision runs.
+        self.max_tokens_pin = config['model']['max_devices']
         self.full_manifest = manifest
         self.rows, selected = {}, copy.deepcopy(manifest)
         verify_manifest(dataset, manifest)
@@ -227,7 +230,7 @@ class PinDataContext:
                         for row in rows]
             self.caches[key] = PinResidentDataset(rows, self.prep, getattr(self, 'storage_device', self.device), include_op=op,
                 include_performance=True, performance_metric_mask=self.metric_mask,
-                performance_dtype=torch.float64, max_tokens=self.config['model']['max_devices'],
+                performance_dtype=torch.float64, max_tokens=self.max_tokens_pin,
                 label=f'final_exam {split}_pin ({"OP supervision" if op else "design only"})')
         return self.caches[key]
 

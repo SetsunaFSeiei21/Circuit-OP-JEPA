@@ -1,5 +1,7 @@
 # OP transfer experiments
 
+**OP 预测器独立设置**：`example_config.json` 新增顶层 `op_predictor.model` 和 `op_predictor.training`，分别控制 OP 网络结构和预训练优化参数，优先于旧共享设置。其余训练阶段继续使用 `model` / `op_transfer`。[配置说明](../../docs/OP_PREDICTOR_CONFIG_ZH.md)
+
 本目录用于比较 OP 信息怎样转移到仅接收拓扑与设计参数的模型。代码、运行结果和日志分别在本目录、`results/` 和 `logs/`；不会另建一份仓库，也不会改写已有生产实验。
 
 ## 在 bash 中设置电路、模型和种子
